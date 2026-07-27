@@ -24,9 +24,21 @@
    (app.js + styles.css) kept in localStorage. A fresh deploy is downloaded but NOT
    applied until the user picks "Update and restart" from Start ▸ Power — so if you
    don't update, you keep running the old version. On file:// there's no repo to
-   update against, so the on-disk files load directly. */
+   update against, so the on-disk files load directly.
+
+   HTML_BUILD guards against a mismatch: index.html always comes fresh from the
+   server, but the installed code may be older. If that old code doesn't understand
+   this page's markup you get a broken hybrid UI (panels that never hide, unstyled
+   menus). So bump HTML_BUILD whenever the markup below changes structurally — an
+   installed copy stamped with a different build is discarded and re-downloaded
+   automatically instead of being booted. */
+var HTML_BUILD = "1.1.0-win10";
 (function(){
   var http = /^https?:$/.test(location.protocol);
+  var stale = localStorage.getItem("wc_sys_html") !== HTML_BUILD;
+  if(http && stale){            // installed code predates this markup — force a clean re-install
+    try{ localStorage.removeItem("wc_sys_js"); localStorage.removeItem("wc_sys_css"); }catch(e){}
+  }
   var CSS = http ? localStorage.getItem("wc_sys_css") : null;
   var JS  = http ? localStorage.getItem("wc_sys_js")  : null;
   // styles first (synchronous), to avoid a flash of unstyled content
@@ -40,7 +52,8 @@
     if(!http){ injectSrc(); return; }              // file:// — load the on-disk files
     // first run on a server: download the current version, install it, then boot it
     Promise.all([bust("app.js"), bust("styles.css")]).then(function(r){
-      try{ localStorage.setItem("wc_sys_js", r[0]); localStorage.setItem("wc_sys_css", r[1]); }catch(e){}
+      try{ localStorage.setItem("wc_sys_js", r[0]); localStorage.setItem("wc_sys_css", r[1]);
+           localStorage.setItem("wc_sys_html", HTML_BUILD); }catch(e){}   // stamp what markup this code was installed for
       inject(r[0]);
     }).catch(injectSrc);                           // offline on first run: fall back to on-disk
   }

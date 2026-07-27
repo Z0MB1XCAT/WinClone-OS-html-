@@ -3453,6 +3453,8 @@ async function applyUpdate(){
   try{
     localStorage.setItem("wc_sys_js",latest.js);
     localStorage.setItem("wc_sys_css",latest.css);
+    // stamp the markup build this code was installed against (see HTML_BUILD in index.html)
+    if(window.HTML_BUILD) localStorage.setItem("wc_sys_html", window.HTML_BUILD);
   }catch(e){ winDialog({icon:"⚠️",title:"Update failed",msg:"Not enough storage to install the update.<br><small style='color:#9a9a9a'>Free some space (delete large files/images) and try again.</small>"}); return; }
   UPD.available=false; reflectUpdateUI();
   runUpdateScreen(()=>location.reload());   // reload → bootstrap boots the newly-installed version
