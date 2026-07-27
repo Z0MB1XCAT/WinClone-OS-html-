@@ -1,7 +1,7 @@
 /*!
  * WinClone — a FAN-MADE CONCEPT: a desktop-OS tribute that lives in a browser tab.
  *
- * Copyright (c) 2026 Atlas. All rights reserved.
+ * Copyright (c) 2026 thisisuhhplanetring. All rights reserved.
  *
  * FAN PROJECT / CONCEPT PIECE. Not a real operating system. Not Microsoft
  * Windows. Contains no Microsoft code, artwork or assets — every part was
@@ -9,7 +9,7 @@
  * Microsoft Corporation. Free, never sold. "Windows" and "Microsoft" are
  * trademarks of their respective owners, referenced descriptively only.
  *
- * This file is the original work of Atlas. Read it, learn from it, modify your
+ * This file is the original work of thisisuhhplanetring. Read it, learn from it, modify your
  * own private copy, fork it on GitHub. Do NOT rehost or republish it as a site
  * of your own, or strip this notice. Full terms: see LICENSE.txt.
  */
@@ -865,7 +865,7 @@ function buildTerminal(body){
           Version <b>${esc(WC_VERSION)}</b><br>
           Build ${esc(isHosted()?installedBuild():"local (file://)")}<br><br>
           <b style="color:#f7a233">FANMADE / CONCEPT</b><br>
-          Created by <b>Atlas</b> — © 2026 Atlas. All rights reserved.<br>
+          Created by <b>thisisuhhplanetring</b> — © 2026 thisisuhhplanetring. All rights reserved.<br>
           <small style="color:#9a9a9a">A fan-made concept piece, not a real operating system and not
           Microsoft Windows. Contains no Microsoft assets. Not affiliated with, endorsed by or
           connected to Microsoft Corporation. Free, never sold.<br>
@@ -873,7 +873,7 @@ function buildTerminal(body){
         break;
       case "license": case "copyright":
         printHtml(`<span class="cyan">WinClone</span> — a <b>FANMADE / CONCEPT</b> project.<br>`+
-          `© 2026 Atlas. All rights reserved.<br><br>`+
+          `© 2026 thisisuhhplanetring. All rights reserved.<br><br>`+
           `<span class="green">What this is:</span> a hobby tribute to desktop operating systems,<br>`+
           `&nbsp;&nbsp;written from scratch for fun and for learning. It is not a real OS,<br>`+
           `&nbsp;&nbsp;not Microsoft Windows, and contains no Microsoft code or artwork.<br>`+
@@ -2250,7 +2250,7 @@ function buildSettings(body){
         <div style="font-size:15px"><b style="color:#f7a233">FANMADE / CONCEPT</b></div>
         <div style="color:#9a9a9a;font-size:12.5px;line-height:1.75">
           WinClone is a <b style="color:#eaeaea">fan-made concept project</b> by
-          <b style="color:#eaeaea">Atlas</b> — a hobby tribute to desktop operating
+          <b style="color:#eaeaea">thisisuhhplanetring</b> — a hobby tribute to desktop operating
           systems, written from scratch for fun and for learning.<br><br>
           It is <b style="color:#eaeaea">not</b> a real operating system, and
           <b style="color:#eaeaea">not</b> Microsoft Windows. It contains no Microsoft
@@ -2262,7 +2262,7 @@ function buildSettings(body){
       <div class="st-card" style="flex-direction:column;align-items:flex-start;gap:6px">
         <div style="font-size:15px"><b>©</b> Copyright and licence</div>
         <div style="color:#9a9a9a;font-size:12.5px;line-height:1.75">
-          © 2026 Atlas. All rights reserved.<br><br>
+          © 2026 thisisuhhplanetring. All rights reserved.<br><br>
           You may run it, read the source, modify your own private copy, and fork it
           on GitHub. Rehosting it as a site of your own, stripping the attribution,
           passing it off as your work or selling it is prohibited. Full terms are in
