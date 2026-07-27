@@ -32,7 +32,7 @@ WHAT THIS IS
 
 COPYRIGHT
 
-  Copyright (c) 2026 thisisuhhplanetring. All rights reserved.
+  Copyright (c) 2026 Atlas. All rights reserved.
 
   The source code, visual design, layout, artwork, wording and behaviour of
   WinClone are the original work of Atlas, and are protected by copyright.
@@ -70,6 +70,16 @@ NO WARRANTY
   fitness for a particular purpose. The copyright holder shall not be liable
   for any claim, damages or other liability arising from WinClone or the use
   of WinClone.
+
+
+LICENCE HISTORY
+
+  Earlier versions of WinClone were published under the MIT Licence. That grant
+  is not withdrawn and cannot be: any copy obtained under those earlier terms
+  stays governed by the MIT Licence for that version.
+
+  From 27 July 2026 onward, this version and all later versions are released
+  under the terms set out above instead.
 
 
 REPORTING AN UNAUTHORISED COPY
