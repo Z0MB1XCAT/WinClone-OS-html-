@@ -1,6 +1,20 @@
 <!doctype html>
+<!--
+  WinClone — a FAN-MADE CONCEPT: a desktop-OS tribute that lives in a browser tab.
+  Copyright (c) 2026 Atlas. All rights reserved.
+
+  FAN PROJECT / CONCEPT PIECE. This is not a real operating system, and it is
+  not Microsoft Windows. It contains no Microsoft code, artwork or assets —
+  everything here was written and drawn from scratch. It is not affiliated with,
+  endorsed by, sponsored by or connected to Microsoft Corporation, and it is
+  free and never sold. "Windows" and "Microsoft" are trademarks of their
+  respective owners, referenced descriptively only.
+
+  Original work of Atlas. Read it, learn from it, modify your own private copy,
+  fork it on GitHub. Do NOT rehost or republish it as a site of your own, or
+  strip these notices. Full terms: see LICENSE.txt.
+-->
 <html lang="en">
-<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WinClone</title>
@@ -39,51 +53,57 @@
 
 <!-- DESKTOP -->
 <div id="desktop" class="dark">
+  <div class="hero-logo"><i></i><i></i></div>
   <div id="icons"></div>
 </div>
 
-<!-- TASKBAR -->
+<!-- TASKBAR (Windows 10: everything left-aligned, search box next to Start) -->
 <div id="taskbar">
   <div id="tb-left">
-    <button class="tbtn" id="widgetsbtn" title="Widgets"><span class="gl">🌤️</span></button>
-  </div>
-  <div id="tb-center">
-    <button class="tbtn" id="startbtn" title="Start"><span class="gl">⊞</span></button>
-    <button class="tbtn" id="searchbtn" title="Search"><span class="gl">🔍</span></button>
-    <div id="tb-apps" style="display:flex;gap:4px"></div>
+    <button class="tbtn" id="startbtn" title="Start"><svg class="winlogo" viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="currentColor" d="M0 1 L7 1 L9 4.5 L7 8 L9 11.5 L7 15 L0 15 Z"/>
+      <path fill="currentColor" d="M9 1 L16 1 L16 15 L9 15 L11 11.5 L9 8 L11 4.5 Z"/>
+    </svg></button>
+    <button id="searchbtn" title="Search"><span class="s-ic">🔍</span><span class="s-txt">Type here to search</span></button>
+    <div id="tb-apps" style="display:flex"></div>
   </div>
   <div id="tb-right">
+    <button class="trayitem" id="widgetsbtn" title="News and interests"><span class="tray-ic">🌤️</span></button>
     <button class="trayitem" id="chevron" title="Hidden icons"><span class="tray-ic">⌃</span></button>
-    <button class="trayitem" id="notifbtn" title="Notifications"><span class="tray-ic">🔔</span><span id="notif-badge"></span></button>
+    <button class="trayitem" id="notifbtn" title="Notifications"><svg class="tsvg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.2"><path d="M8 2a4 4 0 0 0-4 4v3L2.5 11.5h11L12 9V6a4 4 0 0 0-4-4z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg><span id="notif-badge"></span></button>
     <button class="trayitem" id="quickbtn" title="Network / Sound / Battery">
-      <span class="tray-ic">📶</span><span class="tray-ic">🔊</span><span class="tray-ic">🔋</span>
+      <svg class="tsvg" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.3"><path d="M1.5 6.2a9.3 9.3 0 0 1 13 0"/><path d="M3.8 8.7a6 6 0 0 1 8.4 0"/><path d="M6.1 11.1a2.8 2.8 0 0 1 3.8 0"/><circle cx="8" cy="13.2" r="1" fill="#fff" stroke="none"/></svg>
+      <svg class="tsvg" viewBox="0 0 16 16"><path d="M2 6v4h2.5L8 13V3L4.5 6H2z" fill="#fff"/><path d="M10 5.5a3.5 3.5 0 0 1 0 5" stroke="#fff" stroke-width="1.2" fill="none"/><path d="M11.8 3.8a6 6 0 0 1 0 8.4" stroke="#fff" stroke-width="1.2" fill="none"/></svg>
+      <svg class="tsvg wide" viewBox="0 0 18 10"><rect x=".6" y=".6" width="14" height="8.8" rx="1" fill="none" stroke="#fff" stroke-width="1.1"/><rect x="15.6" y="3" width="1.9" height="4" fill="#fff"/><rect x="2.2" y="2.2" width="10.8" height="5.6" fill="#fff"/></svg>
     </button>
     <button class="trayitem" id="tray-clock">
       <span id="clk-time">12:00 PM</span>
       <small id="clk-date">1/1/2026</small>
     </button>
+    <button id="showdesk" title="Show desktop"></button>
   </div>
 </div>
 
-<!-- START MENU -->
+<!-- START MENU (Windows 10: icon rail / app list / live tiles) -->
 <div id="startmenu" class="flyout">
-  <input id="start-search" placeholder="Search for apps, settings, and documents">
-  <div class="sm-head"><b>Pinned</b><button class="allbtn">All apps &nbsp;›</button></div>
-  <div class="sm-grid" id="sm-grid"></div>
-  <div id="startfoot">
-    <div class="sm-user"><div class="avatar">U</div><span>User</span></div>
-    <button id="powerbtn" title="Power">⏻</button>
+  <div class="sm-rail">
+    <button class="rail-btn" id="rail-user" title="User"><div class="avatar">U</div></button>
+    <div class="rail-gap"></div>
+    <button class="rail-btn" id="rail-settings" title="Settings">⚙️</button>
+    <button class="rail-btn" id="powerbtn" title="Power">⏻</button>
+  </div>
+  <div class="sm-listwrap">
+    <input id="start-search" placeholder="Search apps and files" autocomplete="off">
+    <div id="sm-list"></div>
+  </div>
+  <div class="sm-tilewrap">
+    <div class="sm-tilehead">Play and explore</div>
+    <div id="sm-grid"></div>
   </div>
 </div>
 
-<!-- QUICK SETTINGS -->
+<!-- NETWORK / VOLUME FLYOUT (quick actions live in the action center, like Win10) -->
 <div id="quick" class="flyout">
-  <div class="qs-grid">
-    <div class="qs-tile on" data-q="wifi"><span class="gl">📶</span> Wi-Fi</div>
-    <div class="qs-tile" data-q="bt"><span class="gl">🔵</span> Bluetooth</div>
-    <div class="qs-tile" data-q="air"><span class="gl">✈️</span> Airplane</div>
-    <div class="qs-tile" data-q="save"><span class="gl">🔋</span> Battery saver</div>
-  </div>
   <div class="qs-slider"><span>🔆</span><input type="range" min="0" max="100" value="80" id="bright"></div>
   <div class="qs-slider"><span id="vol-ic">🔊</span><input type="range" min="0" max="100" value="65" id="vol"></div>
   <div id="wifilist"></div>
@@ -100,6 +120,12 @@
 <div id="notif" class="flyout">
   <div class="notif-head"><b>Notifications</b><button class="allbtn" id="notif-clear">Clear all</button></div>
   <div id="notif-list"></div>
+  <div class="qs-grid">
+    <div class="qs-tile on" data-q="wifi"><span class="gl">📶</span> Wi-Fi</div>
+    <div class="qs-tile" data-q="bt"><span class="gl">🔵</span> Bluetooth</div>
+    <div class="qs-tile" data-q="air"><span class="gl">✈️</span> Airplane</div>
+    <div class="qs-tile" data-q="save"><span class="gl">🔋</span> Battery saver</div>
+  </div>
 </div>
 
 <!-- TOASTS -->
@@ -108,6 +134,15 @@
 <!-- CONTEXT MENU -->
 <div id="ctx"></div>
 
+<!-- BOOT SPLASH -->
+<div id="boot">
+  <svg class="bt-logo" viewBox="0 0 16 16" aria-hidden="true">
+    <path fill="#0078d7" d="M0 1 L7 1 L9 4.5 L7 8 L9 11.5 L7 15 L0 15 Z"/>
+    <path fill="#0078d7" d="M9 1 L16 1 L16 15 L9 15 L11 11.5 L9 8 L11 4.5 Z"/>
+  </svg>
+  <div class="bt-ring"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+</div>
+
 <!-- LOGIN -->
 <div id="login">
   <div class="clock-big" id="lg-time">12:00</div>
@@ -115,13 +150,56 @@
   <div class="lg-user">
     <div class="avatar-lg">U</div>
     <div class="lg-name">User</div>
-    <div class="lg-row">
-      <input id="lg-pass" type="password" placeholder="PIN or password" autocomplete="off">
-      <button class="go" id="lg-go">→</button>
+
+    <!-- normal sign-in -->
+    <div class="lg-panel" id="lg-signin">
+      <div class="lg-row">
+        <input id="lg-pass" type="password" placeholder="Password" autocomplete="off">
+        <button class="go" id="lg-go">→</button>
+      </div>
+      <div class="lg-err"></div>
+      <button class="lg-link" id="lg-forgot">Forgot password?</button>
     </div>
-    <div class="hint">Press → or Enter to sign in (any value works)</div>
+
+    <!-- first-run setup (forced when no password exists yet) -->
+    <div class="lg-panel" id="lg-setup">
+      <div class="lg-title" id="lg-setup-title">Create a password</div>
+      <div class="lg-sub" id="lg-setup-sub">Set up this PC before you sign in for the first time.</div>
+      <div class="lg-step" data-step="1">
+        <input id="lg-new1" type="password" placeholder="New password" autocomplete="off">
+        <input id="lg-new2" type="password" placeholder="Confirm password" autocomplete="off">
+        <button class="lg-btn" id="lg-next1">Next</button>
+      </div>
+      <div class="lg-step" data-step="2">
+        <div class="lg-qpick">
+          <button class="lg-qbtn" data-q="pet">🐾 Your pet's name</button>
+          <button class="lg-qbtn" data-q="num">🔢 A number between 1 and 999</button>
+        </div>
+        <input id="lg-ans" placeholder="Your answer" autocomplete="off">
+        <button class="lg-btn" id="lg-finish">Finish setup</button>
+      </div>
+      <div class="lg-err"></div>
+    </div>
+
+    <!-- forgot-password recovery -->
+    <div class="lg-panel" id="lg-recover">
+      <div class="lg-title">Reset your password</div>
+      <div class="lg-sub" id="lg-rq">Security question</div>
+      <div class="lg-step" data-step="1">
+        <input id="lg-rans" placeholder="Your answer" autocomplete="off">
+        <button class="lg-btn" id="lg-rcheck">Continue</button>
+      </div>
+      <div class="lg-step" data-step="2">
+        <input id="lg-rnew1" type="password" placeholder="New password" autocomplete="off">
+        <input id="lg-rnew2" type="password" placeholder="Confirm new password" autocomplete="off">
+        <button class="lg-btn" id="lg-rsave">Save and sign in</button>
+      </div>
+      <div class="lg-err"></div>
+      <button class="lg-link" id="lg-rback">← Back to sign-in</button>
+    </div>
   </div>
   <button class="bios-lgbtn" id="biosbtn">⚙ BIOS Setup</button>
+  <div class="lg-credit">WinClone — a fanmade concept by Atlas · © 2026 · Not affiliated with Microsoft</div>
 </div>
 
 <!-- SHUTDOWN -->

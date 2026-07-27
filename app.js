@@ -1,10 +1,35 @@
+/*!
+ * WinClone — a FAN-MADE CONCEPT: a desktop-OS tribute that lives in a browser tab.
+ *
+ * Copyright (c) 2026 Atlas. All rights reserved.
+ *
+ * FAN PROJECT / CONCEPT PIECE. Not a real operating system. Not Microsoft
+ * Windows. Contains no Microsoft code, artwork or assets — every part was
+ * written from scratch. Not affiliated with, endorsed by or connected to
+ * Microsoft Corporation. Free, never sold. "Windows" and "Microsoft" are
+ * trademarks of their respective owners, referenced descriptively only.
+ *
+ * This file is the original work of Atlas. Read it, learn from it, modify your
+ * own private copy, fork it on GitHub. Do NOT rehost or republish it as a site
+ * of your own, or strip this notice. Full terms: see LICENSE.txt.
+ */
 "use strict";
 /* ============================ VERSION ============================
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.0.0";
+const WC_VERSION = "1.1.0";
 const WC_CHANGELOG = {
+  "1.1.0": [
+    "🔒 Your PC has a password now — set one on first boot, and pick a security question in case you forget it.",
+    "🔑 Forgot it? Answer your security question right on the lock screen to set a new one.",
+    "🪟 The whole shell now feels like Windows 10 — left-aligned taskbar with the white search box, square window corners, classic dark theme.",
+    "🧱 A proper Windows 10 Start menu: power rail on the left, alphabetical app list, and colorful live tiles.",
+    "📥 Action center — notifications slide in from the right edge, and toasts pop up above the tray.",
+    "🔷 A real boot screen with the zigzag WinClone logo and spinning dots, plus startup / notification / error sounds.",
+    "🖱️ Drag a selection box on the desktop, and the secret Show Desktop sliver at the taskbar's far right.",
+    "🎯 Focused windows stand out with a deeper shadow; running taskbar apps get the accent underline.",
+  ],
   "1.0.0": [
     "🎉 Version numbers arrive — check yours anytime by typing winver in the Terminal.",
     "📜 Batch files run: double-click a .bat (or run it in the Terminal), with a real del command.",
@@ -35,6 +60,28 @@ const APPS = {
   htmlview:  {title:"HTML Viewer",   icon:"🌐", w:760, h:560, build:buildHtmlView, hidden:true},
   batch:     {title:"cmd.exe",       icon:"⬛", w:640, h:400, build:buildBatch, hidden:true},
 };
+/* Live-tile backgrounds: per-app gradients for the Start menu tiles (Win10 style) */
+const TILE_BG = {
+  explorer:"linear-gradient(135deg,#1f6fd0,#63b4ff)",
+  notepad: "linear-gradient(135deg,#0e7490,#22d3ee)",
+  docs:    "linear-gradient(135deg,#1e3a8a,#3b82f6)",
+  calc:    "linear-gradient(135deg,#334155,#64748b)",
+  terminal:"linear-gradient(135deg,#111827,#374151)",
+  settings:"linear-gradient(135deg,#475569,#94a3b8)",
+  edge:    "linear-gradient(135deg,#0ea5a4,#38bdf8)",
+  photos:  "linear-gradient(135deg,#7c3aed,#ec4899)",
+  media:   "linear-gradient(135deg,#ea580c,#facc15)",
+  recycle: "linear-gradient(135deg,#52525b,#a1a1aa)",
+  defender:"linear-gradient(135deg,#15803d,#4ade80)",
+  youtube: "linear-gradient(135deg,#b91c1c,#f87171)",
+  paint:   "linear-gradient(135deg,#9d174d,#f472b6)",
+  taskmgr: "linear-gradient(135deg,#4338ca,#818cf8)",
+  mines:   "linear-gradient(135deg,#92400e,#f59e0b)",
+  snake:   "linear-gradient(135deg,#166534,#84cc16)",
+  archive: "linear-gradient(135deg,#6b7280,#d1d5db)",
+  htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
+  batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
+};
 const PINNED = ["edge","explorer","notepad","docs","calc","photos","settings","terminal","defender","recycle"];
 const TASKBAR_PINS = ["explorer","edge","notepad","terminal"];
 const DESKTOP_ICONS = [
@@ -49,12 +96,32 @@ const DESKTOP_ICONS = [
   {app:"snake",    label:"Snake"},
 ];
 
+/* ============================ SOUND FX (synthesized, no audio files) ============================ */
+let AC=null, lastSfx=0;
+function sfx(kind){
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==="suspended") AC.resume();
+    const now=Date.now();
+    if(kind==="notify" && now-lastSfx<900) return;  // don't ding on top of another sound
+    lastSfx=now;
+    const t=AC.currentTime;
+    const tone=(f,st,d,v,type)=>{ const o=AC.createOscillator(); o.type=type||"sine"; o.frequency.value=f;
+      const g=AC.createGain(); g.gain.setValueAtTime(0,t+st); g.gain.linearRampToValueAtTime(v,t+st+.02);
+      g.gain.exponentialRampToValueAtTime(.0001,t+st+d); o.connect(g); g.connect(AC.destination);
+      o.start(t+st); o.stop(t+st+d+.05); };
+    if(kind==="startup"){ tone(392,0,1.0,.10); tone(523.25,.13,1.0,.09); tone(659.25,.26,1.2,.08); tone(783.99,.40,1.6,.07); }
+    else if(kind==="notify"){ tone(830,0,.22,.07); tone(1108,.09,.3,.06); }
+    else if(kind==="error"){ tone(311,0,.28,.09,"triangle"); tone(233,.12,.34,.09,"triangle"); }
+  }catch(e){}
+}
+
 /* ============================ STATE ============================ */
 const state = {z:20, wins:{}, focused:null};
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 function el(tag, cls, html){const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e;}
-const deskArea = () => ({w:innerWidth, h:innerHeight-48});
+const deskArea = () => ({w:innerWidth, h:innerHeight-40});   // 40 = taskbar height (--tb-h)
 
 /* ============================ WINDOW MANAGER ============================ */
 function openApp(id){
@@ -104,6 +171,7 @@ function focusWin(id){
   const rec = state.wins[id]; if(!rec) return;
   rec.el.style.zIndex = ++state.z;
   state.focused = id;
+  document.querySelectorAll(".window").forEach(w=>w.classList.toggle("focused", w===rec.el));
   updateTaskItems();
 }
 function closeWin(id){
@@ -123,9 +191,10 @@ function toggleMin(id, force){
   else if(state.focused===id){ state.focused=null; }
   updateTaskItems();
 }
-function toggleMax(id){
+function toggleMax(id, instant){
   const rec = state.wins[id]; if(!rec) return;
   const win = rec.el;
+  if(!instant){ win.classList.add("anim"); setTimeout(()=>win.classList.remove("anim"),260); }
   if(rec.max){
     Object.assign(win.style, rec.prev);
     win.classList.remove("max"); rec.max=false;
@@ -143,9 +212,9 @@ function makeDraggable(win, rec){
   bar.addEventListener("mousedown", e=>{
     if(e.target.closest(".tb-btn")) return;
     focusWin(rec.appId);
-    if(rec.max){ // un-maximize on drag, keep cursor grip
+    if(rec.max){ // un-maximize on drag, keep cursor grip (instant — no animation mid-drag)
       const ratio = e.clientX / innerWidth;
-      toggleMax(rec.appId);
+      toggleMax(rec.appId, true);
       win.style.top="0px";
       win.style.left = (e.clientX - parseFloat(win.style.width)*ratio)+"px";
     }
@@ -172,6 +241,7 @@ function snapHint(ev){
 function applySnap(ev, rec){
   if(!snapZone) return;
   const win=rec.el, a=deskArea();
+  win.classList.add("anim"); setTimeout(()=>win.classList.remove("anim"),260);
   rec.prev = {left:win.style.left, top:win.style.top, width:win.style.width, height:win.style.height};
   if(snapZone==="top"){ if(!rec.max) toggleMax(rec.appId); }
   else if(snapZone==="left"){ Object.assign(win.style,{left:"0px",top:"0px",width:(a.w/2)+"px",height:a.h+"px"}); }
@@ -245,11 +315,82 @@ function taskClick(id){
   else focusWin(id);
 }
 
-/* ============================ DESKTOP ICONS ============================ */
+/* ============================ DESKTOP ICONS ============================
+   Icons sit on a fixed grid and can be dragged to any free cell; the chosen
+   cell is remembered in wc_iconpos. Anything without a saved cell auto-fills
+   top-to-bottom then across, the way Windows does. */
+const ICON_GRID={x:10,y:10,w:88,h:92};
+const IPOS_KEY="wc_iconpos";
+let ICONPOS={}; try{ ICONPOS=JSON.parse(localStorage.getItem(IPOS_KEY))||{}; }catch(e){ ICONPOS={}; }
+let ICONLIST=[];
+function saveIconPos(){ try{ localStorage.setItem(IPOS_KEY,JSON.stringify(ICONPOS)); }catch(e){} }
+function gridDims(){
+  return {
+    cols:Math.max(1,Math.floor((innerWidth-ICON_GRID.x)/ICON_GRID.w)),
+    rows:Math.max(1,Math.floor((innerHeight-40-ICON_GRID.y)/ICON_GRID.h))
+  };
+}
+function nearestFreeCell(taken,c,r){
+  const {cols,rows}=gridDims();
+  c=Math.max(0,Math.min(c,cols-1)); r=Math.max(0,Math.min(r,rows-1));
+  if(!taken.has(c+","+r)) return [c,r];
+  for(let d=1;d<=cols+rows;d++){
+    for(let dc=-d;dc<=d;dc++) for(let dr=-d;dr<=d;dr++){
+      if(Math.max(Math.abs(dc),Math.abs(dr))!==d) continue;
+      const nc=c+dc, nr=r+dr;
+      if(nc<0||nr<0||nc>=cols||nr>=rows) continue;
+      if(!taken.has(nc+","+nr)) return [nc,nr];
+    }
+  }
+  return [c,r];
+}
+function layoutIcons(list){
+  const {cols,rows}=gridDims();
+  const taken=new Set(), pending=[];
+  list.forEach(it=>{
+    const p=ICONPOS[it.key];
+    if(Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1])
+       && p[0]>=0 && p[1]>=0 && p[0]<cols && p[1]<rows && !taken.has(p[0]+","+p[1])){
+      it.cell=[p[0],p[1]]; taken.add(p[0]+","+p[1]);
+    } else pending.push(it);
+  });
+  let c=0,r=0;
+  pending.forEach(it=>{
+    while(taken.has(c+","+r) && c<cols){ r++; if(r>=rows){ r=0; c++; } }
+    it.cell=[c,r]; taken.add(c+","+r);
+  });
+  list.forEach(it=>{
+    it.el.style.left=(ICON_GRID.x+it.cell[0]*ICON_GRID.w)+"px";
+    it.el.style.top =(ICON_GRID.y+it.cell[1]*ICON_GRID.h)+"px";
+  });
+}
+/* drop an icon at a pixel position -> snap to the nearest free grid cell */
+function placeIconAt(key,x,y){
+  const c=Math.round((x-ICON_GRID.x)/ICON_GRID.w);
+  const r=Math.round((y-ICON_GRID.y)/ICON_GRID.h);
+  const taken=new Set();
+  ICONLIST.forEach(it=>{ if(it.key!==key && it.cell) taken.add(it.cell[0]+","+it.cell[1]); });
+  ICONPOS[key]=nearestFreeCell(taken,c,r);
+  saveIconPos(); renderDesktopIcons();
+}
+let ICONDRAG=null;   // {key,dx,dy} while an icon is being repositioned
+function makeIconDraggable(elm,key){
+  elm.draggable=true;
+  elm.addEventListener("dragstart",e=>{
+    const r=elm.getBoundingClientRect();
+    ICONDRAG={key,dx:e.clientX-r.left,dy:e.clientY-r.top};
+    e.dataTransfer.effectAllowed="move";
+    try{ e.dataTransfer.setData("text/plain",key); }catch(_){}
+    elm.classList.add("dragging");
+  });
+  elm.addEventListener("dragend",()=>{ ICONDRAG=null; elm.classList.remove("dragging"); });
+}
+
 function renderDesktopIcons(){
   const c=$("#icons"); if(!c) return; c.innerHTML="";
   const sel=e=>{ document.querySelectorAll(".dicon.sel").forEach(x=>x.classList.remove("sel")); e.currentTarget.classList.add("sel"); e.stopPropagation(); };
   const dpath=[...HOME_PATH,"Desktop"];
+  const list=[];
   DESKTOP_ICONS.forEach(d=>{
     const i=el("div","dicon");
     i.innerHTML=`<div class="gl">${APPS[d.app].icon}</div><div class="lbl">${d.label}</div>`;
@@ -260,6 +401,8 @@ function renderDesktopIcons(){
       i.addEventListener("dragleave",()=>i.classList.remove("recycle-hot"));
       i.addEventListener("drop",e=>{ if(!DRAG) return; e.preventDefault(); e.stopPropagation(); i.classList.remove("recycle-hot"); deleteAt(DRAG.path,DRAG.name); });
     }
+    makeIconDraggable(i,"app:"+d.app);
+    list.push({key:"app:"+d.app, el:i});
     c.appendChild(i);
   });
   const dt=nodeAt(dpath);
@@ -270,10 +413,24 @@ function renderDesktopIcons(){
     i.onclick=sel;
     i.ondblclick=()=>fsOpen(dpath,name,item);
     i.oncontextmenu=e=>{ e.preventDefault(); e.stopPropagation(); fsItemMenu(e.clientX,e.clientY,dpath,name,item); };
-    makeDragSource(i,dpath,name,item);
+    makeDragSource(i,dpath,name,item);   // lets it be dropped into folders / Explorer / Recycle Bin
+    // ...and also track it as a grid move, so dropping on bare desktop just repositions it
+    i.addEventListener("dragstart",e=>{
+      const r=i.getBoundingClientRect();
+      ICONDRAG={key:"file:"+name,dx:e.clientX-r.left,dy:e.clientY-r.top};
+    });
+    i.addEventListener("dragend",()=>{ ICONDRAG=null; });
     if(item.folder) makeDropTarget(i,()=>[...dpath,name]);
+    list.push({key:"file:"+name, el:i});
     c.appendChild(i);
   });
+  // forget saved cells for icons that no longer exist, then lay the rest out
+  const live=new Set(list.map(it=>it.key));
+  let pruned=false;
+  Object.keys(ICONPOS).forEach(k=>{ if(!live.has(k)){ delete ICONPOS[k]; pruned=true; } });
+  if(pruned) saveIconPos();   // keep storage in step with memory (only writes when something went away)
+  ICONLIST=list;
+  layoutIcons(list);
 }
 
 /* ============================ START / FLYOUTS ============================ */
@@ -291,30 +448,43 @@ function searchVFS(q,limit){
   return out.slice(0,limit);
 }
 function renderStartGrid(filter){
-  const g=$("#sm-grid"); g.innerHTML="";
+  const g=$("#sm-grid"), list=$("#sm-list"); if(!g||!list) return;
+  g.innerHTML=""; list.innerHTML="";
   const f=(filter||"").toLowerCase();
-  Object.keys(APPS).filter(id=>!APPS[id].hidden && (!f || APPS[id].title.toLowerCase().includes(f)))
-    .forEach(id=>{
-      const a=el("div","sm-app");
-      a.innerHTML=`<span class="gl">${APPS[id].icon}</span><span class="nm">${APPS[id].title}</span>`;
-      a.onclick=()=>{ closeFlyouts(); openApp(id); };
-      a.oncontextmenu=e=>{ e.preventDefault(); e.stopPropagation();
-        showCtx(e.clientX,e.clientY,[{icon:"🖥️",label:"Add to desktop",action:()=>{ addAppShortcutToDesktop(id); closeFlyouts(); }}]); };
-      g.appendChild(a);
-    });
+  // left column: alphabetical all-apps list with letter headers (Win10 style)
+  const ids=Object.keys(APPS).filter(id=>!APPS[id].hidden && (!f || APPS[id].title.toLowerCase().includes(f)))
+    .sort((a,b)=>APPS[a].title.localeCompare(APPS[b].title));
+  let letter="";
+  ids.forEach(id=>{
+    const L=APPS[id].title[0].toUpperCase();
+    if(!f && L!==letter){ letter=L; list.appendChild(el("div","sm-letter",L)); }
+    const row=el("div","sm-row",`<span class="gl">${APPS[id].icon}</span><span class="nm">${esc(APPS[id].title)}</span>`);
+    row.onclick=()=>{ closeFlyouts(); openApp(id); };
+    row.oncontextmenu=e=>{ e.preventDefault(); e.stopPropagation();
+      showCtx(e.clientX,e.clientY,[{icon:"🖥️",label:"Add to desktop",action:()=>{ addAppShortcutToDesktop(id); closeFlyouts(); }}]); };
+    list.appendChild(row);
+  });
   if(f){
     const files=searchVFS(f,10);
     if(files.length){
-      g.appendChild(el("div","sm-sec","Files & folders"));
+      list.appendChild(el("div","sm-letter","Files & folders"));
       files.forEach(r=>{
-        const a=el("div","sm-app");
-        a.innerHTML=`<span class="gl">${r.item.folder?"📁":glyphFor(r.name,r.item)}</span><span class="nm">${esc(r.name)}</span>`;
+        const a=el("div","sm-row",`<span class="gl">${r.item.folder?"📁":glyphFor(r.name,r.item)}</span><span class="nm">${esc(r.name)}</span>`);
         a.title=r.path.join(" › ");
         a.onclick=()=>{ closeFlyouts(); if(r.item.folder) openExplorerAt([...r.path,r.name]); else fsOpen([...r.path],r.name,r.item); };
-        g.appendChild(a);
+        list.appendChild(a);
       });
     }
   }
+  // right column: live tiles for the pinned apps
+  PINNED.forEach(id=>{
+    const t=el("div","sm-tile",`<span class="tgl">${APPS[id].icon}</span><span class="tnm">${esc(APPS[id].title)}</span>`);
+    t.style.background=TILE_BG[id]||"linear-gradient(135deg,#475569,#64748b)";
+    t.onclick=()=>{ closeFlyouts(); openApp(id); };
+    t.oncontextmenu=e=>{ e.preventDefault(); e.stopPropagation();
+      showCtx(e.clientX,e.clientY,[{icon:"🖥️",label:"Add to desktop",action:()=>{ addAppShortcutToDesktop(id); closeFlyouts(); }}]); };
+    g.appendChild(t);
+  });
 }
 function closeFlyouts(){ document.querySelectorAll(".flyout.open").forEach(f=>f.classList.remove("open")); }
 function toggleFlyout(sel){
@@ -686,7 +856,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">System:</span> ver  winver  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  (or any app id)<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  (or any app id)<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "cls": case "clear": term.innerHTML=""; break;
       case "ver": print("WinClone [Version 10.0.26100]"); break;
       case "winver":
@@ -694,8 +864,25 @@ function buildTerminal(body){
           msg:`<div style="line-height:1.55"><b>WinClone</b> 12 Pro<br>
           Version <b>${esc(WC_VERSION)}</b><br>
           Build ${esc(isHosted()?installedBuild():"local (file://)")}<br><br>
-          © 2026 WinClone Megatrends, Inc.<br>
-          <small style="color:#9a9a9a">The one operating system that lives in a single browser tab.</small></div>`});
+          <b style="color:#f7a233">FANMADE / CONCEPT</b><br>
+          Created by <b>Atlas</b> — © 2026 Atlas. All rights reserved.<br>
+          <small style="color:#9a9a9a">A fan-made concept piece, not a real operating system and not
+          Microsoft Windows. Contains no Microsoft assets. Not affiliated with, endorsed by or
+          connected to Microsoft Corporation. Free, never sold.<br>
+          Rehosting as your own is prohibited — type <b>license</b> for terms.</small></div>`});
+        break;
+      case "license": case "copyright":
+        printHtml(`<span class="cyan">WinClone</span> — a <b>FANMADE / CONCEPT</b> project.<br>`+
+          `© 2026 Atlas. All rights reserved.<br><br>`+
+          `<span class="green">What this is:</span> a hobby tribute to desktop operating systems,<br>`+
+          `&nbsp;&nbsp;written from scratch for fun and for learning. It is not a real OS,<br>`+
+          `&nbsp;&nbsp;not Microsoft Windows, and contains no Microsoft code or artwork.<br>`+
+          `&nbsp;&nbsp;Not affiliated with or endorsed by Microsoft. Free, never sold.<br><br>`+
+          `<span class="green">You may:</span> run it, read the source, modify your own private copy,<br>`+
+          `&nbsp;&nbsp;and fork it on GitHub (keeping these notices intact).<br>`+
+          `<span class="green">You may not:</span> rehost or republish it as a site of your own,<br>`+
+          `&nbsp;&nbsp;strip the attribution, pass it off as yours, or sell it.<br><br>`+
+          `Full terms are in LICENSE.txt next to index.html.`);
         break;
       case "whatsnew":   // force-show the What's New screen (it normally appears once, after an update)
         showWhatsNew(WC_VERSION, ()=>showToast({icon:"🎉",title:"That was the What's New screen",body:"It shows automatically once, the first time you sign in after an update."}));
@@ -974,8 +1161,8 @@ function setUser(name){
 }
 function applyUserUI(){
   const n=getUser(), i=userInitial();
-  document.querySelectorAll("#startfoot .sm-user span").forEach(e=>e.textContent=n);
-  document.querySelectorAll("#startfoot .avatar, #login .avatar-lg").forEach(e=>e.textContent=i);
+  document.querySelectorAll("#startmenu .avatar, #login .avatar-lg").forEach(e=>e.textContent=i);
+  const ru=$("#rail-user"); if(ru) ru.title=n;
   document.querySelectorAll("#login .lg-name").forEach(e=>e.textContent=n);
 }
 
@@ -1115,6 +1302,7 @@ function notifTimeAgo(ts){ const s=Math.floor((Date.now()-ts)/1000); if(s<60)ret
 function notifBadge(){ const b=$("#notif-badge"); if(!b) return; b.textContent=notifUnseen>9?"9+":notifUnseen; b.style.display=notifUnseen>0?"grid":"none"; }
 function showToast(n){
   const wrap=$("#toasts"); if(!wrap) return;
+  sfx("notify");
   const t=el("div","toast",`<span class="ti">${n.icon}</span><div class="tc"><b>${esc(n.title)}</b><span>${esc(n.body)}</span></div>`);
   wrap.appendChild(t);
   setTimeout(()=>t.classList.add("in"),20);   // setTimeout (not rAF) so it shows even if fired in a background tab
@@ -1291,6 +1479,7 @@ function batRmdir(cwd, rawArg, recursive){
 
 /* ============================ DIALOG ENGINE ============================ */
 function winDialog(o){
+  if(/⚠|❌|🛑|🚫/.test(o.icon||"")) sfx("error");
   const d=el("div","dlg"+(o.ad?" ad":""));
   d.innerHTML=`<div class="dlg-head"><span>${esc(o.title||"WinClone")}</span><button class="x">✕</button></div>
     <div class="dlg-body"><span class="big">${o.icon||"ℹ️"}</span><div>${o.msg||""}</div></div>
@@ -1349,7 +1538,7 @@ function triggerBSOD(code,what){
       setTimeout(()=>{
         b.style.display="none";
         Object.keys(state.wins).forEach(closeWin);
-        $("#login").classList.remove("hide"); $("#lg-pass").value="";
+        $("#login").classList.remove("hide"); lgReset();
         if(systemStatus().critical) bootRecovery();
         else applySystemHealth();
       },1300);
@@ -1676,6 +1865,7 @@ const WALLPAPERS=[
 function applyWallpaper(css){
   const d=$("#desktop");
   d.style.background=""; d.style.backgroundImage="";
+  d.classList.toggle("custom-wall", !!css);   // hides the Hero logo on custom wallpapers
   if(!css) return;
   if(/url\(/.test(css)) d.style.background=css+", #05070d";  // real image (cover shorthand)
   else d.style.backgroundImage=css;                          // gradient
@@ -2055,7 +2245,31 @@ function buildSettings(body){
           Version&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;24H2 &nbsp; Build 26100
         </div>
       </div>
-      <div class="st-card"><div class="l"><span class="gl">✅</span><div class="t"><b>Windows is activated</b><small>with a digital license</small></div></div></div>`,
+      <div class="st-card"><div class="l"><span class="gl">✅</span><div class="t"><b>Windows is activated</b><small>with a digital license</small></div></div></div>
+      <div class="st-card" style="flex-direction:column;align-items:flex-start;gap:6px;border-color:#f7a233">
+        <div style="font-size:15px"><b style="color:#f7a233">FANMADE / CONCEPT</b></div>
+        <div style="color:#9a9a9a;font-size:12.5px;line-height:1.75">
+          WinClone is a <b style="color:#eaeaea">fan-made concept project</b> by
+          <b style="color:#eaeaea">Atlas</b> — a hobby tribute to desktop operating
+          systems, written from scratch for fun and for learning.<br><br>
+          It is <b style="color:#eaeaea">not</b> a real operating system, and
+          <b style="color:#eaeaea">not</b> Microsoft Windows. It contains no Microsoft
+          code, artwork or assets. It is not affiliated with, endorsed by, sponsored by
+          or connected to Microsoft Corporation, and it is free and never sold.
+          "Windows" and "Microsoft" are trademarks of their respective owners.
+        </div>
+      </div>
+      <div class="st-card" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <div style="font-size:15px"><b>©</b> Copyright and licence</div>
+        <div style="color:#9a9a9a;font-size:12.5px;line-height:1.75">
+          © 2026 Atlas. All rights reserved.<br><br>
+          You may run it, read the source, modify your own private copy, and fork it
+          on GitHub. Rehosting it as a site of your own, stripping the attribution,
+          passing it off as your work or selling it is prohibited. Full terms are in
+          <b style="color:#eaeaea">LICENSE.txt</b>, or type
+          <b style="color:#eaeaea">license</b> in the Terminal.
+        </div>
+      </div>`,
     bt:`<h2>Bluetooth & devices</h2>
       <div class="st-card"><div class="l"><span class="gl">🖱️</span><div class="t"><b>Mouse</b><small>WinClone Precision Mouse</small></div></div><small style="color:#5cd68a">Connected</small></div>
       <div class="st-card"><div class="l"><span class="gl">⌨️</span><div class="t"><b>Keyboard</b><small>WinClone Keys</small></div></div><small style="color:#5cd68a">Connected</small></div>
@@ -2937,7 +3151,7 @@ const WIFI_NETS=[
 let wifiConn="HOME-5G";
 function renderWifi(){
   const w=$("#wifilist"); w.innerHTML="";
-  const on=$('#quick .qs-tile[data-q="wifi"]').classList.contains("on");
+  const on=$('#notif .qs-tile[data-q="wifi"]').classList.contains("on");
   if(!on){ w.innerHTML=`<div style="color:#9a9a9a;font-size:12px;padding:6px">Wi-Fi is turned off.</div>`; return; }
   WIFI_NETS.forEach(net=>{
     const isConn=wifiConn===net.n;
@@ -2976,7 +3190,7 @@ function bootRecovery(){
 }
 function rExit(){
   $("#recovery").style.display="none";
-  $("#login").classList.remove("hide"); $("#lg-pass").value="";
+  $("#login").classList.remove("hide"); lgReset();
   applySystemHealth();
 }
 function rScreen(s){
@@ -3152,10 +3366,12 @@ $("#notif-clear").onclick = ()=>{ NOTIFS=[]; saveNotifs(); renderNotif(); notifU
 notifBadge();
 $("#start-search").addEventListener("input", e=>renderStartGrid(e.target.value));
 $("#start-search").addEventListener("keydown", e=>{
-  if(e.key==="Enter"){ const first=$("#sm-grid").querySelector(".sm-app"); if(first) first.click(); }
+  if(e.key==="Enter"){ const first=$("#sm-list").querySelector(".sm-row"); if(first) first.click(); }
 });
 $("#powerbtn").onclick = (e)=>{ e.stopPropagation(); showPowerMenu(); };
-document.querySelectorAll("#quick .qs-tile").forEach(t=>t.onclick=()=>{
+$("#rail-settings").onclick = ()=>{ closeFlyouts(); openApp("settings"); };
+$("#rail-user").onclick = ()=>{ closeFlyouts(); openApp("settings"); };
+document.querySelectorAll("#notif .qs-tile").forEach(t=>t.onclick=()=>{
   t.classList.toggle("on");
   if(t.dataset.q==="wifi") renderWifi();
 });
@@ -3191,7 +3407,7 @@ function doShutdown(){
     Object.keys(state.wins).forEach(closeWin);
     sd.style.display="none";
     $("#login").classList.remove("hide");
-    $("#lg-pass").value="";
+    lgReset();
   }, 1800);
 }
 
@@ -3291,9 +3507,74 @@ function showWhatsNew(version, done){
   ov.querySelector(".wn-go").onclick=close;
 }
 
+/* ============================ LOCK SCREEN / PASSWORD ============================
+   A toy lock, NOT real security: the password and security answer live in this
+   browser's localStorage, so anyone with devtools can read or clear them. The
+   stored values are scrambled only so they aren't sitting there in plain text —
+   never use a real password here. Locked out? BIOS ▸ Restore Factory Defaults
+   (button on this screen) wipes everything, including the password. */
+const PASS_KEY="wc_pass", SQ_KEY="wc_sq", SQA_KEY="wc_sqa";
+const SEC_Q={pet:"What is your pet's name?", num:"What number between 1 and 999 did you pick?"};
+function scramble(s){                       // djb2 — obfuscation, not cryptography
+  let h=5381; s=String(s);
+  for(let i=0;i<s.length;i++) h=((h*33) ^ s.charCodeAt(i))>>>0;
+  return h.toString(36);
+}
+function normAnswer(v,kind){
+  v=String(v||"").trim().toLowerCase();
+  if(kind==="num") v=v.replace(/[^0-9]/g,"").replace(/^0+(?=\d)/,"");
+  return v;
+}
+function hasPassword(){ return !!localStorage.getItem(PASS_KEY); }
+function setPassword(p){ try{ localStorage.setItem(PASS_KEY, scramble(p)); }catch(e){} }
+function checkPassword(p){ return hasPassword() && localStorage.getItem(PASS_KEY)===scramble(p); }
+function setSecurity(kind,ans){
+  try{ localStorage.setItem(SQ_KEY,kind); localStorage.setItem(SQA_KEY, scramble(normAnswer(ans,kind))); }catch(e){}
+}
+function checkSecurity(ans){
+  const kind=localStorage.getItem(SQ_KEY);
+  return !!kind && localStorage.getItem(SQA_KEY)===scramble(normAnswer(ans,kind));
+}
+
+let lgMode="signin", lgQpick=null;
+function lgPanel(mode){
+  lgMode=mode;
+  ["signin","setup","recover"].forEach(m=>{
+    const p=$("#lg-"+m); if(p) p.style.display=(m===mode)?"flex":"none";
+  });
+  document.querySelectorAll("#login .lg-err").forEach(e=>{ e.textContent=""; e.classList.remove("show"); });
+  lgStep(mode,1);
+}
+function lgStep(mode,n){
+  const p=$("#lg-"+mode); if(!p) return;
+  p.querySelectorAll(".lg-step").forEach(s=>{ s.style.display=(+s.dataset.step===n)?"flex":"none"; });
+}
+function lgError(msg){
+  const p=$("#lg-"+lgMode); if(!p) return;
+  const e=p.querySelector(".lg-err");
+  if(e){ e.textContent=msg; e.classList.toggle("show",!!msg); }
+  if(msg){ sfx("error"); const u=$(".lg-user"); u.classList.remove("shake"); void u.offsetWidth; u.classList.add("shake"); }
+}
+/* decide which panel the lock screen should show, and reset its fields */
+function lgReset(){
+  ["lg-pass","lg-new1","lg-new2","lg-ans","lg-rans","lg-rnew1","lg-rnew2"].forEach(id=>{ const e=$("#"+id); if(e) e.value=""; });
+  lgQpick=null;
+  document.querySelectorAll(".lg-qbtn").forEach(b=>b.classList.remove("sel"));
+  lgPanel(hasPassword() ? "signin" : "setup");
+  const f=$(hasPassword() ? "#lg-pass" : "#lg-new1");
+  setTimeout(()=>{ try{ f.focus(); }catch(e){} },150);
+}
+
 /* login */
+function trySignIn(){
+  const v=$("#lg-pass").value;
+  if(!v){ lgError("Enter your password."); return; }
+  if(!checkPassword(v)){ lgError("That password is incorrect. Try again."); $("#lg-pass").select(); return; }
+  lgError(""); doSignIn();
+}
 function signIn(){ doSignIn(); }
 function doSignIn(){
+  sfx("startup");
   $("#login").classList.add("hide");
   setTimeout(()=>$("#lg-pass").blur(),100);
   applySystemHealth();
@@ -3336,8 +3617,74 @@ function ssStart(){
 }
 function ssStop(){ ssActive=false; cancelAnimationFrame(ssRAF); const ss=$("#screensaver"); if(ss) ss.style.display="none"; ssArm(); }
 ["mousemove","mousedown","keydown","wheel","touchstart"].forEach(ev=>document.addEventListener(ev,()=>{ if(ssActive) ssStop(); else ssArm(); },{passive:true}));
-$("#lg-go").onclick = signIn;
-$("#lg-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") signIn(); });
+$("#lg-go").onclick = trySignIn;
+$("#lg-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") trySignIn(); });
+
+/* ---- first-run setup: password, then a security question ---- */
+$("#lg-next1").onclick = ()=>{
+  const a=$("#lg-new1").value, b=$("#lg-new2").value;
+  if(a.length<1){ lgError("Pick a password first."); return; }
+  if(a!==b){ lgError("Those two passwords don't match."); $("#lg-new2").select(); return; }
+  lgError(""); lgStep("setup",2);
+  $("#lg-setup-title").textContent="Pick a security question";
+  $("#lg-setup-sub").textContent="You'll answer this if you ever forget your password.";
+};
+document.querySelectorAll("#lg-setup .lg-qbtn").forEach(b=>{
+  b.onclick=()=>{
+    lgQpick=b.dataset.q;
+    document.querySelectorAll("#lg-setup .lg-qbtn").forEach(x=>x.classList.toggle("sel",x===b));
+    const ans=$("#lg-ans");
+    ans.placeholder = lgQpick==="num" ? "A number from 1 to 999" : "Your pet's name";
+    lgError(""); ans.focus();
+  };
+});
+$("#lg-finish").onclick = ()=>{
+  if(!lgQpick){ lgError("Choose one of the two questions."); return; }
+  const raw=$("#lg-ans").value, ans=normAnswer(raw,lgQpick);
+  if(!ans){ lgError("Type an answer so you can recover your account."); return; }
+  if(lgQpick==="num"){
+    const n=parseInt(ans,10);
+    if(isNaN(n)||n<1||n>999){ lgError("Pick a whole number between 1 and 999."); $("#lg-ans").select(); return; }
+  }
+  setPassword($("#lg-new1").value);
+  setSecurity(lgQpick,raw);
+  lgError("");
+  doSignIn();
+  notify({icon:"🔐",title:"Password set",body:"You'll need it next time you sign in. Forgot it? Use the security question on the lock screen."});
+};
+["lg-new1","lg-new2"].forEach(id=>$("#"+id).addEventListener("keydown",e=>{ if(e.key==="Enter") $("#lg-next1").click(); }));
+$("#lg-ans").addEventListener("keydown",e=>{ if(e.key==="Enter") $("#lg-finish").click(); });
+
+/* ---- forgot password: answer the security question, then set a new one ---- */
+$("#lg-forgot").onclick = ()=>{
+  const kind=localStorage.getItem(SQ_KEY);
+  if(!kind){                       // no question on file (older profile) — nothing to verify against
+    lgError("No security question is set on this PC. Use ⚙ BIOS Setup ▸ Restore Factory Defaults.");
+    return;
+  }
+  lgPanel("recover");
+  $("#lg-rq").textContent=SEC_Q[kind]||"Security question";
+  setTimeout(()=>$("#lg-rans").focus(),120);
+};
+$("#lg-rcheck").onclick = ()=>{
+  const v=$("#lg-rans").value;
+  if(!v.trim()){ lgError("Type your answer."); return; }
+  if(!checkSecurity(v)){ lgError("That doesn't match the answer on file."); $("#lg-rans").select(); return; }
+  lgError(""); lgStep("recover",2);
+  setTimeout(()=>$("#lg-rnew1").focus(),120);
+};
+$("#lg-rsave").onclick = ()=>{
+  const a=$("#lg-rnew1").value, b=$("#lg-rnew2").value;
+  if(a.length<1){ lgError("Pick a new password."); return; }
+  if(a!==b){ lgError("Those two passwords don't match."); $("#lg-rnew2").select(); return; }
+  setPassword(a);
+  lgError("");
+  doSignIn();
+  notify({icon:"🔑",title:"Password changed",body:"Your new password is saved. Your security question stayed the same."});
+};
+$("#lg-rback").onclick = ()=>{ lgPanel("signin"); setTimeout(()=>$("#lg-pass").focus(),120); };
+$("#lg-rans").addEventListener("keydown",e=>{ if(e.key==="Enter") $("#lg-rcheck").click(); });
+["lg-rnew1","lg-rnew2"].forEach(id=>$("#"+id).addEventListener("keydown",e=>{ if(e.key==="Enter") $("#lg-rsave").click(); }));
 
 /* BIOS */
 $("#biosbtn").onclick = ()=>{
@@ -3366,17 +3713,62 @@ document.addEventListener("keydown", e=>{
   if(e.key==="Escape") { closeFlyouts(); $("#ctx").style.display="none"; $("#bios").style.display="none"; }
 });
 
-/* drop files onto the wallpaper -> move to Desktop */
+/* drag-select marquee on the desktop (click empty wallpaper and drag) */
+(function(){
+  const desk=$("#desktop"); let mq=null,sx=0,sy=0;
+  desk.addEventListener("mousedown",e=>{
+    if(e.button!==0) return;
+    if(e.target!==desk && e.target.id!=="icons") return;
+    document.querySelectorAll(".dicon.sel").forEach(x=>x.classList.remove("sel"));
+    sx=e.clientX; sy=e.clientY;
+    const move=ev=>{
+      if(!mq){ if(Math.abs(ev.clientX-sx)<4&&Math.abs(ev.clientY-sy)<4) return;
+        mq=el("div"); mq.id="marquee"; desk.appendChild(mq); }   // inside #desktop so open windows stay above it
+      const x=Math.min(sx,ev.clientX), y=Math.min(sy,ev.clientY);
+      const w=Math.abs(ev.clientX-sx), h=Math.abs(ev.clientY-sy);
+      Object.assign(mq.style,{left:x+"px",top:y+"px",width:w+"px",height:h+"px"});
+      document.querySelectorAll(".dicon").forEach(i=>{
+        const r=i.getBoundingClientRect();
+        i.classList.toggle("sel", !(r.right<x||r.left>x+w||r.bottom<y||r.top>y+h));
+      });
+    };
+    const up=()=>{ document.removeEventListener("mousemove",move); document.removeEventListener("mouseup",up); if(mq){mq.remove();mq=null;} };
+    document.addEventListener("mousemove",move);
+    document.addEventListener("mouseup",up);
+  });
+})();
+
+/* the classic Show Desktop sliver at the taskbar's far right */
+let DESK_STASH=null;
+$("#showdesk").onclick=()=>{
+  const vis=Object.keys(state.wins).filter(id=>!state.wins[id].min);
+  if(vis.length){ DESK_STASH=vis; vis.forEach(id=>toggleMin(id,true)); }
+  else if(DESK_STASH){ DESK_STASH.filter(id=>state.wins[id]).forEach(id=>toggleMin(id,false)); DESK_STASH=null; }
+};
+
+/* drop onto the wallpaper: reposition a desktop icon, or move a file here from elsewhere */
 (function(){
   const desk=$("#desktop");
-  desk.addEventListener("dragover",e=>{ if(DRAG && !e.target.closest(".window") && !e.target.closest(".dicon")){ e.preventDefault(); desk.classList.add("drop-target"); } });
+  desk.addEventListener("dragover",e=>{
+    if(e.target.closest(".window")) return;
+    if(ICONDRAG){ e.preventDefault(); return; }           // repositioning: allow the drop, no import outline
+    if(DRAG && !e.target.closest(".dicon")){ e.preventDefault(); desk.classList.add("drop-target"); }
+  });
   desk.addEventListener("dragleave",e=>{ if(e.target===desk||e.target.id==="icons") desk.classList.remove("drop-target"); });
   desk.addEventListener("drop",e=>{
+    if(e.target.closest(".window")) return;
+    if(ICONDRAG){                                          // snap the dragged icon to a grid cell
+      e.preventDefault(); desk.classList.remove("drop-target");
+      placeIconAt(ICONDRAG.key, e.clientX-ICONDRAG.dx, e.clientY-ICONDRAG.dy);
+      ICONDRAG=null;
+      return;
+    }
     if(!DRAG) return;
-    if(e.target.closest(".window")||e.target.closest(".dicon")) return;
+    if(e.target.closest(".dicon")) return;
     e.preventDefault(); desk.classList.remove("drop-target");
     moveItem(DRAG.path,DRAG.name,[...HOME_PATH,"Desktop"]);
   });
+  addEventListener("resize",()=>{ clearTimeout(desk._rz); desk._rz=setTimeout(renderDesktopIcons,150); });
 })();
 
 /* boot */
@@ -3392,4 +3784,6 @@ if(savedAccent){ const [a,s]=savedAccent.split("|"); if(a) document.documentElem
 applyUserUI();
 const savedWall=localStorage.getItem("wc_wall");
 if(savedWall) applyWallpaper(savedWall);
-setTimeout(()=>$("#lg-pass").focus(),400);
+lgReset();   // shows the sign-in box, or the forced first-run setup if no password exists
+/* boot splash: spin the dots for a moment, then reveal the lock screen */
+setTimeout(()=>{ const b=$("#boot"); if(b) b.classList.add("hide"); }, 2300);

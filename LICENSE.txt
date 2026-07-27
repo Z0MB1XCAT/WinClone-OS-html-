@@ -1,0 +1,82 @@
+================================================================
+  WinClone  —  A FAN-MADE CONCEPT PROJECT
+================================================================
+
+WHAT THIS IS
+
+  WinClone is a FAN-MADE CONCEPT. It is a hobby tribute to desktop operating
+  systems, written for fun and for learning, that runs entirely inside a web
+  browser tab.
+
+  To be completely clear:
+
+    * WinClone is NOT a real operating system. Nothing here runs on or
+      modifies your actual computer.
+    * WinClone is NOT Microsoft Windows. It contains no Microsoft code,
+      no Microsoft artwork, no Microsoft icons and no Microsoft assets of
+      any kind. Every part of it was written and drawn from scratch.
+    * WinClone is NOT affiliated with, endorsed by, sponsored by, approved
+      by, or connected to Microsoft Corporation in any way.
+    * WinClone is NOT sold, licensed for money, or offered commercially.
+      It is free, and exists purely as a concept piece and a fan project.
+
+  "Windows", "Microsoft" and any other product names that appear are the
+  trademarks of their respective owners. They are referred to only
+  descriptively — to explain what kind of thing this project is a tribute
+  to. No ownership of, or right to, any such trademark is claimed, and no
+  impression of endorsement is intended.
+
+  If you are a rights holder and something here concerns you, please get in
+  touch using the contact below and it will be addressed promptly.
+
+
+COPYRIGHT
+
+  Copyright (c) 2026 Atlas. All rights reserved.
+
+  The source code, visual design, layout, artwork, wording and behaviour of
+  WinClone are the original work of Atlas, and are protected by copyright.
+  Copyright arises automatically on creation; this notice simply records it.
+
+
+WHAT YOU MAY DO
+
+  * Run and use WinClone for personal, non-commercial purposes.
+  * Read and study the source code — it is public so people can learn from it.
+  * Modify your own private copy, for your own personal use.
+  * Fork the repository on GitHub while it is public. GitHub's Terms of
+    Service grant that to every GitHub user, and this licence does not try to
+    override it. Forks must keep these notices and their attribution intact.
+
+
+WHAT YOU MAY NOT DO, without written permission
+
+  * Rehost, republish, mirror or redistribute WinClone as a site or product
+    of your own — whether modified or unmodified, and whether or not it is
+    renamed. Deploying a copy under your own domain or Pages site is exactly
+    the thing this clause is about.
+  * Remove, alter, hide or obscure the copyright notices in the source files
+    or the attribution shown inside the application.
+  * Present WinClone, or anything substantially derived from it, as your own
+    original work.
+  * Sell it, put it behind ads or payment, or otherwise exploit it
+    commercially.
+
+
+NO WARRANTY
+
+  WinClone is provided "as is", without warranty of any kind, express or
+  implied, including but not limited to the warranties of merchantability or
+  fitness for a particular purpose. The copyright holder shall not be liable
+  for any claim, damages or other liability arising from WinClone or the use
+  of WinClone.
+
+
+REPORTING AN UNAUTHORISED COPY
+
+  If you find WinClone rehosted somewhere without permission, it can be
+  reported to the hosting provider as a copyright infringement (in the US,
+  under the DMCA). Hosting providers act on these routinely.
+
+  Contact for permission requests and infringement reports:
+  [ add a contact email here ]
