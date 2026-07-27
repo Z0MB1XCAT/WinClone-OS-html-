@@ -32,7 +32,7 @@ WHAT THIS IS
 
 COPYRIGHT
 
-  Copyright (c) 2026 Atlas. All rights reserved.
+  Copyright (c) 2026 thisisuhhplanetring. All rights reserved.
 
   The source code, visual design, layout, artwork, wording and behaviour of
   WinClone are the original work of Atlas, and are protected by copyright.
