@@ -811,3 +811,138 @@
 
   /* terminal: preserve ascii spacing */
   .term div{white-space:pre-wrap}
+
+  /* ---------- CLONEDOOM ---------- */
+  .doom{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    background:#000;gap:6px;padding:4px}
+  .doom-cv{flex:1;min-height:0;max-width:100%;object-fit:contain;image-rendering:pixelated;
+    image-rendering:crisp-edges;background:#000;cursor:crosshair}
+  .doom-tip{flex:none;font-size:10.5px;color:#7a7268;text-align:center;padding:0 6px 2px;
+    font-family:Consolas,"Courier New",monospace}
+
+  /* ---------- PYTHON (IDE + script runner) ---------- */
+  .pyide{display:flex;flex-direction:column;height:100%;background:#1e1e1e}
+  .py-bar{flex:none;display:flex;align-items:center;gap:4px;padding:5px 7px;background:#2b2b2b;
+    border-bottom:1px solid #3a3a3a}
+  .py-btn{border:1px solid #3f3f3f;background:#333;color:#e6e6e6;font-size:12px;padding:4px 10px;
+    cursor:default;font-family:inherit;border-radius:2px}
+  .py-btn:hover{background:#3d3d3d;border-color:#565656}
+  .py-btn:disabled{opacity:.4}
+  .py-btn.go{background:#0e6b2f;border-color:#14853c}
+  .py-btn.go:hover{background:#13803a}
+  .py-btn.stop{background:#7a2020;border-color:#9c2a2a}
+  .py-btn.stop:hover{background:#932828}
+  .py-btn.stop:disabled{background:#3a2a2a;border-color:#4a3434}
+  .py-sep{width:1px;height:18px;background:#454545;margin:0 4px}
+  .py-status{margin-left:auto;font-size:11.5px;color:#9a9a9a;padding-right:4px}
+  .py-status.run{color:#ffd166}
+  .py-status.ok{color:#6ee7a0}
+  .py-status.bad{color:#ff8080}
+
+  .py-editwrap{flex:1 1 55%;display:flex;min-height:60px;overflow:hidden;background:#1e1e1e}
+  .py-gutter{flex:none;width:44px;padding:8px 6px 8px 0;text-align:right;overflow:hidden;
+    font:12.5px/1.5 Consolas,"Courier New",monospace;color:#5a5a5a;background:#252526;
+    white-space:pre;user-select:none}
+  .py-code{flex:1;border:0;outline:0;resize:none;padding:8px 10px;background:#1e1e1e;color:#dcdcdc;
+    font:12.5px/1.5 Consolas,"Courier New",monospace;white-space:pre;overflow:auto;tab-size:4}
+  .py-code::placeholder{color:#5a5a5a}
+  .py-split{flex:none;height:5px;background:#2b2b2b;border-top:1px solid #3a3a3a;
+    border-bottom:1px solid #3a3a3a;cursor:ns-resize}
+  .py-split:hover{background:var(--accent-solid)}
+  .py-out{flex:1 1 45%;min-height:60px;overflow:hidden;background:#141414;display:flex}
+
+  .py-stage{flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+  .py-canvaswrap{display:none;flex:1 1 auto;min-height:0;align-items:center;justify-content:center;
+    background:#0a0a0a;padding:6px;overflow:hidden}
+  .py-stage.has-canvas .py-con{flex:0 0 88px;border-top:1px solid #2c2c2c}
+  .py-canvas{max-width:100%;max-height:100%;image-rendering:pixelated;
+    image-rendering:crisp-edges;background:#000;box-shadow:0 0 0 1px #333}
+  .py-con{flex:1;overflow:auto;padding:7px 10px;background:#141414;color:#d4d4d4;
+    font:12.5px/1.5 Consolas,"Courier New",monospace;white-space:pre-wrap;word-break:break-word;
+    user-select:text;min-height:40px}
+  .py-err{color:#ff7b72}
+  .py-inrow{flex:none;display:none;align-items:center;gap:0;padding:5px 10px;background:#1b1b1b;
+    border-top:1px solid #2c2c2c;font:12.5px/1.5 Consolas,"Courier New",monospace}
+  .py-prompt{color:#d4d4d4;white-space:pre}
+  .py-in{flex:1;border:0;outline:0;background:transparent;color:#7ee787;
+    font:12.5px/1.5 Consolas,"Courier New",monospace}
+  .pyrunner .py-out{flex:1 1 auto}
+
+  /* ---------- TASK VIEW / VIRTUAL DESKTOPS / ALT+TAB ---------- */
+  #taskviewbtn{color:#fff}
+  #taskviewbtn:hover{color:var(--accent)}
+  #taskviewbtn.on{background:rgba(255,255,255,.15)}
+  .tvsvg{width:21px;height:16px;display:block;pointer-events:none}
+  /* a window parked on another virtual desktop */
+  .window.vd-off{display:none!important}
+
+  #taskview{position:fixed;left:0;right:0;top:0;bottom:var(--tb-h);z-index:8900;display:none;
+    flex-direction:column;background:rgba(12,14,18,.86);backdrop-filter:blur(26px);
+    -webkit-backdrop-filter:blur(26px)}
+  #taskview.open{display:flex;animation:tvIn .16s var(--ease)}
+  @keyframes tvIn{from{opacity:0;transform:scale(1.02)}to{opacity:1;transform:none}}
+  .tv-scroll{flex:1;overflow:auto;display:flex;align-items:center;justify-content:center;padding:30px 40px}
+  .tv-grid{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;align-items:flex-start;max-width:1200px}
+
+  .tv-card{position:relative;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);
+    padding:8px;cursor:default;transition:background .13s,border-color .13s,transform .13s}
+  .tv-card:hover{background:rgba(255,255,255,.13);border-color:rgba(255,255,255,.4);transform:translateY(-2px)}
+  .tv-card.cur{border-color:var(--accent-solid);box-shadow:0 0 0 1px var(--accent-solid)}
+  .tv-card.dragging{opacity:.45}
+  .tv-cap{display:flex;align-items:center;gap:7px;font-size:12.5px;color:#f0f0f0;padding:2px 26px 8px 2px}
+  .tv-cap .gl{font-size:15px;flex:none}
+  .tv-cap .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tv-x{position:absolute;top:4px;right:4px;width:22px;height:22px;border:0;padding:0;font-size:11px;
+    background:rgba(0,0,0,.45);color:#fff;cursor:default;opacity:0;transition:opacity .12s,background .12s}
+  .tv-card:hover .tv-x{opacity:1}
+  .tv-x:hover{background:#c42b1c}
+  .tv-thumb{position:relative;overflow:hidden;background:#1a1a1a;border:1px solid rgba(0,0,0,.5);
+    pointer-events:none}
+  .tv-frame{width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+    background:#2a2a2a;font-size:34px}
+  .tv-empty{text-align:center;color:#d4d4d4;display:flex;flex-direction:column;gap:7px;padding:40px 20px}
+  .tv-empty .tv-eic{font-size:52px;line-height:1}
+  .tv-empty b{font-size:17px;font-weight:600}
+  .tv-empty span{font-size:13px;color:#9a9a9a}
+
+  .tv-desks{flex:none;padding:14px 20px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;
+    border-top:1px solid rgba(255,255,255,.10);background:rgba(0,0,0,.22)}
+  .tv-deskrow{display:flex;gap:12px;flex-wrap:wrap;justify-content:center}
+  .tv-desk{position:relative;width:150px;padding:9px 10px 8px;background:rgba(255,255,255,.06);
+    border:1px solid rgba(255,255,255,.16);cursor:default;transition:background .13s,border-color .13s}
+  .tv-desk:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.42)}
+  .tv-desk.cur{border-color:var(--accent-solid);background:rgba(0,120,215,.20)}
+  .tv-desk.hot{border-color:var(--accent);background:rgba(76,194,255,.24)}
+  .tv-dmini{height:44px;background:linear-gradient(150deg,#12325c,#0a1b33);position:relative;overflow:hidden;
+    border:1px solid rgba(255,255,255,.10);margin-bottom:6px}
+  .tv-dmini i{position:absolute;display:block;background:rgba(255,255,255,.22);border:1px solid rgba(255,255,255,.3)}
+  .tv-dmini i:first-child{left:12%;top:22%;width:44%;height:52%}
+  .tv-dmini i:last-child{left:44%;top:38%;width:44%;height:50%}
+  .tv-dname{font-size:12.5px;color:#f0f0f0}
+  .tv-dcount{font-size:11px;color:#9a9a9a}
+  .tv-dx{position:absolute;top:3px;right:3px;width:20px;height:20px;border:0;padding:0;font-size:10px;
+    background:rgba(0,0,0,.5);color:#fff;cursor:default;opacity:0;transition:opacity .12s,background .12s}
+  .tv-desk:hover .tv-dx{opacity:1}
+  .tv-dx:hover{background:#c42b1c}
+  .tv-new{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:83px;
+    border-style:dashed}
+  .tv-plus{font-size:24px;line-height:1;color:#dcdcdc}
+  .tv-hint{font-size:11.5px;color:#8e8e8e;text-align:center}
+
+  /* the "Desktop 2" pill that flashes when you switch */
+  #vd-flash{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%) scale(.94);z-index:9600;
+    padding:14px 34px;background:rgba(20,22,28,.92);border:1px solid rgba(255,255,255,.16);
+    font-size:19px;color:#fff;pointer-events:none;opacity:0;transition:opacity .18s,transform .18s}
+  #vd-flash.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+
+  #altswitch{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9750;display:none;
+    max-width:min(760px,92vw);flex-wrap:wrap;gap:6px;padding:14px;background:rgba(24,26,32,.95);
+    border:1px solid rgba(255,255,255,.16);box-shadow:0 18px 60px rgba(0,0,0,.6)}
+  #altswitch.open{display:flex}
+  .alt-item{width:104px;padding:12px 6px 9px;display:flex;flex-direction:column;align-items:center;gap:7px;
+    cursor:default;border:1px solid transparent}
+  .alt-item .ai{font-size:32px;line-height:1}
+  .alt-item .an{font-size:11px;color:#cfcfcf;text-align:center;width:100%;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .alt-item.sel{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.35)}
+  .alt-item.sel .an{color:#fff}

@@ -32,7 +32,7 @@
    menus). So bump HTML_BUILD whenever the markup below changes structurally — an
    installed copy stamped with a different build is discarded and re-downloaded
    automatically instead of being booted. */
-var HTML_BUILD = "1.1.0-win10";
+var HTML_BUILD = "1.2.0-win10";
 (function(){
   var http = /^https?:$/.test(location.protocol);
   var stale = localStorage.getItem("wc_sys_html") !== HTML_BUILD;
@@ -78,6 +78,11 @@ var HTML_BUILD = "1.1.0-win10";
       <path fill="currentColor" d="M9 1 L16 1 L16 15 L9 15 L11 11.5 L9 8 L11 4.5 Z"/>
     </svg></button>
     <button id="searchbtn" title="Search"><span class="s-ic">🔍</span><span class="s-txt">Type here to search</span></button>
+    <button class="tbtn" id="taskviewbtn" title="Task View"><svg class="tvsvg" viewBox="0 0 22 16" aria-hidden="true">
+      <rect x="1.4" y="2.6" width="11" height="10.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/>
+      <rect x="14.2" y="2.6" width="6.4" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".75"/>
+      <rect x="14.2" y="8.8" width="6.4" height="4.6" rx="1" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".75"/>
+    </svg></button>
     <div id="tb-apps" style="display:flex"></div>
   </div>
   <div id="tb-right">
@@ -146,6 +151,15 @@ var HTML_BUILD = "1.1.0-win10";
 
 <!-- CONTEXT MENU -->
 <div id="ctx"></div>
+
+<!-- TASK VIEW (window overview + virtual desktops) -->
+<div id="taskview">
+  <div class="tv-scroll"><div class="tv-grid"></div></div>
+  <div class="tv-desks"></div>
+</div>
+
+<!-- ALT+TAB WINDOW SWITCHER -->
+<div id="altswitch"></div>
 
 <!-- BOOT SPLASH -->
 <div id="boot">

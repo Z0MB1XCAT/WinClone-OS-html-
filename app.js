@@ -18,8 +18,17 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.1.0";
+const WC_VERSION = "1.2.0";
 const WC_CHANGELOG = {
+  "1.2.0": [
+    "🗂️ Task View — the taskbar button opens an overview of every open window, with live thumbnails you can click, close, or drag.",
+    "🖥️ Virtual desktops: make as many as 8, drag windows between them, and the taskbar only shows what's on the one you're using.",
+    "⌨️ A window switcher on Alt+Tab (Windows usually eats that one, so Alt+` does the same). Ctrl+Alt+←/→ changes desktop, Ctrl+Alt+↑ opens Task View.",
+    "🐍 Python. A real interpreter, written from scratch — variables, loops, functions, classes, f-strings, try/except, math and random.",
+    "🎮 Python games actually run: import wcgame for a canvas, keys and sound. Five examples ship in Documents\\Python, Pong and Snake included.",
+    "📄 New ▸ Python Script, double-click any .py to run it, or type python file.py in the Terminal.",
+    "👹 CloneDOOM — a first-person raycaster with textured walls, sliding doors, demons that hunt you, a shotgun and a status bar. Yes, WinClone runs DOOM.",
+  ],
   "1.1.0": [
     "🔒 Your PC has a password now — set one on first boot, and pick a security question in case you forget it.",
     "🔑 Forgot it? Answer your security question right on the lock screen to set a new one.",
@@ -56,7 +65,10 @@ const APPS = {
   taskmgr:   {title:"Task Manager",  icon:"📊", w:640, h:520, build:buildTaskmgr},
   mines:     {title:"Minesweeper",   icon:"💣", w:400, h:480, build:buildMines},
   snake:     {title:"Snake",         icon:"🐍", w:440, h:520, build:buildSnake},
+  python:    {title:"Python",        icon:"🐍", w:840, h:620, build:buildPython},
+  doom:      {title:"CloneDOOM",     icon:"👹", w:800, h:560, build:buildDoom},
   archive:   {title:"Archive",       icon:"🗜️", w:560, h:420, build:buildArchive, hidden:true},
+  pyrun:     {title:"Python",        icon:"🐍", w:660, h:520, build:buildPyRun, hidden:true},
   htmlview:  {title:"HTML Viewer",   icon:"🌐", w:760, h:560, build:buildHtmlView, hidden:true},
   batch:     {title:"cmd.exe",       icon:"⬛", w:640, h:400, build:buildBatch, hidden:true},
 };
@@ -78,11 +90,14 @@ const TILE_BG = {
   taskmgr: "linear-gradient(135deg,#4338ca,#818cf8)",
   mines:   "linear-gradient(135deg,#92400e,#f59e0b)",
   snake:   "linear-gradient(135deg,#166534,#84cc16)",
+  python:  "linear-gradient(135deg,#2b5b84,#ffd43b)",
+  doom:    "linear-gradient(135deg,#5c1008,#c62d1f)",
+  pyrun:   "linear-gradient(135deg,#2b5b84,#ffd43b)",
   archive: "linear-gradient(135deg,#6b7280,#d1d5db)",
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
   batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
 };
-const PINNED = ["edge","explorer","notepad","docs","calc","photos","settings","terminal","defender","recycle"];
+const PINNED = ["edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","recycle"];
 const TASKBAR_PINS = ["explorer","edge","notepad","terminal"];
 const DESKTOP_ICONS = [
   {app:"recycle",  label:"Recycle Bin"},
@@ -94,6 +109,8 @@ const DESKTOP_ICONS = [
   {app:"taskmgr",  label:"Task Manager"},
   {app:"mines",    label:"Minesweeper"},
   {app:"snake",    label:"Snake"},
+  {app:"python",   label:"Python"},
+  {app:"doom",     label:"CloneDOOM"},
 ];
 
 /* ============================ SOUND FX (synthesized, no audio files) ============================ */
@@ -117,7 +134,10 @@ function sfx(kind){
 }
 
 /* ============================ STATE ============================ */
-const state = {z:20, wins:{}, focused:null};
+/* mru = most-recently-used window order, newest first (drives Alt+Tab).
+   Virtual desktops live in VD (see the TASK VIEW section); every window
+   record carries a .vd telling it which desktop it belongs to. */
+const state = {z:20, wins:{}, focused:null, mru:[]};
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 function el(tag, cls, html){const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e;}
@@ -126,7 +146,12 @@ const deskArea = () => ({w:innerWidth, h:innerHeight-40});   // 40 = taskbar hei
 /* ============================ WINDOW MANAGER ============================ */
 function openApp(id){
   const app = APPS[id]; if(!app) return;
-  if(state.wins[id]){ const w=state.wins[id]; if(w.min) toggleMin(id,false); focusWin(id); return; }
+  if(state.wins[id]){
+    const w=state.wins[id];
+    if(w.vd!==VD.cur) switchDesktop(w.vd);      // already open on another desktop — go to it
+    if(w.min) toggleMin(id,false);
+    focusWin(id); return;
+  }
 
   const win = el("div","window"); win.dataset.app=id;
   const area = deskArea();
@@ -149,7 +174,7 @@ function openApp(id){
   ["n","s","e","w","ne","nw","se","sw"].forEach(d=>{const h=el("div","rz rz-"+d);h.dataset.dir=d;win.appendChild(h);});
   $("#desktop").appendChild(win);
 
-  const rec = {el:win, appId:id, min:false, max:false, prev:null};
+  const rec = {el:win, appId:id, min:false, max:false, prev:null, vd:VD.cur};
   state.wins[id]=rec;
 
   app.build(win.querySelector(".window-body"), win, rec);
@@ -171,6 +196,7 @@ function focusWin(id){
   const rec = state.wins[id]; if(!rec) return;
   rec.el.style.zIndex = ++state.z;
   state.focused = id;
+  state.mru = [id, ...state.mru.filter(x=>x!==id)];   // newest first, for Alt+Tab
   document.querySelectorAll(".window").forEach(w=>w.classList.toggle("focused", w===rec.el));
   updateTaskItems();
 }
@@ -179,8 +205,11 @@ function closeWin(id){
   rec.el.classList.remove("show");
   setTimeout(()=>rec.el.remove(),140);
   delete state.wins[id];
+  state.mru = state.mru.filter(x=>x!==id);
+  if(state.focused===id) state.focused=null;
   removeTaskItem(id);
   updateTaskItems();
+  if(tvIsOpen()) renderTaskView();
 }
 function toggleMin(id, force){
   const rec = state.wins[id]; if(!rec) return;
@@ -300,20 +329,290 @@ function removeTaskItem(id){
   const b=$("#tb-apps").querySelector(`[data-app="${id}"]`);
   if(b) b.remove();
 }
+/* Like Windows 10, the taskbar only shows what's running on the desktop you're
+   looking at. A pinned app open on another desktop shows as "not running" here;
+   clicking it takes you over to that desktop instead of opening a second copy. */
 function updateTaskItems(){
   document.querySelectorAll("#tb-apps .tbtn").forEach(b=>{
     const id=b.dataset.app, rec=state.wins[id];
-    b.classList.toggle("run", !!rec);
-    b.classList.toggle("active", !!rec && !rec.min && state.focused===id);
+    const here = !!rec && rec.vd===VD.cur;
+    b.classList.toggle("run", here);
+    b.classList.toggle("active", here && !rec.min && state.focused===id);
+    b.style.display = (TASKBAR_PINS.includes(id) || here) ? "" : "none";
   });
 }
 function taskClick(id){
   const rec = state.wins[id];
   if(!rec){ openApp(id); return; }
+  if(rec.vd!==VD.cur){ switchDesktop(rec.vd); if(rec.min) toggleMin(id,false); focusWin(id); return; }
   if(rec.min){ toggleMin(id,false); focusWin(id); }
   else if(state.focused===id){ toggleMin(id,true); }
   else focusWin(id);
 }
+
+/* ============================ TASK VIEW / VIRTUAL DESKTOPS / ALT+TAB ============================
+   Windows 10's Task View: the taskbar button opens an overview of every window
+   on the desktop you're on, with a strip of virtual desktops along the bottom.
+   Each window record carries a .vd saying which desktop it lives on, and the
+   taskbar only lists the current one.
+
+   The thumbnails are real. Each card holds a scaled-down clone of the live
+   window — but a cloned <canvas> comes out blank, so its pixels are copied
+   across by hand, and cloned <iframe>s (which would re-fetch the page) are
+   swapped for a placeholder.
+
+   On keyboard shortcuts: Windows itself swallows Alt+Tab and every Win-key
+   chord before the browser ever sees them, so the working shortcuts are the
+   Ctrl+Alt ones below. Alt+Tab is still wired up for the cases where it does
+   reach the page, with Alt+` as the reliable stand-in. */
+const VD = {list:[{name:"Desktop 1"}], cur:0};
+
+function vdWindows(d){ return Object.keys(state.wins).filter(id=>state.wins[id].vd===d); }
+function applyVD(){
+  Object.keys(state.wins).forEach(id=>{
+    const rec=state.wins[id];
+    rec.el.classList.toggle("vd-off", rec.vd!==VD.cur);
+  });
+  updateTaskItems();
+}
+function vdFlash(text){
+  let f=$("#vd-flash");
+  if(!f){ f=el("div"); f.id="vd-flash"; document.body.appendChild(f); }
+  f.textContent=text;
+  f.classList.remove("show"); void f.offsetWidth;   // restart the fade
+  f.classList.add("show");
+  clearTimeout(f._t); f._t=setTimeout(()=>f.classList.remove("show"),950);
+}
+function switchDesktop(i){
+  if(i<0 || i>=VD.list.length || i===VD.cur) return;
+  VD.cur=i;
+  applyVD();
+  const here=vdWindows(i).filter(id=>!state.wins[id].min);
+  if(here.length){                                   // focus whatever was on top over there
+    here.sort((a,b)=>(parseInt(state.wins[a].el.style.zIndex,10)||0)-(parseInt(state.wins[b].el.style.zIndex,10)||0));
+    focusWin(here[here.length-1]);
+  }else{
+    state.focused=null;
+    document.querySelectorAll(".window").forEach(w=>w.classList.remove("focused"));
+    updateTaskItems();
+  }
+  vdFlash(VD.list[i].name);
+  if(tvIsOpen()) renderTaskView();
+}
+function newDesktop(goThere){
+  if(VD.list.length>=8){ showToast({icon:"🖥️",title:"Virtual desktops",body:"WinClone tops out at 8 desktops."}); return; }
+  VD.list.push({name:"Desktop "+(VD.list.length+1)});
+  if(goThere) switchDesktop(VD.list.length-1);
+  else if(tvIsOpen()) renderTaskView();
+}
+function closeDesktop(i){
+  if(VD.list.length<=1) return;
+  const to = i===0 ? 0 : i-1;                        // its windows fall back one desktop, like Win10
+  Object.keys(state.wins).forEach(id=>{
+    const r=state.wins[id];
+    if(r.vd===i) r.vd=to; else if(r.vd>i) r.vd--;
+  });
+  VD.list.splice(i,1);
+  VD.list.forEach((d,n)=>{ if(/^Desktop \d+$/.test(d.name)) d.name="Desktop "+(n+1); });
+  VD.cur = VD.cur===i ? Math.min(to, VD.list.length-1) : (VD.cur>i ? VD.cur-1 : VD.cur);
+  applyVD();
+  if(tvIsOpen()) renderTaskView();
+}
+function moveWinToDesktop(id,d){
+  const r=state.wins[id];
+  if(!r || d<0 || d>=VD.list.length || r.vd===d) return;
+  r.vd=d;
+  if(state.focused===id) state.focused=null;
+  applyVD();
+  if(tvIsOpen()) renderTaskView();
+}
+
+function winTitleOf(id){
+  const r=state.wins[id], t=r&&r.el.querySelector(".tt");
+  return (t&&t.textContent&&t.textContent.trim()) || (APPS[id]?APPS[id].title:id);
+}
+function winThumb(rec, maxW, maxH){
+  const src=rec.el;
+  const sw=Math.max(120, src.offsetWidth  || parseFloat(src.style.width)  || 400);
+  const sh=Math.max(90,  src.offsetHeight || parseFloat(src.style.height) || 300);
+  const scale=Math.min(maxW/sw, maxH/sh, 1);
+  const box=el("div","tv-thumb");
+  box.style.width =Math.round(sw*scale)+"px";
+  box.style.height=Math.round(sh*scale)+"px";
+  const clone=src.cloneNode(true);
+  clone.classList.remove("min","vd-off","focused","anim");
+  clone.removeAttribute("id");
+  clone.style.cssText="position:absolute;left:0;top:0;margin:0;opacity:1;box-shadow:none;transition:none;"+
+    "width:"+sw+"px;height:"+sh+"px;transform:scale("+scale+");transform-origin:0 0;pointer-events:none";
+  clone.querySelectorAll(".rz").forEach(h=>h.remove());
+  const live=src.querySelectorAll("canvas"), cop=clone.querySelectorAll("canvas");
+  for(let i=0;i<live.length && i<cop.length;i++){
+    try{ if(live[i].width && live[i].height) cop[i].getContext("2d").drawImage(live[i],0,0); }catch(e){}
+  }
+  clone.querySelectorAll("iframe").forEach(f=>{ f.replaceWith(el("div","tv-frame","🌐")); });
+  box.appendChild(clone);
+  return box;
+}
+
+let TVDRAG=null;
+function tvIsOpen(){ const t=$("#taskview"); return !!t && t.classList.contains("open"); }
+function renderTaskView(){
+  const tv=$("#taskview"); if(!tv) return;
+  const grid=tv.querySelector(".tv-grid"), desks=tv.querySelector(".tv-desks");
+  if(!grid||!desks) return;
+  grid.innerHTML=""; desks.innerHTML="";
+
+  const ids=vdWindows(VD.cur);
+  ids.sort((a,b)=>(parseInt(state.wins[b].el.style.zIndex,10)||0)-(parseInt(state.wins[a].el.style.zIndex,10)||0));
+  if(!ids.length){
+    grid.appendChild(el("div","tv-empty",
+      `<div class="tv-eic">🪟</div><b>Nothing open on ${esc(VD.list[VD.cur].name)}</b>
+       <span>Open something from Start — or drag a window here from another desktop.</span>`));
+  }
+  const across=Math.max(1,Math.min(ids.length,4));
+  const cw=Math.max(170, Math.min(320, Math.floor((innerWidth-140)/across)-26));
+  ids.forEach(id=>{
+    const rec=state.wins[id];
+    const card=el("div","tv-card"+(state.focused===id?" cur":""));
+    card.dataset.app=id;
+    card.appendChild(el("div","tv-cap",
+      `<span class="gl">${APPS[id]?APPS[id].icon:"🪟"}</span><span class="nm">${esc(winTitleOf(id))}</span>`));
+    const x=el("button","tv-x","✕"); x.title="Close";
+    x.onclick=e=>{ e.stopPropagation(); closeWin(id); };
+    card.appendChild(x);
+    card.appendChild(winThumb(rec, cw, Math.round(cw*0.64)));
+    card.onclick=()=>{ closeTaskView(); if(rec.min) toggleMin(id,false); focusWin(id); };
+    card.draggable=true;
+    card.addEventListener("dragstart",e=>{
+      TVDRAG=id; card.classList.add("dragging");
+      e.dataTransfer.effectAllowed="move";
+      try{ e.dataTransfer.setData("text/plain",id); }catch(_){}
+    });
+    card.addEventListener("dragend",()=>{
+      TVDRAG=null; card.classList.remove("dragging");
+      document.querySelectorAll(".tv-desk.hot").forEach(d=>d.classList.remove("hot"));
+    });
+    grid.appendChild(card);
+  });
+
+  const row=el("div","tv-deskrow");
+  VD.list.forEach((d,i)=>{
+    const n=vdWindows(i).length;
+    const card=el("div","tv-desk"+(i===VD.cur?" cur":""),
+      `<div class="tv-dmini"><i></i><i></i></div>
+       <div class="tv-dname">${esc(d.name)}</div>
+       <div class="tv-dcount">${n} window${n===1?"":"s"}</div>`);
+    card.onclick=()=>switchDesktop(i);
+    if(VD.list.length>1){
+      const x=el("button","tv-dx","✕"); x.title="Close "+d.name;
+      x.onclick=e=>{ e.stopPropagation(); closeDesktop(i); };
+      card.appendChild(x);
+    }
+    card.addEventListener("dragover",e=>{ if(TVDRAG==null) return; e.preventDefault(); card.classList.add("hot"); });
+    card.addEventListener("dragleave",()=>card.classList.remove("hot"));
+    card.addEventListener("drop",e=>{
+      if(TVDRAG==null) return;
+      e.preventDefault(); e.stopPropagation();
+      card.classList.remove("hot");
+      moveWinToDesktop(TVDRAG,i); TVDRAG=null;
+    });
+    row.appendChild(card);
+  });
+  const add=el("div","tv-desk tv-new",`<div class="tv-plus">＋</div><div class="tv-dname">New desktop</div>`);
+  add.onclick=()=>newDesktop(false);
+  row.appendChild(add);
+  desks.appendChild(row);
+  desks.appendChild(el("div","tv-hint",
+    "Esc close · Ctrl+Alt+←/→ switch desktop · Ctrl+Alt+↑ Task View · Ctrl+Alt+D new desktop · Alt+Tab (or Alt+`) switch windows"));
+}
+function openTaskView(){
+  const tv=$("#taskview"); if(!tv) return;
+  closeFlyouts();
+  renderTaskView();
+  tv.classList.add("open");
+  document.body.classList.add("tv-on");
+  const b=$("#taskviewbtn"); if(b) b.classList.add("on");
+}
+function closeTaskView(){
+  const tv=$("#taskview"); if(!tv) return;
+  tv.classList.remove("open");
+  document.body.classList.remove("tv-on");
+  const b=$("#taskviewbtn"); if(b) b.classList.remove("on");
+}
+function toggleTaskView(){ tvIsOpen() ? closeTaskView() : openTaskView(); }
+
+/* ---- Alt+Tab switcher ---- */
+const ALT={open:false, idx:0, list:[]};
+function altOrder(){
+  const here=vdWindows(VD.cur);
+  const out=state.mru.filter(id=>here.includes(id));
+  here.forEach(id=>{ if(!out.includes(id)) out.push(id); });
+  return out;
+}
+function altRender(){
+  const box=$("#altswitch"); if(!box) return;
+  box.innerHTML="";
+  ALT.list.forEach((id,i)=>{
+    const it=el("div","alt-item"+(i===ALT.idx?" sel":""),
+      `<span class="ai">${APPS[id]?APPS[id].icon:"🪟"}</span><span class="an">${esc(winTitleOf(id))}</span>`);
+    it.addEventListener("mouseenter",()=>{ ALT.idx=i; altRender(); });
+    it.addEventListener("mousedown",e=>{ e.preventDefault(); ALT.idx=i; altCommit(); });
+    box.appendChild(it);
+  });
+  box.classList.add("open");
+}
+function altStep(dir){
+  if(!ALT.open){
+    ALT.list=altOrder();
+    if(ALT.list.length<2){                            // nothing to switch between
+      const id=ALT.list[0];
+      if(id && state.wins[id]){ if(state.wins[id].min) toggleMin(id,false); focusWin(id); }
+      return;
+    }
+    ALT.open=true; ALT.idx=0;
+  }
+  const n=ALT.list.length;
+  ALT.idx=(ALT.idx+dir+n)%n;
+  altRender();
+}
+function altCommit(){
+  if(!ALT.open) return;
+  const id=ALT.list[ALT.idx];
+  altClose();
+  if(id && state.wins[id]){ if(state.wins[id].min) toggleMin(id,false); focusWin(id); }
+}
+function altClose(){
+  ALT.open=false;
+  const box=$("#altswitch");
+  if(box){ box.classList.remove("open"); box.innerHTML=""; }
+}
+
+/* ---- shell-level keyboard shortcuts ---- */
+function shellLocked(){ const lg=$("#login"); return !lg || !lg.classList.contains("hide"); }
+addEventListener("keydown", e=>{
+  if(shellLocked()) return;
+  if(e.altKey && !e.ctrlKey && (e.key==="Tab" || e.key==="`" || e.code==="Backquote")){
+    e.preventDefault(); altStep(e.shiftKey?-1:1); return;
+  }
+  if(e.ctrlKey && e.altKey){
+    if(e.key==="ArrowRight"){ e.preventDefault(); switchDesktop(VD.cur+1); return; }
+    if(e.key==="ArrowLeft" ){ e.preventDefault(); switchDesktop(VD.cur-1); return; }
+    if(e.key==="ArrowUp"   ){ e.preventDefault(); toggleTaskView(); return; }
+    if(e.key==="d"||e.key==="D"){ e.preventDefault(); newDesktop(true); return; }
+  }
+  if(e.key==="Escape"){
+    if(ALT.open){ e.preventDefault(); altClose(); return; }
+    if(tvIsOpen()){ e.preventDefault(); closeTaskView(); return; }
+  }
+}, true);
+addEventListener("keyup", e=>{ if(ALT.open && (e.key==="Alt" || !e.altKey)) altCommit(); });
+addEventListener("blur", ()=>{ if(ALT.open) altCommit(); });   // OS stole Alt+Tab — don't leave it hanging
+(function(){
+  const tv=$("#taskview"); if(!tv) return;
+  tv.addEventListener("click", e=>{
+    if(e.target===tv || e.target.classList.contains("tv-scroll") || e.target.classList.contains("tv-grid")) closeTaskView();
+  });
+})();
 
 /* ============================ DESKTOP ICONS ============================
    Icons sit on a fixed grid and can be dragged to any free cell; the chosen
@@ -537,6 +836,8 @@ document.addEventListener("contextmenu", e=>{
   const dpath=[...HOME_PATH,"Desktop"];
   const menu=[
     {icon:"🔄",label:"Refresh", action:()=>renderDesktopIcons()},
+    {icon:"🗂️",label:"Show Task View", action:()=>openTaskView()},
+    {icon:"➕",label:"New desktop", action:()=>newDesktop(true)},
     "sep",
     {icon:"📄",label:"New", arrow:true, action:()=>newMenu(e.clientX,e.clientY,dpath)},
     {icon:"📥",label:"Import image…", action:()=>importImages(dpath)},
@@ -856,7 +1157,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  (or any app id)<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "cls": case "clear": term.innerHTML=""; break;
       case "ver": print("WinClone [Version 10.0.26100]"); break;
       case "winver":
@@ -946,13 +1247,28 @@ function buildTerminal(body){
       case "history": print(hist.map((h,i)=>`  ${i+1}  ${h}`).join("\n")||"(no history)"); break;
       case "color": { const m={green:"#4ade80",amber:"#ffbf00",white:"#e8e8e8",red:"#ff6b6b",cyan:"#5cd6ff"}; if(m[a]){ term.style.color=m[a]; print("(color → "+a+")"); } else print("colors: green amber white red cyan"); break; }
       case "shutdown": print("Shutting down…"); setTimeout(()=>{ closeWin("terminal"); doShutdown(); },500); break;
+      case "python": case "py": case "python3": {
+        if(!a){ openApp("python"); print("Opening Python…"); break; }
+        const fn=a.replace(/^"(.*)"$/,"$1");
+        const segs=batResolve(cwd,fn);
+        let nm=segs[segs.length-1];
+        const parent=nodeAt(segs.slice(0,-1));
+        let f=parent&&parent.children&&parent.children[nm];
+        if(!f && parent&&parent.children&&parent.children[nm+".py"]){ nm=nm+".py"; f=parent.children[nm]; }
+        if(!f||f.folder){ printHtml(`python: can't open file <b>${esc(fn)}</b>: no such file`); break; }
+        openPyFile({path:segs.slice(0,-1),name:nm});
+        print("Running "+nm+" — see the Python window.");
+        break;
+      }
       case "start": case "open": if(APPS[args[0]]) openApp(args[0]); else print("Unknown app: "+(a||"")); break;
       case "exit": closeWin("terminal"); break;
       default: {
         if(APPS[c]){ openApp(c); break; }
         const kids=(node()||{}).children||{}, tok=parts[0];
-        const bn = (kids[tok]&&!kids[tok].folder) ? tok : (kids[tok+".bat"]?tok+".bat":kids[tok+".cmd"]?tok+".cmd":null);
+        const bn = (kids[tok]&&!kids[tok].folder) ? tok
+          : (kids[tok+".bat"]?tok+".bat":kids[tok+".cmd"]?tok+".cmd":kids[tok+".py"]?tok+".py":null);
         if(bn && /\.(bat|cmd)$/i.test(bn)){ openBatch({path:[...cwd],name:bn}); break; }
+        if(bn && /\.py$/i.test(bn)){ openPyFile({path:[...cwd],name:bn}); break; }
         printHtml(`'${esc(c)}' is not recognized as an internal or external command,<br>operable program or batch file.`);
       }
     }
@@ -1087,6 +1403,3823 @@ function runBatchScript(text, cwd, io){
   step();
 }
 
+/* ============================ CLONEDOOM ============================
+   "But can it run DOOM?" — yes, for a given value of DOOM.
+
+   This is an original raycaster written from scratch: DDA wall casting with
+   textured walls, floor/ceiling casting, billboarded sprites with a z-buffer,
+   sliding doors, and enemies with line-of-sight AI. Every texture and sprite is
+   generated procedurally at load time — there are no id Software assets here,
+   no WAD file, and no id Software code. It's a tribute, like the rest of
+   WinClone, not a port.
+
+   Renders at 320x200 into an ImageData buffer (view 320x168 + a 32px status
+   bar), then the weapon and HUD go on top with plain 2D calls. */
+
+const DOOM_W=320, DOOM_H=200, DOOM_VH=168, DOOM_HZ=84;
+const DOOM_TEXSZ=64;
+
+/* ---- map: 32 x 24 ----
+   #  brick wall      =  tech panel     %  slime wall     |  metal wall
+   D  door            X  exit switch    .  floor
+   S  player start    z  grunt          i  imp            p  brute
+   h  medkit          a  ammo           s  shotgun        r  armour        */
+const DOOM_MAPSRC=[
+"################################",
+"#S.......#.........=...........#",
+"#........#....a....=...%...%...#",
+"#..hh....#....z....=....i......#",
+"#........#.........=...%...%...#",
+"#...z....#....a....=...........#",
+"####D#########D##########D######",
+"#..............................#",
+"#..z.......i...........p.......#",
+"#..............................#",
+"####D#########D##########D######",
+"#........#.........|...........#",
+"#...a....#....hh...|....s......#",
+"#........#.........|...........#",
+"#...i....#.........|....X......#",
+"#........#....z....|...........#",
+"#........#.........|....h......#",
+"#..%%....#.........|...........#",
+"#..%.....#....a....|....r......#",
+"#..%.....#.........|...........#",
+"#........#.........|....p......#",
+"#...i....#..hh.....|...........#",
+"#........#.........|...........#",
+"################################",
+];
+
+function doomRGB(r,g,b){
+  r=r<0?0:r>255?255:r|0; g=g<0?0:g>255?255:g|0; b=b<0?0:b>255?255:b|0;
+  return (255<<24)|(b<<16)|(g<<8)|r;
+}
+/* Distance falloff. Deliberately steep — corridors should swallow the far end
+   in darkness, which is most of what makes this feel like a shooter from 1993
+   rather than a brightly-lit tech demo. */
+function doomFog(d){
+  const f=2.7/(1+d*0.42+d*d*0.085);
+  return f>1?1:(f<0.05?0.05:f);
+}
+function doomShade(c,f){
+  if(f>=1) return c;
+  const r=(c&255)*f, g=((c>>8)&255)*f, b=((c>>16)&255)*f;
+  return (255<<24)|((b|0)<<16)|((g|0)<<8)|(r|0);
+}
+/* deterministic value noise, so textures look the same every run */
+function doomNoise(x,y,seed){
+  let n=(x*374761393+y*668265263+seed*1013904223)|0;
+  n=(n^(n>>13))*1274126177;
+  return ((n^(n>>16))>>>0)/4294967295;
+}
+
+let DOOM_TEX=null, DOOM_SPR=null;
+function doomTextures(){
+  if(DOOM_TEX) return DOOM_TEX;
+  const S=DOOM_TEXSZ, T={};
+  const mk=(fill)=>{
+    const a=new Uint32Array(S*S);
+    for(let y=0;y<S;y++) for(let x=0;x<S;x++) a[y*S+x]=fill(x,y);
+    return a;
+  };
+  // 1: brick
+  T[1]=mk((x,y)=>{
+    const row=Math.floor(y/8), off=(row%2)*16;
+    const bx=(x+off)%32, by=y%8;
+    if(by<1||bx<1) return doomRGB(58,54,52);                 // mortar
+    const n=doomNoise(x,y,1)*26;
+    return doomRGB(104+n-8*(row%3), 42+n*.5, 34+n*.4);
+  });
+  // 2: tech panel
+  T[2]=mk((x,y)=>{
+    const bx=x%32, by=y%32;
+    const edge=(bx<2||by<2||bx>29||by>29);
+    const rivet=((bx-5)*(bx-5)+(by-5)*(by-5)<5)||((bx-26)*(bx-26)+(by-26)*(by-26)<5);
+    const n=doomNoise(x,y,2)*18;
+    if(rivet) return doomRGB(150+n,152+n,158+n);
+    if(edge)  return doomRGB(52+n,56+n,62+n);
+    if(by>13&&by<19) return doomRGB(38+n,86+n,120+n);        // lit strip
+    return doomRGB(88+n,92+n,100+n);
+  });
+  // 3: slime / organic
+  T[3]=mk((x,y)=>{
+    const w=Math.sin((x+Math.sin(y*.22)*4)*.35)*10;
+    const n=doomNoise(x,y,3)*22;
+    return doomRGB(26+n*.5, 74+w+n, 34+w*.5+n*.4);
+  });
+  // 4: metal with vents
+  T[4]=mk((x,y)=>{
+    const n=doomNoise(x,y,4)*16;
+    const vent=(y%16)>10 && x>6 && x<58;
+    if(vent) return doomRGB(26+n*.4,28+n*.4,32+n*.4);
+    return doomRGB(96+n,98+n,104+n) ;
+  });
+  // 5: door
+  T[5]=mk((x,y)=>{
+    const n=doomNoise(x,y,5)*12;
+    if(x<3||x>60) return doomRGB(58+n,60+n,66+n);
+    if(y<6||y>57) return doomRGB(140+n,120+n,40+n);          // hazard trim
+    if(Math.abs(x-32)<3) return doomRGB(48+n,50+n,54+n);     // centre seam
+    const band=(Math.floor(y/6)%2)===0;
+    return band? doomRGB(126+n,128+n,134+n) : doomRGB(104+n,106+n,112+n);
+  });
+  // 6: exit switch
+  T[6]=mk((x,y)=>{
+    const n=doomNoise(x,y,6)*14;
+    const inX=x>18&&x<46, inY=y>18&&y<46;
+    if(inX&&inY){
+      if(x>22&&x<42&&y>22&&y<42) return doomRGB(30+n,190+n,70+n);
+      return doomRGB(30+n,34+n,38+n);
+    }
+    return doomRGB(74+n,70+n,66+n);
+  });
+  // 7: floor gravel   8: ceiling stone
+  T[7]=mk((x,y)=>{ const n=doomNoise(x,y,7)*40; const t=((x>>3)+(y>>3))%2; return doomRGB(58+n+t*10,50+n+t*8,44+n+t*6); });
+  T[8]=mk((x,y)=>{ const n=doomNoise(x,y,8)*24; return doomRGB(40+n,42+n,48+n); });
+  DOOM_TEX=T;
+  return T;
+}
+
+/* sprites are drawn with ordinary 2D calls into a small canvas, then read back
+   as pixels — much easier to author than hand-typed pixel arrays */
+function doomSprite(w,h,draw){
+  const c=document.createElement("canvas");
+  c.width=w; c.height=h;
+  const x=c.getContext("2d");
+  x.imageSmoothingEnabled=false;
+  x.clearRect(0,0,w,h);
+  draw(x,w,h);
+  const d=x.getImageData(0,0,w,h);
+  return {w,h,px:new Uint32Array(d.data.buffer.slice(0))};
+}
+function doomSprites(){
+  if(DOOM_SPR) return DOOM_SPR;
+  const S={};
+  const legs=(x,col,sw)=>{ x.fillStyle=col; x.fillRect(13+sw,44,7,18); x.fillRect(22-sw,44,7,18); };
+
+  const grunt=(step,firing)=>doomSprite(42,64,(x)=>{
+    legs(x,"#2f3a24",step);
+    x.fillStyle="#46592f"; x.fillRect(10,22,22,24);            // torso
+    x.fillStyle="#3a4a27"; x.fillRect(6,24,5,16); x.fillRect(31,24,5,16);
+    x.fillStyle="#9c7b56"; x.fillRect(14,8,14,14);             // head
+    x.fillStyle="#1a1008"; x.fillRect(16,13,4,3); x.fillRect(23,13,4,3);
+    x.fillStyle="#6b7f4a"; x.fillRect(13,6,16,4);              // helmet
+    x.fillStyle="#2a2a2e"; x.fillRect(30,28,11,4);             // rifle
+    if(firing){ x.fillStyle="#ffd76a"; x.fillRect(40,26,6,8); x.fillStyle="#fff1b8"; x.fillRect(41,28,3,4); }
+  });
+  const imp=(step,firing)=>doomSprite(42,64,(x)=>{
+    legs(x,"#5a2018",step);
+    x.fillStyle="#7d2a1e"; x.fillRect(9,20,24,26);
+    x.fillStyle="#6a2318"; x.fillRect(4,22,6,18); x.fillRect(32,22,6,18);
+    x.fillStyle="#8b3324"; x.fillRect(13,6,16,15);             // head
+    x.fillStyle="#e8d9c0";                                      // horns
+    x.beginPath(); x.moveTo(13,7); x.lineTo(8,0); x.lineTo(15,4); x.fill();
+    x.beginPath(); x.moveTo(29,7); x.lineTo(34,0); x.lineTo(27,4); x.fill();
+    x.fillStyle="#ffdd44"; x.fillRect(16,12,4,3); x.fillRect(23,12,4,3);
+    x.fillStyle="#3a120c"; x.fillRect(17,18,8,2);
+    if(firing){
+      const g=x.createRadialGradient(36,30,1,36,30,9);
+      g.addColorStop(0,"#fff2b0"); g.addColorStop(.5,"#ff9a2a"); g.addColorStop(1,"rgba(255,80,0,0)");
+      x.fillStyle=g; x.beginPath(); x.arc(36,30,9,0,7); x.fill();
+    }
+  });
+  const brute=(step)=>doomSprite(54,64,(x)=>{
+    x.fillStyle="#8c3b52"; x.fillRect(15+step,46,10,16); x.fillRect(29-step,46,10,16);
+    x.fillStyle="#c05a76"; x.fillRect(8,16,38,32);             // bulk
+    x.fillStyle="#a84864"; x.fillRect(2,20,7,20); x.fillRect(45,20,7,20);
+    x.fillStyle="#d4708c"; x.fillRect(15,6,24,14);             // head
+    x.fillStyle="#2a0d15"; x.fillRect(19,11,5,3); x.fillRect(30,11,5,3);
+    x.fillStyle="#fff4f6";                                      // teeth
+    for(let i=0;i<6;i++) x.fillRect(18+i*3,18,2,4);
+  });
+  S.grunt=[grunt(0,false),grunt(2,false),grunt(0,true)];
+  S.imp  =[imp(0,false),imp(2,false),imp(0,true)];
+  S.brute=[brute(0),brute(3)];
+  S.corpse=doomSprite(48,64,(x)=>{
+    x.fillStyle="#6a1c14"; x.fillRect(6,52,36,9);
+    x.fillStyle="#8a2a1e"; x.fillRect(12,46,24,7);
+    x.fillStyle="#4a120c"; x.fillRect(18,58,14,4);
+  });
+  S.fire=doomSprite(24,24,(x)=>{
+    const g=x.createRadialGradient(12,12,1,12,12,11);
+    g.addColorStop(0,"#fffbe0"); g.addColorStop(.35,"#ffc23a");
+    g.addColorStop(.7,"#ff5c12"); g.addColorStop(1,"rgba(180,30,0,0)");
+    x.fillStyle=g; x.beginPath(); x.arc(12,12,11,0,7); x.fill();
+  });
+  S.blood=doomSprite(16,16,(x)=>{
+    const g=x.createRadialGradient(8,8,0,8,8,7);
+    g.addColorStop(0,"#ff2a2a"); g.addColorStop(.5,"#a80f0f"); g.addColorStop(1,"rgba(90,0,0,0)");
+    x.fillStyle=g; x.beginPath(); x.arc(8,8,7,0,7); x.fill();
+  });
+  S.medkit=doomSprite(28,28,(x)=>{
+    x.fillStyle="#e8e8e8"; x.fillRect(2,6,24,18);
+    x.fillStyle="#b8b8b8"; x.fillRect(2,6,24,3);
+    x.fillStyle="#d02020"; x.fillRect(12,10,4,11); x.fillRect(8,14,12,4);
+  });
+  S.ammo=doomSprite(26,20,(x)=>{
+    x.fillStyle="#6b5a2a"; x.fillRect(2,6,22,12);
+    x.fillStyle="#8a7638"; x.fillRect(2,6,22,3);
+    x.fillStyle="#d8c46a"; for(let i=0;i<4;i++) x.fillRect(5+i*5,9,3,7);
+  });
+  S.shotgun=doomSprite(40,18,(x)=>{
+    x.fillStyle="#4a4a50"; x.fillRect(4,6,30,4);
+    x.fillStyle="#6b4a2a"; x.fillRect(22,9,14,5);
+    x.fillStyle="#2e2e33"; x.fillRect(4,10,14,2);
+  });
+  S.armor=doomSprite(28,30,(x)=>{
+    x.fillStyle="#1fa04a"; x.beginPath();
+    x.moveTo(14,2); x.lineTo(26,8); x.lineTo(22,26); x.lineTo(14,29); x.lineTo(6,26); x.lineTo(2,8);
+    x.closePath(); x.fill();
+    x.fillStyle="#7ce8a4"; x.fillRect(12,8,4,12);
+  });
+  DOOM_SPR=S;
+  return S;
+}
+
+/* mouse feel, remembered between sessions ([ and ] adjust, I inverts) */
+let DOOM_SENS=parseFloat(localStorage.getItem("wc_doom_sens"));
+if(!isFinite(DOOM_SENS)||DOOM_SENS<=0) DOOM_SENS=1;
+let DOOM_INVERT=localStorage.getItem("wc_doom_invert")==="1";
+function doomSaveFeel(){
+  try{
+    localStorage.setItem("wc_doom_sens",String(DOOM_SENS));
+    localStorage.setItem("wc_doom_invert",DOOM_INVERT?"1":"0");
+  }catch(e){}
+}
+
+function buildDoom(body,win,rec){
+  const T=doomTextures(), SP=doomSprites();
+  body.innerHTML=`<div class="doom">
+    <canvas class="doom-cv" width="${DOOM_W}" height="${DOOM_H}"></canvas>
+    <div class="doom-tip"></div>
+  </div>`;
+  const cv=body.querySelector(".doom-cv");
+  const tip=body.querySelector(".doom-tip");
+  const ctx=cv.getContext("2d");
+  ctx.imageSmoothingEnabled=false;
+  const img=ctx.createImageData(DOOM_W,DOOM_VH);
+  const buf=new Uint32Array(img.data.buffer);
+  const zbuf=new Float32Array(DOOM_W);
+
+  /* ---- level ---- */
+  const MW=DOOM_MAPSRC[0].length, MH=DOOM_MAPSRC.length;
+  const grid=new Uint8Array(MW*MH);        // 0 empty, else texture id
+  const doors=new Map();                   // index -> {open, timer}
+  let spawn={x:1.5,y:1.5};
+  const ents=[];
+  const WALLCH={"#":1,"=":2,"%":3,"|":4,"D":5,"X":6};
+  for(let y=0;y<MH;y++){
+    const row=DOOM_MAPSRC[y];
+    for(let x=0;x<MW;x++){
+      const ch=row[x]||"#";
+      const i=y*MW+x;
+      if(WALLCH[ch]){
+        grid[i]=WALLCH[ch];
+        if(ch==="D") doors.set(i,{open:0,timer:0});
+        continue;
+      }
+      const cx=x+0.5, cy=y+0.5;
+      if(ch==="S") spawn={x:cx,y:cy};
+      else if(ch==="z") ents.push(mkMonster("grunt",cx,cy));
+      else if(ch==="i") ents.push(mkMonster("imp",cx,cy));
+      else if(ch==="p") ents.push(mkMonster("brute",cx,cy));
+      else if(ch==="h") ents.push({kind:"pickup",item:"medkit",x:cx,y:cy,alive:true,z:0.42,scale:.55});
+      else if(ch==="a") ents.push({kind:"pickup",item:"ammo",x:cx,y:cy,alive:true,z:0.46,scale:.45});
+      else if(ch==="s") ents.push({kind:"pickup",item:"shotgun",x:cx,y:cy,alive:true,z:0.46,scale:.6});
+      else if(ch==="r") ents.push({kind:"pickup",item:"armor",x:cx,y:cy,alive:true,z:0.42,scale:.55});
+    }
+  }
+  function mkMonster(type,x,y){
+    const spec={grunt:{hp:30,speed:.028,dmg:9,range:9,cool:75,melee:false},
+                imp:  {hp:45,speed:.030,dmg:16,range:11,cool:95,melee:false},
+                brute:{hp:90,speed:.050,dmg:18,range:1.4,cool:45,melee:true}}[type];
+    return {kind:"monster",type,x,y,hp:spec.hp,spec,alive:true,anim:0,cool:30+((Math.random()*40)|0),
+            firing:0,hurt:0,z:0.5,scale:type==="brute"?1.35:1.12};
+  }
+  const totalMonsters=ents.filter(e=>e.kind==="monster").length;
+
+  const st={
+    px:spawn.x, py:spawn.y, dirX:1, dirY:0, planeX:0, planeY:0.66,
+    health:100, armor:0, bullets:50, shells:0, weapon:0, hasShotgun:false,
+    kills:0, mode:"title", bob:0, flash:0, pain:0, dead:0,
+    msg:"", msgT:0, fired:0, locked:false, tick:0,
+    horizon:DOOM_HZ, shake:0,
+  };
+  function say(m){ st.msg=m; st.msgT=150; }
+
+  /* ---- sound: short synthesised bursts, no audio files ---- */
+  let noiseBuf=null;
+  function noise(){
+    if(!AC) return null;
+    if(noiseBuf) return noiseBuf;
+    const n=AC.sampleRate*0.5;
+    noiseBuf=AC.createBuffer(1,n,AC.sampleRate);
+    const d=noiseBuf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i]=Math.random()*2-1;
+    return noiseBuf;
+  }
+  function dsound(kind){
+    try{
+      AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+      if(AC.state==="suspended") AC.resume();
+      const vol=Math.max(0,Math.min(100,(typeof masterVol==="number"?masterVol:65)))/100;
+      if(!vol) return;
+      const t=AC.currentTime;
+      const burst=(dur,gain,freq,q)=>{
+        const src=AC.createBufferSource(); src.buffer=noise();
+        const f=AC.createBiquadFilter(); f.type="lowpass"; f.frequency.value=freq; f.Q.value=q||1;
+        const g=AC.createGain();
+        g.gain.setValueAtTime(gain*vol,t);
+        g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+        src.connect(f); f.connect(g); g.connect(AC.destination);
+        src.start(t); src.stop(t+dur+.02);
+      };
+      const tone=(f0,f1,dur,gain,type)=>{
+        const o=AC.createOscillator(), g=AC.createGain();
+        o.type=type||"sawtooth";
+        o.frequency.setValueAtTime(f0,t);
+        o.frequency.exponentialRampToValueAtTime(Math.max(20,f1),t+dur);
+        g.gain.setValueAtTime(gain*vol,t);
+        g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+        o.connect(g); g.connect(AC.destination);
+        o.start(t); o.stop(t+dur+.02);
+      };
+      if(kind==="pistol"){ burst(.10,.22,2600,1); tone(320,90,.09,.10,"square"); }
+      else if(kind==="shotgun"){ burst(.30,.44,1000,1.4); burst(.07,.30,4200,1); tone(110,34,.30,.26,"square"); }
+      else if(kind==="dry") tone(200,160,.05,.08,"square");
+      else if(kind==="pain") tone(360,140,.22,.16,"sawtooth");
+      else if(kind==="mdie") tone(240,50,.45,.18,"sawtooth");
+      else if(kind==="growl") tone(120,70,.35,.10,"sawtooth");
+      else if(kind==="pickup"){ tone(660,1320,.10,.10,"square"); }
+      else if(kind==="door") burst(.35,.10,700,2);
+      else if(kind==="exit"){ tone(440,880,.30,.14,"square"); }
+      else if(kind==="fire") burst(.16,.16,900,1);
+    }catch(e){}
+  }
+
+  /* ---- map helpers ---- */
+  const cell=(x,y)=>(x<0||y<0||x>=MW||y>=MH)?1:grid[y*MW+x];
+  function isSolid(x,y){
+    const c=cell(x,y);
+    if(!c) return false;
+    if(c===5){ const d=doors.get(y*MW+x); return !d || d.open<0.75; }
+    return true;
+  }
+  function blockedAt(x,y,r){
+    return isSolid(Math.floor(x-r),Math.floor(y-r)) || isSolid(Math.floor(x+r),Math.floor(y-r))
+        || isSolid(Math.floor(x-r),Math.floor(y+r)) || isSolid(Math.floor(x+r),Math.floor(y+r));
+  }
+  function lineOfSight(ax,ay,bx,by){
+    const dx=bx-ax, dy=by-ay, dist=Math.hypot(dx,dy);
+    const steps=Math.ceil(dist*8);
+    for(let i=1;i<steps;i++){
+      const t=i/steps;
+      const x=ax+dx*t, y=ay+dy*t;
+      const c=cell(Math.floor(x),Math.floor(y));
+      if(c && !(c===5 && (doors.get(Math.floor(y)*MW+Math.floor(x))||{}).open>0.75)) return false;
+    }
+    return true;
+  }
+
+  /* ---- input ---- */
+  const keys=new Set();
+  const focused=()=>state.wins.doom && state.focused==="doom" && body.isConnected;
+  const kname=(e)=>{
+    const k=e.key;
+    if(k===" ") return "space";
+    if(k==="ArrowLeft") return "left";
+    if(k==="ArrowRight") return "right";
+    if(k==="ArrowUp") return "up";
+    if(k==="ArrowDown") return "down";
+    if(k==="Control") return "ctrl";
+    if(k==="Shift") return "shift";
+    return String(k).toLowerCase();
+  };
+  const kd=(e)=>{
+    if(!body.isConnected){ teardown(); return; }
+    if(!focused()) return;
+    const n=kname(e);
+    keys.add(n);
+    if(["space","left","right","up","down","w","a","s","d","e","1","2","ctrl"].indexOf(n)>=0) e.preventDefault();
+    if(st.mode==="title" && (n==="space"||n==="enter")) start();
+    else if(st.mode!=="play" && st.mode!=="title" && (n==="space"||n==="enter")) reset();
+    if(n==="e" && st.mode==="play") useDoor();
+    if(n==="1" && st.mode==="play") st.weapon=0;
+    if(n==="2" && st.mode==="play" && st.hasShotgun) st.weapon=1;
+    if(n==="["){ DOOM_SENS=Math.max(.2,DOOM_SENS-.15); doomSaveFeel(); say("Mouse sensitivity "+DOOM_SENS.toFixed(2)); }
+    if(n==="]"){ DOOM_SENS=Math.min(4,DOOM_SENS+.15); doomSaveFeel(); say("Mouse sensitivity "+DOOM_SENS.toFixed(2)); }
+    if(n==="i"){ DOOM_INVERT=!DOOM_INVERT; doomSaveFeel(); say(DOOM_INVERT?"Mouse inverted":"Mouse normal"); }
+  };
+  const ku=(e)=>{ keys.delete(kname(e)); };
+  const blur=()=>keys.clear();
+  document.addEventListener("keydown",kd,true);
+  document.addEventListener("keyup",ku,true);
+  addEventListener("blur",blur);
+
+  cv.addEventListener("mousedown",(e)=>{
+    e.preventDefault();
+    focusWin("doom");
+    if(st.mode==="title"){ start(); return; }
+    if(st.mode!=="play"){ reset(); return; }
+    if(!st.locked && cv.requestPointerLock){ try{ cv.requestPointerLock(); }catch(_){} return; }
+    shoot();
+  });
+  const plChange=()=>{ st.locked=(document.pointerLockElement===cv); updateTip(); };
+  document.addEventListener("pointerlockchange",plChange);
+  /* Screen-right is +y in map space (rows count downward), so a positive
+     rotation turns right — moving the mouse right must pass a positive angle. */
+  const mmove=(e)=>{
+    if(!st.locked || st.mode!=="play") return;
+    rotate(e.movementX*0.0022*DOOM_SENS*(DOOM_INVERT?-1:1));
+  };
+  document.addEventListener("mousemove",mmove);
+
+  function teardown(){
+    document.removeEventListener("keydown",kd,true);
+    document.removeEventListener("keyup",ku,true);
+    document.removeEventListener("pointerlockchange",plChange);
+    document.removeEventListener("mousemove",mmove);
+    removeEventListener("blur",blur);
+    if(document.pointerLockElement===cv && document.exitPointerLock){ try{ document.exitPointerLock(); }catch(_){} }
+  }
+
+  function updateTip(){
+    tip.textContent = st.mode!=="play" ? "" :
+      (st.locked ? "Esc releases the mouse · [ ] mouse speed · I inverts"
+                 : "WASD move · mouse or ←/→ turn · click to shoot (click once to grab the mouse) · E doors · 1/2 weapons · [ ] mouse speed · I inverts");
+  }
+
+  function rotate(a){
+    const c=Math.cos(a), s=Math.sin(a);
+    const dx=st.dirX, px=st.planeX;
+    st.dirX=dx*c-st.dirY*s;   st.dirY=dx*s+st.dirY*c;
+    st.planeX=px*c-st.planeY*s; st.planeY=px*s+st.planeY*c;
+  }
+  function start(){ st.mode="play"; say("Find the exit switch. Good luck."); updateTip(); }
+  function reset(){
+    st.px=spawn.x; st.py=spawn.y; st.dirX=1; st.dirY=0; st.planeX=0; st.planeY=0.66;
+    st.health=100; st.armor=0; st.bullets=50; st.shells=0; st.weapon=0; st.hasShotgun=false;
+    st.kills=0; st.pain=0; st.flash=0; st.dead=0;
+    for(let i=ents.length-1;i>=0;i--) if(ents[i].kind==="fire") ents.splice(i,1);
+    ents.forEach(e=>{
+      e.alive=true; e.hurt=0; e.firing=0; e.awake=false; e.dying=0;
+      if(e.kind==="monster"){
+        e.hp=e.spec.hp; e.anim=0; e.cool=30+((Math.random()*40)|0);
+        if(e.sx!=null){ e.x=e.sx; e.y=e.sy; }
+      }
+    });
+    doors.forEach(d=>{ d.open=0; d.timer=0; });
+    st.mode="play"; say("Again!"); updateTip();
+  }
+  ents.forEach(e=>{ e.sx=e.x; e.sy=e.y; });
+
+  function useDoor(){
+    const fx=st.px+st.dirX*0.9, fy=st.py+st.dirY*0.9;
+    const i=Math.floor(fy)*MW+Math.floor(fx);
+    if(grid[i]===5){
+      const d=doors.get(i);
+      if(d && d.open<0.05){ d.timer=1; dsound("door"); say("The door grinds open."); }
+      return;
+    }
+    if(grid[i]===6){ st.mode="win"; dsound("exit"); }
+  }
+
+  function damagePlayer(n){
+    if(st.mode!=="play") return;
+    if(st.armor>0){ const soak=Math.min(st.armor,Math.floor(n/2)); st.armor-=soak; n-=soak; }
+    st.health-=n;
+    st.pain=Math.min(1,st.pain+n/50);
+    st.shake=Math.min(1.2,st.shake+n/26);
+    dsound("pain");
+    if(st.health<=0){ st.health=0; st.mode="dead"; st.dead=0; if(document.exitPointerLock&&st.locked){ try{document.exitPointerLock();}catch(_){} } }
+  }
+
+  function shoot(){
+    if(st.mode!=="play" || st.fired>0) return;
+    const shotgun=st.weapon===1;
+    if(shotgun && st.shells<=0){ dsound("dry"); say("Out of shells."); return; }
+    if(!shotgun && st.bullets<=0){ dsound("dry"); say("Out of bullets."); return; }
+    if(shotgun){ st.shells--; st.fired=22; dsound("shotgun"); st.shake=0.55; }
+    else { st.bullets--; st.fired=11; dsound("pistol"); st.shake=0.22; }
+    st.flash=1;
+    const pellets=shotgun?7:1;
+    for(let p=0;p<pellets;p++){
+      const spread=shotgun?(Math.random()-.5)*0.20:(Math.random()-.5)*0.03;
+      hitscan(spread, shotgun?7:11);
+    }
+  }
+  function hitscan(spread,dmg){
+    const c=Math.cos(spread), s=Math.sin(spread);
+    const rx=st.dirX*c-st.dirY*s, ry=st.dirX*s+st.dirY*c;
+    let best=null, bestD=1e9;
+    for(const e of ents){
+      if(e.kind!=="monster"||!e.alive) continue;
+      const ex=e.x-st.px, ey=e.y-st.py;
+      const along=ex*rx+ey*ry;
+      if(along<=0.2||along>22) continue;
+      const perp=Math.abs(ex*(-ry)+ey*rx);
+      if(perp>0.42) continue;
+      if(along<bestD && lineOfSight(st.px,st.py,e.x,e.y)){ best=e; bestD=along; }
+    }
+    if(!best) return;
+    best.hp-=dmg; best.hurt=6;
+    for(let i=0;i<4;i++){                          // blood spray
+      const ang=Math.random()*6.283;
+      ents.push({kind:"blood",x:best.x,y:best.y,vx:Math.cos(ang)*0.022,vy:Math.sin(ang)*0.022,
+                 alive:true,life:16+((Math.random()*10)|0),scale:0.22+Math.random()*0.12});
+    }
+    if(best.hp<=0){
+      best.alive=false; best.dying=90; st.kills++;
+      dsound("mdie");
+      if(best.type==="grunt") st.bullets=Math.min(200,st.bullets+5);
+      if(st.kills>=totalMonsters) say("Every last one. Now find the exit.");
+    }
+  }
+
+  /* ---- per-frame update ---- */
+  function update(){
+    st.tick++;
+    if(st.fired>0) st.fired--;
+    if(st.flash>0) st.flash=Math.max(0,st.flash-0.18);
+    if(st.pain>0) st.pain=Math.max(0,st.pain-0.03);
+    if(st.shake>0) st.shake*=0.85;
+    if(st.msgT>0) st.msgT--;
+    /* head bob + recoil kick, as a moving horizon */
+    let hz=DOOM_HZ+Math.sin(st.bob)*1.7;
+    if(st.shake>0.01) hz+=(Math.random()-0.5)*st.shake*14;
+    st.horizon=Math.max(DOOM_HZ-26,Math.min(DOOM_HZ+26,hz));
+
+    doors.forEach((d,i)=>{
+      if(d.timer>0){
+        d.open=Math.min(1,d.open+0.045);
+        if(d.open>=1){ d.timer++; if(d.timer>260) { d.timer=0; } }
+      } else if(d.open>0){
+        const px=Math.floor(st.px), py=Math.floor(st.py);
+        if(py*MW+px===i) return;                       // don't close on the player
+        d.open=Math.max(0,d.open-0.03);
+      }
+    });
+
+    if(st.mode!=="play"){ if(st.mode==="dead") st.dead++; return; }
+
+    /* movement */
+    const run=keys.has("shift")?1.7:1;
+    const mv=0.055*run, rot=0.045;
+    let fwd=0, strafe=0;
+    if(keys.has("w")||keys.has("up")) fwd+=1;
+    if(keys.has("s")||keys.has("down")) fwd-=1;
+    if(keys.has("d")) strafe+=1;
+    if(keys.has("a")) strafe-=1;
+    if(keys.has("left")) rotate(-rot);
+    if(keys.has("right")) rotate(rot);
+    if(fwd||strafe){
+      // strafe right = the camera's right vector, which is (-dirY, dirX)
+      const nx=st.px + (st.dirX*fwd - st.dirY*strafe)*mv;
+      const ny=st.py + (st.dirY*fwd + st.dirX*strafe)*mv;
+      if(!blockedAt(nx,st.py,0.22)) st.px=nx;
+      if(!blockedAt(st.px,ny,0.22)) st.py=ny;
+      st.bob+=0.22*run;
+    } else st.bob*=0.9;
+    if(keys.has("space")||keys.has("ctrl")) shoot();
+
+    /* pickups */
+    for(const e of ents){
+      if(e.kind!=="pickup"||!e.alive) continue;
+      if(Math.hypot(e.x-st.px,e.y-st.py)>0.55) continue;
+      if(e.item==="medkit"){
+        if(st.health>=100) continue;
+        st.health=Math.min(100,st.health+25); say("Picked up a medkit.");
+      }
+      else if(e.item==="ammo"){ st.bullets=Math.min(200,st.bullets+20); st.shells=Math.min(60,st.shells+4); say("Ammo."); }
+      else if(e.item==="shotgun"){ st.hasShotgun=true; st.shells=Math.min(60,st.shells+8); st.weapon=1; say("You got the shotgun!"); }
+      else if(e.item==="armor"){ st.armor=Math.min(100,st.armor+50); say("Armour."); }
+      e.alive=false;
+      dsound("pickup");
+    }
+
+    /* exit tile underfoot */
+    if(cell(Math.floor(st.px+st.dirX*0.6),Math.floor(st.py+st.dirY*0.6))===6){
+      // touching the switch wall counts, so players don't have to guess about E
+      st.mode="win"; dsound("exit"); return;
+    }
+
+    /* monsters */
+    for(const e of ents){
+      if(e.kind!=="monster") continue;
+      if(!e.alive){ if(e.dying>0) e.dying--; continue; }
+      if(e.hurt>0) e.hurt--;
+      if(e.firing>0) e.firing--;
+      const dx=st.px-e.x, dy=st.py-e.y;
+      const dist=Math.hypot(dx,dy);
+      const sees=dist<e.spec.range && lineOfSight(e.x,e.y,st.px,st.py);
+      if(!sees){ e.cool=Math.max(e.cool-1,20); continue; }
+      if(!e.awake){ e.awake=true; dsound("growl"); }
+      e.anim+=0.12;
+      const keep=e.spec.melee?0.9:2.2;
+      if(dist>keep){
+        const nx=e.x+dx/dist*e.spec.speed, ny=e.y+dy/dist*e.spec.speed;
+        if(!blockedAt(nx,e.y,0.3)&&!monsterBlocked(e,nx,e.y)) e.x=nx;
+        if(!blockedAt(e.x,ny,0.3)&&!monsterBlocked(e,e.x,ny)) e.y=ny;
+      }
+      e.cool--;
+      if(e.cool<=0){
+        e.cool=e.spec.cool+((Math.random()*40)|0);
+        e.firing=12;
+        if(e.spec.melee){
+          if(dist<e.spec.range) damagePlayer(e.spec.dmg+((Math.random()*6)|0));
+        } else if(e.type==="imp"){
+          ents.push({kind:"fire",x:e.x,y:e.y,vx:dx/dist*0.075,vy:dy/dist*0.075,alive:true,z:0.5,scale:.4,life:200,dmg:e.spec.dmg});
+          dsound("fire");
+        } else {
+          dsound("pistol");
+          if(Math.random()<0.62) damagePlayer(e.spec.dmg+((Math.random()*5)|0));
+        }
+      }
+    }
+    function monsterBlocked(self,x,y){
+      for(const o of ents){
+        if(o===self||o.kind!=="monster"||!o.alive) continue;
+        if(Math.hypot(o.x-x,o.y-y)<0.62) return true;
+      }
+      return false;
+    }
+
+    /* imp fireballs */
+    for(const f of ents){
+      if(f.kind!=="fire"||!f.alive) continue;
+      f.x+=f.vx; f.y+=f.vy; f.life--;
+      if(f.life<=0 || isSolid(Math.floor(f.x),Math.floor(f.y))){ f.alive=false; continue; }
+      if(Math.hypot(f.x-st.px,f.y-st.py)<0.42){ f.alive=false; damagePlayer(f.dmg); }
+    }
+    for(const b of ents){
+      if(b.kind!=="blood"||!b.alive) continue;
+      b.x+=b.vx; b.y+=b.vy; b.vx*=0.86; b.vy*=0.86; b.scale*=0.94;
+      if(--b.life<=0) b.alive=false;
+    }
+    for(let i=ents.length-1;i>=0;i--){
+      const k=ents[i].kind;
+      if((k==="fire"||k==="blood")&&!ents[i].alive) ents.splice(i,1);
+    }
+  }
+
+  /* ---- rendering ---- */
+  function render(){
+    const hz=st.horizon|0;
+    buf.fill(0xff08080a);                       // anything the casts don't cover stays near-black
+    /* floor + ceiling, cast row by row */
+    const rdx0=st.dirX-st.planeX, rdy0=st.dirY-st.planeY;
+    const rdx1=st.dirX+st.planeX, rdy1=st.dirY+st.planeY;
+    const ftex=T[7], ctex=T[8], S=DOOM_TEXSZ;
+    for(let y=hz+1;y<DOOM_VH;y++){
+      const p=y-hz;
+      if(p<=0) continue;
+      const rowDist=(0.5*DOOM_VH)/p;
+      const stepX=rowDist*(rdx1-rdx0)/DOOM_W;
+      const stepY=rowDist*(rdy1-rdy0)/DOOM_W;
+      let fx=st.px+rowDist*rdx0, fy=st.py+rowDist*rdy0;
+      const fog=doomFog(rowDist);
+      const cy=2*hz-y;
+      const drawC=cy>=0&&cy<DOOM_VH;
+      const rowF=y*DOOM_W, rowC=cy*DOOM_W;
+      for(let x=0;x<DOOM_W;x++){
+        const tx=((fx*S)|0)&(S-1), ty=((fy*S)|0)&(S-1);
+        const t=ty*S+tx;
+        buf[rowF+x]=doomShade(ftex[t],fog);
+        if(drawC) buf[rowC+x]=doomShade(ctex[t],fog*0.66);
+        fx+=stepX; fy+=stepY;
+      }
+    }
+
+    /* walls */
+    for(let x=0;x<DOOM_W;x++){
+      const camX=2*x/DOOM_W-1;
+      const rdx=st.dirX+st.planeX*camX, rdy=st.dirY+st.planeY*camX;
+      let mapX=Math.floor(st.px), mapY=Math.floor(st.py);
+      const ddx=Math.abs(1/(rdx||1e-9)), ddy=Math.abs(1/(rdy||1e-9));
+      let stepX,stepY,sdx,sdy;
+      if(rdx<0){ stepX=-1; sdx=(st.px-mapX)*ddx; } else { stepX=1; sdx=(mapX+1-st.px)*ddx; }
+      if(rdy<0){ stepY=-1; sdy=(st.py-mapY)*ddy; } else { stepY=1; sdy=(mapY+1-st.py)*ddy; }
+      let side=0, tile=0, guard=0;
+      while(guard++<160){
+        if(sdx<sdy){ sdx+=ddx; mapX+=stepX; side=0; }
+        else       { sdy+=ddy; mapY+=stepY; side=1; }
+        const c=cell(mapX,mapY);
+        if(!c) continue;
+        if(c===5){
+          const d=doors.get(mapY*MW+mapX);
+          if(d && d.open>0.75) continue;               // fully open: see straight through
+        }
+        tile=c; break;
+      }
+      if(!tile) tile=1;
+      const perp=side===0 ? (sdx-ddx) : (sdy-ddy);
+      const dist=Math.max(0.0001,perp);
+      zbuf[x]=dist;
+      const lineH=Math.floor(DOOM_VH/dist);
+      let y0=hz-(lineH>>1), y1=y0+lineH;
+      const drawStart=y0<0?0:y0, drawEnd=y1>DOOM_VH?DOOM_VH:y1;
+      let wallX = side===0 ? st.py+dist*rdy : st.px+dist*rdx;
+      wallX-=Math.floor(wallX);
+      let texX=(wallX*S)|0;
+      if((side===0&&rdx>0)||(side===1&&rdy<0)) texX=S-texX-1;
+      const tex=T[tile]||T[1];
+      /* a partly-open door slides up out of sight */
+      let slide=0;
+      if(tile===5){ const d=doors.get(mapY*MW+mapX); if(d) slide=d.open; }
+      const fog=doomFog(dist)*(side===1?0.70:1);
+      const texStep=S/lineH;
+      let texPos=(drawStart-hz+(lineH>>1))*texStep;
+      for(let y=drawStart;y<drawEnd;y++){
+        let ty=texPos&(S-1); texPos+=texStep;
+        if(slide>0){
+          const shifted=ty-slide*S;
+          if(shifted<0){ continue; }                    // that part of the door has lifted away
+          ty=shifted|0;
+        }
+        buf[y*DOOM_W+x]=doomShade(tex[(ty|0)*S+texX],fog);
+      }
+    }
+
+    /* sprites, far to near */
+    const vis=[];
+    for(const e of ents){
+      if(e.kind==="pickup"&&!e.alive) continue;
+      if((e.kind==="fire"||e.kind==="blood")&&!e.alive) continue;
+      if(e.kind==="monster"&&!e.alive&&!(e.dying>0)) continue;
+      e._d=(e.x-st.px)*(e.x-st.px)+(e.y-st.py)*(e.y-st.py);
+      vis.push(e);
+    }
+    vis.sort((a,b)=>b._d-a._d);
+    const invDet=1/(st.planeX*st.dirY-st.dirX*st.planeY);
+    for(const e of vis){
+      const sx=e.x-st.px, sy=e.y-st.py;
+      const tx=invDet*(st.dirY*sx-st.dirX*sy);
+      const ty=invDet*(-st.planeY*sx+st.planeX*sy);
+      if(ty<=0.15) continue;
+      const scr=Math.floor((DOOM_W/2)*(1+tx/ty));
+      const spr=spriteFor(e);
+      if(!spr) continue;
+      const sc=(e.scale||1);
+      const h=Math.abs(Math.floor(DOOM_VH/ty))*sc;
+      const w=h*(spr.w/spr.h);
+      // stand things on the floor (the bottom of a wall at this distance),
+      // except fireballs, which float at eye level
+      const floorY=hz+(DOOM_VH/ty)/2;
+      let y0=Math.floor((e.kind==="fire"||e.kind==="blood") ? hz-h/2 : floorY-h);
+      const x0=Math.floor(scr-w/2);
+      const fog=e.kind==="fire"?1:doomFog(ty);
+      const hurt=(e.kind==="monster"&&e.hurt>0);
+      for(let x=0;x<w;x++){
+        const px=x0+x;
+        if(px<0||px>=DOOM_W) continue;
+        if(ty>=zbuf[px]) continue;
+        const sxp=Math.floor(x*spr.w/w);
+        for(let y=0;y<h;y++){
+          const py=y0+y;
+          if(py<0||py>=DOOM_VH) continue;
+          const syp=Math.floor(y*spr.h/h);
+          const c=spr.px[syp*spr.w+sxp];
+          if((c>>>24)<40) continue;
+          buf[py*DOOM_W+px]= hurt ? doomShade(c|0x000000ff,1) : doomShade(c,fog);
+        }
+      }
+    }
+    ctx.putImageData(img,0,0);
+
+    /* full-screen tints */
+    if(st.pain>0){ ctx.fillStyle="rgba(190,0,0,"+(st.pain*0.42).toFixed(3)+")"; ctx.fillRect(0,0,DOOM_W,DOOM_VH); }
+    if(st.flash>0){ ctx.fillStyle="rgba(255,220,140,"+(st.flash*0.16).toFixed(3)+")"; ctx.fillRect(0,0,DOOM_W,DOOM_VH); }
+
+    drawWeapon();
+    drawHud();
+    if(st.mode==="title") drawTitle();
+    else if(st.mode==="dead") drawDead();
+    else if(st.mode==="win") drawWin();
+  }
+
+  function spriteFor(e){
+    if(e.kind==="fire") return SP.fire;
+    if(e.kind==="blood") return SP.blood;
+    if(e.kind==="pickup") return SP[e.item];
+    if(e.kind==="monster"){
+      if(!e.alive) return SP.corpse;
+      const set=SP[e.type];
+      if(e.firing>0 && set.length>2) return set[2];
+      return set[(Math.floor(e.anim)%2)];
+    }
+    return null;
+  }
+
+  /* The gun is deliberately big and low in frame — a small weapon sprite is one
+     of the main reasons a raycaster stops feeling like a shooter of this era. */
+  function drawWeapon(){
+    const bobX=Math.sin(st.bob)*9, bobY=Math.abs(Math.cos(st.bob))*6;
+    const kick=st.fired>6?9:(st.fired>0?4:0);
+    const cx=DOOM_W/2+bobX, base=DOOM_VH+4+bobY+kick;
+    ctx.save();
+    if(st.weapon===1){
+      /* shotgun: wide receiver, twin barrels, wooden fore-end */
+      ctx.fillStyle="#6b4a2a"; ctx.fillRect(cx-26,base-40,52,42);          // stock/fore-end
+      ctx.fillStyle="#57381f"; ctx.fillRect(cx-26,base-40,52,5);
+      ctx.fillStyle="#3c3c44"; ctx.fillRect(cx-17,base-96,34,58);          // receiver
+      ctx.fillStyle="#4c4c56"; ctx.fillRect(cx-14,base-99,28,6);
+      ctx.fillStyle="#23232a"; ctx.fillRect(cx-13,base-124,10,30);         // barrels
+      ctx.fillRect(cx+3,base-124,10,30);
+      ctx.fillStyle="#15151a"; ctx.fillRect(cx-12,base-124,8,4); ctx.fillRect(cx+4,base-124,8,4);
+      ctx.fillStyle="#2c2c33"; ctx.fillRect(cx-6,base-52,12,10);           // pump grip
+    }else{
+      /* pistol: slide, frame, grip */
+      ctx.fillStyle="#4a4a52"; ctx.fillRect(cx-13,base-74,26,40);
+      ctx.fillStyle="#5b5b66"; ctx.fillRect(cx-13,base-78,26,7);
+      ctx.fillStyle="#22222a"; ctx.fillRect(cx-6,base-96,12,24);           // barrel
+      ctx.fillStyle="#3a3a42"; ctx.fillRect(cx-11,base-36,22,38);          // grip
+      ctx.fillStyle="#2a2a31"; ctx.fillRect(cx-11,base-36,22,5);
+    }
+    if(st.fired>6){
+      const fy=base-(st.weapon===1?126:98);
+      const r=st.weapon===1?26:17;
+      const g=ctx.createRadialGradient(cx,fy,1,cx,fy,r);
+      g.addColorStop(0,"#fffbe0"); g.addColorStop(.35,"#ffd24a");
+      g.addColorStop(.7,"#ff7a12"); g.addColorStop(1,"rgba(255,110,0,0)");
+      ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,fy,r,0,7); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function bigNum(v,x,y,col){
+    ctx.fillStyle=col||"#e04b2a";
+    ctx.font="bold 19px Consolas,'Courier New',monospace";
+    ctx.textAlign="right";
+    ctx.fillText(String(v),x,y);
+    ctx.textAlign="left";
+  }
+  function drawHud(){
+    ctx.fillStyle="#2b2620"; ctx.fillRect(0,DOOM_VH,DOOM_W,DOOM_H-DOOM_VH);
+    ctx.fillStyle="#4a4238"; ctx.fillRect(0,DOOM_VH,DOOM_W,1);
+    ctx.font="8px Consolas,'Courier New',monospace";
+    ctx.fillStyle="#9a8f7d";
+    ctx.fillText("AMMO",8,DOOM_VH+9);
+    ctx.fillText("HEALTH",58,DOOM_VH+9);
+    ctx.fillText("ARMOR",176,DOOM_VH+9);
+    ctx.fillText("KILLS",244,DOOM_VH+9);
+    const ammo=st.weapon===1?st.shells:st.bullets;
+    bigNum(ammo,46,DOOM_VH+27);
+    bigNum(st.health+"%",120,DOOM_VH+27, st.health<35?"#ff3b2f":"#e04b2a");
+    bigNum(st.armor+"%",228,DOOM_VH+27,"#3fa34a");
+    bigNum(st.kills+"/"+totalMonsters,300,DOOM_VH+27,"#c9a227");
+    /* the face: mood follows health */
+    const fx=138, fy=DOOM_VH+5;
+    ctx.fillStyle="#c98d5e"; ctx.fillRect(fx,fy,26,24);
+    ctx.fillStyle="#5a3a22"; ctx.fillRect(fx,fy,26,4);
+    ctx.fillStyle="#1a1008";
+    ctx.fillRect(fx+5,fy+9,4,3); ctx.fillRect(fx+17,fy+9,4,3);
+    const hurt=st.health<35;
+    ctx.fillRect(fx+7,hurt?fy+19:fy+17,12,2);
+    if(hurt){ ctx.fillStyle="#a01010"; ctx.fillRect(fx+3,fy+5,5,10); }
+    ctx.fillStyle="#8a8070";
+    ctx.font="7px Consolas,'Courier New',monospace";
+    ctx.fillText(st.weapon===1?"SHOTGUN":"PISTOL",8,DOOM_VH+29);
+    if(st.msgT>0 && st.mode==="play"){
+      ctx.fillStyle="rgba(0,0,0,.45)"; ctx.fillRect(0,2,DOOM_W,13);
+      ctx.fillStyle="#e8e2d0"; ctx.font="9px Consolas,'Courier New',monospace";
+      ctx.fillText(st.msg,6,12);
+    }
+  }
+  function centre(text,y,size,col){
+    ctx.fillStyle=col||"#e8e2d0";
+    ctx.font=size+"px Consolas,'Courier New',monospace";
+    ctx.textAlign="center";
+    ctx.fillText(text,DOOM_W/2,y);
+    ctx.textAlign="left";
+  }
+  function drawTitle(){
+    ctx.fillStyle="rgba(6,4,4,.90)"; ctx.fillRect(0,0,DOOM_W,DOOM_H);
+    centre("CLONEDOOM",56,30,"#c62d1f");
+    centre("it runs on WinClone",76,10,"#9a8f7d");
+    centre("WASD move · mouse or ←/→ turn",108,9,"#cfc7b5");
+    centre("click shoot · E doors · shift run · 1/2 weapons",122,9,"#cfc7b5");
+    centre("press SPACE or click to begin",146,10,"#e0b23a");
+    centre("original engine — no id Software code or assets",186,7,"#6b6459");
+  }
+  function drawDead(){
+    ctx.fillStyle="rgba(120,0,0,"+Math.min(.72,st.dead/70).toFixed(2)+")"; ctx.fillRect(0,0,DOOM_W,DOOM_H);
+    if(st.dead>30){
+      centre("YOU DIED",84,26,"#ffdede");
+      centre("kills: "+st.kills+"/"+totalMonsters,104,10,"#ffb4b4");
+      centre("press SPACE to try again",128,9,"#ffdede");
+    }
+  }
+  function drawWin(){
+    ctx.fillStyle="rgba(4,10,6,.90)"; ctx.fillRect(0,0,DOOM_W,DOOM_H);
+    centre("LEVEL CLEARED",72,22,"#3fd06a");
+    centre("kills: "+st.kills+"/"+totalMonsters,96,11,"#cfe8d5");
+    centre("health left: "+st.health+"%",112,11,"#cfe8d5");
+    centre("press SPACE to play again",140,9,"#e0b23a");
+  }
+
+  /* ---- loop ---- */
+  let raf=0;
+  function frame(){
+    if(!body.isConnected || !state.wins.doom){ teardown(); return; }
+    raf=requestAnimationFrame(frame);
+    if(rec && rec.min) return;                       // minimised: don't burn cycles
+    update();
+    render();
+  }
+  updateTip();
+  render();
+  raf=requestAnimationFrame(frame);
+}
+
+/* ============================ PYTHON ============================
+   A small Python 3 written from scratch: tokenizer -> parser -> a
+   generator-based tree-walking interpreter.
+
+   Generators are the whole trick. Every eval/exec here is a generator, so the
+   driver can pause a running script between steps and hand the browser back.
+   That's what makes `while True:` game loops safe (the tab never freezes),
+   input() able to wait for a keystroke, and wcgame.flip() able to wait for the
+   next animation frame.
+
+   It is NOT CPython. No real int/float split (4/2 prints 2, not 2.0), no
+   threads, no C modules, no real file IO, no operator overloading beyond
+   __init__/__str__. Plenty for scripts and little games. */
+
+const PY = {fuel:0, line:0, depth:0};
+const PY_FUEL = 20000;               // steps between breaths
+const PY_TICK = {tick:1};
+
+/* ---------------- values ---------------- */
+class PyTuple extends Array{}
+class PyDict{ constructor(){ this.m=new Map(); } }        // dkey -> [key, value]
+class PySet{  constructor(){ this.m=new Map(); } }        // dkey -> value
+class PySlice{ constructor(a,b,c){ this.a=a; this.b=b; this.c=c; } }
+class PyRange{ constructor(a,b,c){ this.a=a; this.b=b; this.c=c; } }
+class PyFunc{ constructor(name,params,body,env){ this.name=name; this.params=params; this.body=body; this.env=env; } }
+class PyClass{ constructor(name,bases,d){ this.name=name; this.bases=bases; this.d=d; } }
+class PyObj{ constructor(cls){ this.cls=cls; this.d=new Map(); } }
+class PyBound{ constructor(self,fn){ this.self=self; this.fn=fn; } }
+class PyModule{ constructor(name,d){ this.name=name; this.d=d; } }
+class PyExc{ constructor(type,msg){ this.type=type; this.msg=msg||""; this.line=0; } }
+class PyReturn{ constructor(v){ this.v=v; } }
+class PyBreak{}
+class PyContinue{}
+function pyErr(type,msg){ const e=new PyExc(type,msg); e.line=PY.line; return e; }
+
+let _pyIdN=1; const _pyIds=new WeakMap();
+function pyId(o){ if(typeof o!=="object"||o===null) return 0; if(!_pyIds.has(o)) _pyIds.set(o,_pyIdN++); return _pyIds.get(o); }
+function dkey(v){
+  if(v===null) return "N";
+  const t=typeof v;
+  if(t==="number")  return "f"+v;
+  if(t==="string")  return "s"+v;
+  if(t==="boolean") return "f"+(v?1:0);          // True and 1 are the same dict key in Python
+  if(v instanceof PyTuple) return "t("+v.map(dkey).join("\u0001")+")";
+  return "o"+pyId(v);
+}
+
+function pyTypeName(v){
+  if(v===null) return "NoneType";
+  if(typeof v==="boolean") return "bool";
+  if(typeof v==="number") return Number.isInteger(v)?"int":"float";
+  if(typeof v==="string") return "str";
+  if(v instanceof PyTuple) return "tuple";
+  if(Array.isArray(v)) return "list";
+  if(v instanceof PyDict) return "dict";
+  if(v instanceof PySet) return "set";
+  if(v instanceof PyRange) return "range";
+  if(v instanceof PyObj) return v.cls.name;
+  if(v instanceof PyClass) return "type";
+  if(v instanceof PyModule) return "module";
+  if(v instanceof PyFunc || v instanceof PyBound || typeof v==="function") return "function";
+  return "object";
+}
+function pyTruth(v){
+  if(v===null||v===false||v===undefined) return false;
+  if(v===true) return true;
+  if(typeof v==="number") return v!==0;
+  if(typeof v==="string") return v.length>0;
+  if(Array.isArray(v)) return v.length>0;
+  if(v instanceof PyDict||v instanceof PySet) return v.m.size>0;
+  if(v instanceof PyRange) return pyLen(v)>0;
+  return true;
+}
+function pyLen(v){
+  if(typeof v==="string"||Array.isArray(v)) return v.length;
+  if(v instanceof PyDict||v instanceof PySet) return v.m.size;
+  if(v instanceof PyRange){ const n=Math.ceil((v.b-v.a)/v.c); return n>0?n:0; }
+  throw pyErr("TypeError","object of type '"+pyTypeName(v)+"' has no len()");
+}
+function pyNumStr(n){
+  if(Number.isNaN(n)) return "nan";
+  if(n===Infinity) return "inf";
+  if(n===-Infinity) return "-inf";
+  if(Number.isInteger(n)) return String(n);
+  return String(n);
+}
+function pyStr(v){
+  if(v===null||v===undefined) return "None";
+  if(v===true) return "True";
+  if(v===false) return "False";
+  if(typeof v==="number") return pyNumStr(v);
+  if(typeof v==="string") return v;
+  if(v instanceof PyTuple) return "("+[...v].map(pyRepr).join(", ")+(v.length===1?",":"")+")";
+  if(Array.isArray(v)) return "["+v.map(pyRepr).join(", ")+"]";
+  if(v instanceof PyDict) return "{"+[...v.m.values()].map(kv=>pyRepr(kv[0])+": "+pyRepr(kv[1])).join(", ")+"}";
+  if(v instanceof PySet) return v.m.size? "{"+[...v.m.values()].map(pyRepr).join(", ")+"}" : "set()";
+  if(v instanceof PyRange) return "range("+v.a+", "+v.b+(v.c!==1?", "+v.c:"")+")";
+  if(v instanceof PyFunc) return "<function "+v.name+">";
+  if(v instanceof PyBound) return "<bound method "+(v.fn&&v.fn.name||"?")+">";
+  if(v instanceof PyClass) return "<class '"+v.name+"'>";
+  if(v instanceof PyModule) return "<module '"+v.name+"'>";
+  if(v instanceof PyObj) return "<"+v.cls.name+" object>";
+  if(v instanceof PyExc) return v.msg||"";              // print(e) shows the message, like Python
+  if(typeof v==="function") return "<built-in function "+(v.pyName||"?")+">";
+  return String(v);
+}
+function pyRepr(v){
+  if(v instanceof PyExc) return v.type+"("+(v.msg?pyRepr(v.msg):"")+")";
+  if(typeof v==="string"){
+    const q = (v.indexOf("'")>=0 && v.indexOf('"')<0) ? '"' : "'";
+    let out="";
+    for(const ch of v){
+      if(ch===q||ch==="\\") out+="\\"+ch;
+      else if(ch==="\n") out+="\\n";
+      else if(ch==="\t") out+="\\t";
+      else out+=ch;
+    }
+    return q+out+q;
+  }
+  return pyStr(v);
+}
+/* str() that can call a class's __str__ */
+function* pyStrG(v){
+  if(v instanceof PyObj){
+    const m=classLookup(v.cls,"__str__")||classLookup(v.cls,"__repr__");
+    if(m) return pyStr(yield* callPy(new PyBound(v,m),[],null));
+  }
+  return pyStr(v);
+}
+
+function pyEq(a,b){
+  if(typeof a==="boolean") a=a?1:0;
+  if(typeof b==="boolean") b=b?1:0;
+  if(a===b) return true;
+  if(a===null||b===null) return false;
+  if(Array.isArray(a)&&Array.isArray(b)){
+    if((a instanceof PyTuple)!==(b instanceof PyTuple)) return false;
+    if(a.length!==b.length) return false;
+    for(let i=0;i<a.length;i++) if(!pyEq(a[i],b[i])) return false;
+    return true;
+  }
+  if(a instanceof PyDict&&b instanceof PyDict){
+    if(a.m.size!==b.m.size) return false;
+    for(const [k,kv] of a.m){ if(!b.m.has(k)) return false; if(!pyEq(kv[1],b.m.get(k)[1])) return false; }
+    return true;
+  }
+  if(a instanceof PySet&&b instanceof PySet){
+    if(a.m.size!==b.m.size) return false;
+    for(const k of a.m.keys()) if(!b.m.has(k)) return false;
+    return true;
+  }
+  return false;
+}
+function pyCmp(a,b){
+  if(typeof a==="boolean") a=a?1:0;
+  if(typeof b==="boolean") b=b?1:0;
+  if(typeof a==="number"&&typeof b==="number") return a<b?-1:a>b?1:0;
+  if(typeof a==="string"&&typeof b==="string") return a<b?-1:a>b?1:0;
+  if(Array.isArray(a)&&Array.isArray(b)){
+    const n=Math.min(a.length,b.length);
+    for(let i=0;i<n;i++){ const c=pyCmp(a[i],b[i]); if(c) return c; }
+    return a.length===b.length?0:(a.length<b.length?-1:1);
+  }
+  throw pyErr("TypeError","'<' not supported between instances of '"+pyTypeName(a)+"' and '"+pyTypeName(b)+"'");
+}
+function pyIn(needle,hay){
+  if(typeof hay==="string") return typeof needle==="string" ? hay.indexOf(needle)>=0 : false;
+  if(hay instanceof PyDict) return hay.m.has(dkey(needle));
+  if(hay instanceof PySet) return hay.m.has(dkey(needle));
+  if(Array.isArray(hay)){ for(const x of hay) if(pyEq(x,needle)) return true; return false; }
+  if(hay instanceof PyRange){ for(const x of pyIter(hay)) if(pyEq(x,needle)) return true; return false; }
+  throw pyErr("TypeError","argument of type '"+pyTypeName(hay)+"' is not iterable");
+}
+function* pyIter(v){
+  if(v===null||v===undefined) throw pyErr("TypeError","'NoneType' object is not iterable");
+  if(typeof v==="string"){ for(const ch of v) yield ch; return; }
+  if(Array.isArray(v)){ for(let i=0;i<v.length;i++) yield v[i]; return; }
+  if(v instanceof PyRange){
+    const {a,b,c}=v;
+    if(c>0){ for(let i=a;i<b;i+=c) yield i; }
+    else if(c<0){ for(let i=a;i>b;i+=c) yield i; }
+    return;
+  }
+  if(v instanceof PyDict){ for(const kv of [...v.m.values()]) yield kv[0]; return; }
+  if(v instanceof PySet){ for(const x of [...v.m.values()]) yield x; return; }
+  throw pyErr("TypeError","'"+pyTypeName(v)+"' object is not iterable");
+}
+function pyList(v){ return [...pyIter(v)]; }
+function pyIndexNum(k){
+  if(typeof k==="boolean") return k?1:0;
+  if(typeof k!=="number"||!Number.isFinite(k)) throw pyErr("TypeError","list indices must be integers");
+  return Math.trunc(k);
+}
+function pySliceOf(o,s){
+  const n=o.length;
+  const step = s.c==null?1:pyIndexNum(s.c);
+  if(step===0) throw pyErr("ValueError","slice step cannot be zero");
+  let start,stop;
+  if(step>0){
+    start = s.a==null?0:pyIndexNum(s.a); if(start<0) start+=n; start=Math.max(0,Math.min(n,start));
+    stop  = s.b==null?n:pyIndexNum(s.b); if(stop <0) stop +=n; stop =Math.max(0,Math.min(n,stop));
+  }else{
+    start = s.a==null?n-1:pyIndexNum(s.a); if(start<0) start+=n; start=Math.max(-1,Math.min(n-1,start));
+    stop  = s.b==null?-1 :pyIndexNum(s.b); if(stop <0) stop +=n; stop =Math.max(-1,Math.min(n,stop));
+  }
+  const out=[];
+  if(step>0){ for(let i=start;i<stop;i+=step) out.push(o[i]); }
+  else      { for(let i=start;i>stop;i+=step) out.push(o[i]); }
+  if(typeof o==="string") return out.join("");
+  if(o instanceof PyTuple) return PyTuple.from(out);
+  return out;
+}
+function pyGetItem(o,k){
+  if(o instanceof PyDict){
+    const e=o.m.get(dkey(k));
+    if(!e) throw pyErr("KeyError",pyRepr(k));
+    return e[1];
+  }
+  if(typeof o==="string"||Array.isArray(o)){
+    if(k instanceof PySlice) return pySliceOf(o,k);
+    let i=pyIndexNum(k);
+    if(i<0) i+=o.length;
+    if(i<0||i>=o.length) throw pyErr("IndexError",(typeof o==="string"?"string index":(o instanceof PyTuple?"tuple index":"list index"))+" out of range");
+    return o[i];
+  }
+  if(o instanceof PyRange){
+    const arr=pyList(o);
+    if(k instanceof PySlice) return pySliceOf(arr,k);
+    let i=pyIndexNum(k); if(i<0) i+=arr.length;
+    if(i<0||i>=arr.length) throw pyErr("IndexError","range object index out of range");
+    return arr[i];
+  }
+  throw pyErr("TypeError","'"+pyTypeName(o)+"' object is not subscriptable");
+}
+function pySetItem(o,k,v){
+  if(o instanceof PyDict){ o.m.set(dkey(k),[k,v]); return; }
+  if(Array.isArray(o)&&!(o instanceof PyTuple)){
+    let i=pyIndexNum(k); if(i<0) i+=o.length;
+    if(i<0||i>=o.length) throw pyErr("IndexError","list assignment index out of range");
+    o[i]=v; return;
+  }
+  throw pyErr("TypeError","'"+pyTypeName(o)+"' object does not support item assignment");
+}
+function pyDelItem(o,k){
+  if(o instanceof PyDict){ if(!o.m.delete(dkey(k))) throw pyErr("KeyError",pyRepr(k)); return; }
+  if(Array.isArray(o)&&!(o instanceof PyTuple)){
+    let i=pyIndexNum(k); if(i<0) i+=o.length;
+    if(i<0||i>=o.length) throw pyErr("IndexError","list assignment index out of range");
+    o.splice(i,1); return;
+  }
+  throw pyErr("TypeError","'"+pyTypeName(o)+"' object doesn't support item deletion");
+}
+
+/* ---------------- operators ---------------- */
+function pyNum(v,op){
+  if(typeof v==="boolean") return v?1:0;
+  if(typeof v!=="number") throw pyErr("TypeError","unsupported operand type(s) for "+op+": '"+pyTypeName(v)+"'");
+  return v;
+}
+function pyBin(op,a,b){
+  if(op==="+"){
+    if(typeof a==="string"&&typeof b==="string") return a+b;
+    if(Array.isArray(a)&&Array.isArray(b)){
+      if((a instanceof PyTuple)!==(b instanceof PyTuple))
+        throw pyErr("TypeError","can only concatenate "+pyTypeName(a)+' (not "'+pyTypeName(b)+'") to '+pyTypeName(a));
+      const out=[...a,...b];
+      return (a instanceof PyTuple)?PyTuple.from(out):out;
+    }
+    if(typeof a==="string"||typeof b==="string")
+      throw pyErr("TypeError",'can only concatenate str (not "'+pyTypeName(typeof a==="string"?b:a)+'") to str');
+    return pyNum(a,"+")+pyNum(b,"+");
+  }
+  if(op==="*"){
+    const rep=(seq,n)=>{
+      n=Math.trunc(pyNum(n,"*"));
+      if(typeof seq==="string") return n>0?seq.repeat(n):"";
+      const out=[]; for(let i=0;i<n;i++) out.push(...seq);
+      return (seq instanceof PyTuple)?PyTuple.from(out):out;
+    };
+    if(typeof a==="string"||Array.isArray(a)){ if(typeof b==="number"||typeof b==="boolean") return rep(a,b); }
+    if(typeof b==="string"||Array.isArray(b)){ if(typeof a==="number"||typeof a==="boolean") return rep(b,a); }
+    return pyNum(a,"*")*pyNum(b,"*");
+  }
+  if(op==="%"){
+    if(typeof a==="string") return pyPercentFormat(a,b);
+    const x=pyNum(a,"%"), y=pyNum(b,"%");
+    if(y===0) throw pyErr("ZeroDivisionError","integer division or modulo by zero");
+    return ((x%y)+y)%y;
+  }
+  const x=pyNum(a,op), y=pyNum(b,op);
+  switch(op){
+    case "-": return x-y;
+    case "/": if(y===0) throw pyErr("ZeroDivisionError","division by zero"); return x/y;
+    case "//": if(y===0) throw pyErr("ZeroDivisionError","integer division or modulo by zero"); return Math.floor(x/y);
+    case "**": return Math.pow(x,y);
+    case "&": return x&y;
+    case "|": return x|y;
+    case "^": return x^y;
+    case "<<": return x<<y;
+    case ">>": return x>>y;
+  }
+  throw pyErr("SyntaxError","unknown operator "+op);
+}
+function pyPercentFormat(fmt,val){
+  const args=(val instanceof PyTuple)?[...val]:[val];
+  let i=0;
+  return fmt.replace(/%(?:\(([^)]*)\))?([-+0 #]*)(\d+)?(?:\.(\d+))?([sdifgexr%])/g,(m,key,flags,w,p,t)=>{
+    if(t==="%") return "%";
+    let v;
+    if(key!=null && val instanceof PyDict){ const e=val.m.get(dkey(key)); v=e?e[1]:null; }
+    else v=args[i++];
+    let s;
+    if(t==="d"||t==="i") s=String(Math.trunc(Number(v)));
+    else if(t==="f") s=Number(v).toFixed(p==null?6:+p);
+    else if(t==="x") s=(Math.trunc(Number(v))>>>0).toString(16);
+    else if(t==="e") s=Number(v).toExponential(p==null?6:+p);
+    else if(t==="g") s=String(Number(v));
+    else if(t==="r") s=pyRepr(v);
+    else s=pyStr(v);
+    if(w){
+      const wn=+w;
+      if(s.length<wn) s = flags.indexOf("-")>=0 ? s+" ".repeat(wn-s.length)
+                        : ((flags.indexOf("0")>=0&&t!=="s"?"0":" ").repeat(wn-s.length)+s);
+    }
+    return s;
+  });
+}
+function pyFormatSpec(v,spec){
+  if(!spec) return null;
+  const m=/^(?:([^<>^])?([<>^]))?([+\- ])?(0)?(\d+)?(,)?(?:\.(\d+))?([sdfgexn%])?$/.exec(spec);
+  if(!m) return null;
+  const fillc=m[1], align=m[2], sign=m[3], zero=m[4], width=m[5], comma=m[6], prec=m[7], type=m[8];
+  let s;
+  const isNum = typeof v==="number"||typeof v==="boolean";
+  if(type==="f"||type==="%"){
+    let num=Number(v); if(type==="%") num*=100;
+    s=num.toFixed(prec==null?(type==="%"?1:6):+prec);
+    if(type==="%") s+="%";
+  }
+  else if(type==="d") s=String(Math.trunc(Number(v)));
+  else if(type==="e") s=Number(v).toExponential(prec==null?6:+prec);
+  else if(type==="x") s=(Math.trunc(Number(v))>>>0).toString(16);
+  else if(prec!=null && isNum) s=Number(v).toFixed(+prec);
+  else if(prec!=null && typeof v==="string") s=v.slice(0,+prec);
+  else s=pyStr(v);
+  if(comma && /^-?\d+(\.\d+)?$/.test(s)){
+    const neg=s[0]==="-"; if(neg) s=s.slice(1);
+    const dot=s.indexOf("."), ip=dot<0?s:s.slice(0,dot), fp=dot<0?"":s.slice(dot);
+    s=(neg?"-":"")+ip.replace(/\B(?=(\d{3})+(?!\d))/g,",")+fp;
+  }
+  if(sign==="+" && isNum && Number(v)>=0) s="+"+s;
+  if(width){
+    const w=+width, fill=fillc||(zero?"0":" ");
+    if(s.length<w){
+      const a = align || (isNum?">":"<");
+      if(a==="<") s=s+fill.repeat(w-s.length);
+      else if(a==="^"){ const l=Math.floor((w-s.length)/2); s=fill.repeat(l)+s+fill.repeat(w-s.length-l); }
+      else s=fill.repeat(w-s.length)+s;
+    }
+  }
+  return s;
+}
+
+/* ---------------- tokenizer ---------------- */
+const PY_KW=new Set(["False","None","True","and","as","assert","break","class","continue","def","del",
+  "elif","else","except","finally","for","from","global","if","import","in","is","lambda","nonlocal",
+  "not","or","pass","raise","return","try","while","with","yield"]);
+const PY_OPS=["**=","//=",">>=","<<=","!=","==",">=","<=","->",":=","+=","-=","*=","/=","%=","&=","|=","^=",
+  "**","//",">>","<<","+","-","*","/","%","@","&","|","^","~","<",">","(",")","[","]","{","}",",",":",".",";","="];
+
+function pyTokenize(src){
+  src=String(src).replace(/\r\n?/g,"\n");
+  const toks=[]; const indents=[0];
+  let i=0, line=1, depth=0, atLineStart=true;
+  const push=(t,v)=>toks.push({t,v,line});
+
+  function readString(pref){
+    const startLine=line;
+    let quote, triple=false;
+    if(src.substr(i,3)==="'''"||src.substr(i,3)==='"""'){ quote=src[i]; triple=true; i+=3; }
+    else { quote=src[i]; i+=1; }
+    const raw=pref.indexOf("r")>=0, isF=pref.indexOf("f")>=0;
+    let out="";
+    for(;;){
+      if(i>=src.length) throw pySyntax("unterminated string literal",startLine);
+      const ch=src[i];
+      if(triple && src.substr(i,3)===quote+quote+quote){ i+=3; break; }
+      if(!triple && ch===quote){ i++; break; }
+      if(!triple && ch==="\n") throw pySyntax("EOL while scanning string literal",startLine);
+      if(ch==="\\"){
+        if(raw){ out+=ch+(src[i+1]||""); i+=2; continue; }
+        i++;
+        const e=src[i++];
+        if(e==="n") out+="\n";
+        else if(e==="t") out+="\t";
+        else if(e==="r") out+="\r";
+        else if(e==="\\") out+="\\";
+        else if(e==="'") out+="'";
+        else if(e==='"') out+='"';
+        else if(e==="0") out+="\0";
+        else if(e==="a") out+="\x07";
+        else if(e==="b") out+="\b";
+        else if(e==="f") out+="\f";
+        else if(e==="v") out+="\v";
+        else if(e==="\n"){ line++; }
+        else if(e==="u"){ out+=String.fromCharCode(parseInt(src.substr(i,4),16)||0); i+=4; }
+        else if(e==="x"){ out+=String.fromCharCode(parseInt(src.substr(i,2),16)||0); i+=2; }
+        else out+="\\"+e;
+        continue;
+      }
+      if(ch==="\n") line++;
+      out+=ch; i++;
+    }
+    push(isF?"FSTR":"STR", out);
+  }
+
+  while(i<src.length){
+    if(atLineStart && depth===0){
+      let j=i, col=0;
+      while(j<src.length){
+        const c=src[j];
+        if(c===" "){ col++; j++; }
+        else if(c==="\t"){ col+=8-(col%8); j++; }
+        else break;
+      }
+      if(j>=src.length){ i=j; break; }
+      if(src[j]==="\n"){ i=j+1; line++; continue; }                       // blank line
+      if(src[j]==="#"){ while(j<src.length&&src[j]!=="\n") j++; i=j; continue; }  // comment line
+      i=j; atLineStart=false;
+      const cur=indents[indents.length-1];
+      if(col>cur){ indents.push(col); push("INDENT"); }
+      else if(col<cur){
+        while(col<indents[indents.length-1]) { indents.pop(); push("DEDENT"); }
+        if(col!==indents[indents.length-1]) throw pySyntax("unindent does not match any outer indentation level",line);
+      }
+      continue;
+    }
+    const c=src[i];
+    if(c==="\n"){ i++; line++; if(depth===0){ push("NEWLINE"); atLineStart=true; } continue; }
+    if(c===" "||c==="\t"||c==="\f"||c==="\r"){ i++; continue; }
+    if(c==="\\"&&src[i+1]==="\n"){ i+=2; line++; continue; }
+    if(c==="#"){ while(i<src.length&&src[i]!=="\n") i++; continue; }
+    if(/[A-Za-z_]/.test(c)){
+      let j=i; while(j<src.length&&/[A-Za-z0-9_]/.test(src[j])) j++;
+      const w=src.slice(i,j);
+      if((src[j]==="'"||src[j]==='"') && /^(r|u|b|f|rb|br|fr|rf)$/i.test(w)){ i=j; readString(w.toLowerCase()); continue; }
+      i=j;
+      push(PY_KW.has(w)?"KW":"NAME", w);
+      continue;
+    }
+    if(c==="'"||c==='"'){ readString(""); continue; }
+    if(/[0-9]/.test(c) || (c==="."&&/[0-9]/.test(src[i+1]||""))){
+      let j=i;
+      if(c==="0"&&/[xXbBoO]/.test(src[i+1]||"")){
+        const base=/[xX]/.test(src[i+1])?16:(/[bB]/.test(src[i+1])?2:8);
+        j=i+2;
+        while(j<src.length&&/[0-9a-fA-F_]/.test(src[j])) j++;
+        push("NUM", parseInt(src.slice(i+2,j).replace(/_/g,""),base)||0);
+        i=j; continue;
+      }
+      while(j<src.length&&/[0-9_]/.test(src[j])) j++;
+      if(src[j]==="."){ j++; while(j<src.length&&/[0-9_]/.test(src[j])) j++; }
+      if(/[eE]/.test(src[j]||"")){ let k=j+1; if(/[+\-]/.test(src[k]||"")) k++; if(/[0-9]/.test(src[k]||"")){ j=k; while(j<src.length&&/[0-9]/.test(src[j])) j++; } }
+      push("NUM", parseFloat(src.slice(i,j).replace(/_/g,"")));
+      i=j; continue;
+    }
+    let op=null;
+    for(const o of PY_OPS){ if(src.startsWith(o,i)){ op=o; break; } }
+    if(!op) throw pySyntax("invalid character "+JSON.stringify(c),line);
+    if(op==="("||op==="["||op==="{") depth++;
+    if(op===")"||op==="]"||op==="}") depth=Math.max(0,depth-1);
+    push("OP",op); i+=op.length;
+  }
+  if(toks.length && toks[toks.length-1].t!=="NEWLINE") push("NEWLINE");
+  while(indents.length>1){ indents.pop(); push("DEDENT"); }
+  push("EOF");
+  return toks;
+}
+function pySyntax(msg,line){ const e=new PyExc("SyntaxError",msg); e.line=line||0; return e; }
+
+/* ---------------- parser ---------------- */
+function pyParse(src){
+  const T=pyTokenize(src);
+  let p=0;
+  const peek=(k)=>T[p+(k||0)];
+  const tt=()=>T[p].t;
+  const tv=()=>T[p].v;
+  const isOp=(v)=>T[p].t==="OP"&&T[p].v===v;
+  const isKw=(v)=>T[p].t==="KW"&&T[p].v===v;
+  const next=()=>T[p++];
+  function expectOp(v){ if(!isOp(v)) throw pySyntax("expected '"+v+"' but found "+describe(T[p]),T[p].line); return next(); }
+  function expectKw(v){ if(!isKw(v)) throw pySyntax("expected '"+v+"'",T[p].line); return next(); }
+  function expect(t){ if(tt()!==t) throw pySyntax("expected "+t.toLowerCase()+" but found "+describe(T[p]),T[p].line); return next(); }
+  function describe(tok){
+    if(tok.t==="EOF") return "end of file";
+    if(tok.t==="NEWLINE") return "end of line";
+    if(tok.t==="INDENT"||tok.t==="DEDENT") return "a change in indentation";
+    return "'"+tok.v+"'";
+  }
+  function skipNewlines(){ while(tt()==="NEWLINE") next(); }
+
+  function parseModule(){
+    const body=[];
+    skipNewlines();
+    while(tt()!=="EOF"){ body.push(...parseStatement()); skipNewlines(); }
+    return {k:"Module",body};
+  }
+  function parseBlock(){
+    // ": <simple statements>" on one line, or ":" NEWLINE INDENT ... DEDENT
+    expectOp(":");
+    if(tt()!=="NEWLINE"){ return parseSimpleLine(); }
+    expect("NEWLINE");
+    skipNewlines();
+    expect("INDENT");
+    const body=[];
+    skipNewlines();
+    while(tt()!=="DEDENT"&&tt()!=="EOF"){ body.push(...parseStatement()); skipNewlines(); }
+    if(tt()==="DEDENT") next();
+    if(!body.length) throw pySyntax("expected an indented block",T[p].line);
+    return body;
+  }
+  function parseSimpleLine(){
+    const out=[];
+    for(;;){
+      out.push(parseSimple());
+      if(isOp(";")){ next(); if(tt()==="NEWLINE"||tt()==="EOF") break; continue; }
+      break;
+    }
+    if(tt()==="NEWLINE") next();
+    return out;
+  }
+  function parseStatement(){
+    const line=T[p].line;
+    if(isKw("if"))    return [parseIf()];
+    if(isKw("while")) return [parseWhile()];
+    if(isKw("for"))   return [parseFor()];
+    if(isKw("def"))   return [parseDef()];
+    if(isKw("class")) return [parseClass()];
+    if(isKw("try"))   return [parseTry()];
+    if(isKw("with"))  return [parseWith()];
+    if(isOp("@")){                                  // decorators: parsed and ignored
+      while(isOp("@")){ next(); parseExpr(); if(tt()==="NEWLINE") next(); skipNewlines(); }
+      return parseStatement();
+    }
+    const s=parseSimpleLine();
+    s.forEach(x=>{ if(!x.line) x.line=line; });
+    return s;
+  }
+  function parseIf(){
+    const line=T[p].line;
+    expectKw("if");
+    const test=parseExpr();
+    const body=parseBlock();
+    let orelse=null;
+    skipNewlines();
+    if(isKw("elif")){ T[p]={t:"KW",v:"if",line:T[p].line}; orelse=[parseIf()]; }
+    else if(isKw("else")){ next(); orelse=parseBlock(); }
+    return {k:"If",test,body,orelse,line};
+  }
+  function parseWhile(){
+    const line=T[p].line;
+    expectKw("while");
+    const test=parseExpr();
+    const body=parseBlock();
+    skipNewlines();
+    if(isKw("else")){ next(); parseBlock(); }        // while/else: parsed, not run
+    return {k:"While",test,body,line};
+  }
+  function parseFor(){
+    const line=T[p].line;
+    expectKw("for");
+    const target=parseTargetList();
+    expectKw("in");
+    const iter=parseExpr();
+    const body=parseBlock();
+    skipNewlines();
+    if(isKw("else")){ next(); parseBlock(); }
+    return {k:"For",target,iter,body,line};
+  }
+  function parseTargetList(){
+    const first=parseTarget();
+    if(!isOp(",")) return first;
+    const elts=[first];
+    while(isOp(",")){ next(); if(isKw("in")) break; elts.push(parseTarget()); }
+    return {k:"Tuple",elts};
+  }
+  function parseTarget(){
+    if(isOp("*")){ next(); return {k:"Starred",value:parseTarget()}; }
+    if(isOp("(")||isOp("[")){
+      const close=isOp("(")?")":"]"; next();
+      const elts=[];
+      while(!isOp(close)){ elts.push(parseTarget()); if(isOp(",")) next(); else break; }
+      expectOp(close);
+      return {k:"Tuple",elts};
+    }
+    return parseUnaryPostfix();
+  }
+  function parseDef(){
+    const line=T[p].line;
+    expectKw("def");
+    const name=expect("NAME").v;
+    expectOp("(");
+    const params=parseParams();
+    expectOp(")");
+    if(isOp("->")){ next(); parseExpr(); }           // return annotations: ignored
+    const body=parseBlock();
+    return {k:"Def",name,params,body,line};
+  }
+  function parseParams(){
+    const params={names:[],star:null,dstar:null};
+    while(!isOp(")")){
+      if(isOp("*")){ next(); if(tt()==="NAME") params.star=next().v; }
+      else if(isOp("**")){ next(); params.dstar=expect("NAME").v; }
+      else if(isOp("/")){ next(); }                  // positional-only marker: ignored
+      else{
+        const nm=expect("NAME").v;
+        if(isOp(":")){ next(); parseExpr(); }        // annotations: ignored
+        let def=null;
+        if(isOp("=")){ next(); def=parseExpr(); }
+        params.names.push({name:nm,def});
+      }
+      if(isOp(",")) next(); else break;
+    }
+    return params;
+  }
+  function parseClass(){
+    const line=T[p].line;
+    expectKw("class");
+    const name=expect("NAME").v;
+    const bases=[];
+    if(isOp("(")){
+      next();
+      while(!isOp(")")){ bases.push(parseExpr()); if(isOp(",")) next(); else break; }
+      expectOp(")");
+    }
+    const body=parseBlock();
+    return {k:"Class",name,bases,body,line};
+  }
+  function parseTry(){
+    const line=T[p].line;
+    expectKw("try");
+    const body=parseBlock();
+    const handlers=[]; let fin=null;
+    skipNewlines();
+    while(isKw("except")){
+      next();
+      let types=null, nm=null;
+      if(!isOp(":")){
+        const e1=parseExpr();
+        types=exprToNames(e1);
+        if(isKw("as")){ next(); nm=expect("NAME").v; }
+      }
+      const hbody=parseBlock();
+      handlers.push({types,name:nm,body:hbody});
+      skipNewlines();
+    }
+    if(isKw("else")){ next(); parseBlock(); }
+    skipNewlines();
+    if(isKw("finally")){ next(); fin=parseBlock(); }
+    return {k:"Try",body,handlers,fin,line};
+  }
+  function exprToNames(e){
+    if(e.k==="Name") return [e.id];
+    if(e.k==="Tuple") return e.elts.map(x=>x.k==="Name"?x.id:"Exception");
+    return ["Exception"];
+  }
+  function parseWith(){
+    /* `with expr as name:` — no context-manager protocol, it just binds the
+       value and runs the block, which is what a beginner script expects. */
+    const line=T[p].line;
+    expectKw("with");
+    const items=[];
+    for(;;){
+      const v=parseExpr();
+      let nm=null;
+      if(isKw("as")){ next(); nm=parseTarget(); }
+      items.push({value:v,target:nm});
+      if(isOp(",")){ next(); continue; }
+      break;
+    }
+    const body=parseBlock();
+    return {k:"With",items,body,line};
+  }
+  function parseSimple(){
+    const line=T[p].line;
+    if(isKw("pass")){ next(); return {k:"Pass",line}; }
+    if(isKw("break")){ next(); return {k:"Break",line}; }
+    if(isKw("continue")){ next(); return {k:"Continue",line}; }
+    if(isKw("return")){
+      next();
+      const v=(tt()==="NEWLINE"||tt()==="EOF"||isOp(";"))?null:parseExprList();
+      return {k:"Return",value:v,line};
+    }
+    if(isKw("raise")){
+      next();
+      const v=(tt()==="NEWLINE"||tt()==="EOF"||isOp(";"))?null:parseExpr();
+      if(isKw("from")){ next(); parseExpr(); }
+      return {k:"Raise",exc:v,line};
+    }
+    if(isKw("assert")){
+      next();
+      const test=parseExpr();
+      let msg=null;
+      if(isOp(",")){ next(); msg=parseExpr(); }
+      return {k:"Assert",test,msg,line};
+    }
+    if(isKw("global")||isKw("nonlocal")){
+      next();
+      const names=[expect("NAME").v];
+      while(isOp(",")){ next(); names.push(expect("NAME").v); }
+      return {k:"Global",names,line};
+    }
+    if(isKw("del")){
+      next();
+      const targets=[parseUnaryPostfix()];
+      while(isOp(",")){ next(); targets.push(parseUnaryPostfix()); }
+      return {k:"Del",targets,line};
+    }
+    if(isKw("import")){
+      next();
+      const names=[];
+      for(;;){
+        let mod=expect("NAME").v;
+        while(isOp(".")){ next(); mod+="."+expect("NAME").v; }
+        let as=null;
+        if(isKw("as")){ next(); as=expect("NAME").v; }
+        names.push({name:mod,as});
+        if(isOp(",")){ next(); continue; }
+        break;
+      }
+      return {k:"Import",names,line};
+    }
+    if(isKw("from")){
+      next();
+      let mod=expect("NAME").v;
+      while(isOp(".")){ next(); mod+="."+expect("NAME").v; }
+      expectKw("import");
+      const names=[];
+      if(isOp("*")){ next(); names.push({name:"*",as:null}); }
+      else{
+        const paren=isOp("("); if(paren) next();
+        for(;;){
+          const nm=expect("NAME").v;
+          let as=null;
+          if(isKw("as")){ next(); as=expect("NAME").v; }
+          names.push({name:nm,as});
+          if(isOp(",")){ next(); continue; }
+          break;
+        }
+        if(paren) expectOp(")");
+      }
+      return {k:"From",module:mod,names,line};
+    }
+    // expression / assignment
+    const first=parseExprList();
+    if(isOp("=")){
+      const targets=[first];
+      let value=null;
+      while(isOp("=")){
+        next();
+        value=parseExprList();
+        if(isOp("=")) targets.push(value);
+      }
+      return {k:"Assign",targets,value,line};
+    }
+    const aug=["+=","-=","*=","/=","//=","%=","**=","&=","|=","^=",">>=","<<="];
+    if(tt()==="OP"&&aug.indexOf(tv())>=0){
+      const op=next().v.slice(0,-1);
+      const value=parseExprList();
+      return {k:"Aug",target:first,op,value,line};
+    }
+    if(isOp(":")){                                   // annotated assignment: x: int = 3
+      next(); parseExpr();
+      if(isOp("=")){ next(); const value=parseExprList(); return {k:"Assign",targets:[first],value,line}; }
+      return {k:"Pass",line};
+    }
+    return {k:"Expr",e:first,line};
+  }
+  function parseListElement(){
+    // `*rest` only shows up in unpacking targets and tuple displays
+    if(isOp("*")){ next(); return {k:"Starred",value:parseExpr()}; }
+    return parseExpr();
+  }
+  function parseExprList(){
+    const first=parseListElement();
+    if(!isOp(",")) return first;
+    const elts=[first];
+    while(isOp(",")){
+      next();
+      if(tt()==="NEWLINE"||tt()==="EOF"||isOp("=")||isOp(")")||isOp("]")||isOp("}")||isOp(":")) break;
+      elts.push(parseListElement());
+    }
+    return {k:"Tuple",elts};
+  }
+  function parseExpr(){ return parseTernary(); }
+  function parseTernary(){
+    if(isKw("lambda")) return parseLambda();
+    const v=parseOr();
+    if(isKw("if")){
+      next();
+      const cond=parseOr();
+      expectKw("else");
+      const other=parseExpr();
+      return {k:"IfExp",test:cond,body:v,orelse:other};
+    }
+    return v;
+  }
+  function parseLambda(){
+    expectKw("lambda");
+    const params={names:[],star:null,dstar:null};
+    while(!isOp(":")){
+      if(isOp("*")){ next(); if(tt()==="NAME") params.star=next().v; }
+      else if(isOp("**")){ next(); params.dstar=expect("NAME").v; }
+      else{
+        const nm=expect("NAME").v;
+        let def=null;
+        if(isOp("=")){ next(); def=parseExpr(); }
+        params.names.push({name:nm,def});
+      }
+      if(isOp(",")) next(); else break;
+    }
+    expectOp(":");
+    const body=parseExpr();
+    return {k:"Lambda",params,body};
+  }
+  function parseOr(){
+    let l=parseAnd();
+    while(isKw("or")){ next(); l={k:"Bool",op:"or",l,r:parseAnd()}; }
+    return l;
+  }
+  function parseAnd(){
+    let l=parseNot();
+    while(isKw("and")){ next(); l={k:"Bool",op:"and",l,r:parseNot()}; }
+    return l;
+  }
+  function parseNot(){
+    if(isKw("not")){ next(); return {k:"Unary",op:"not",v:parseNot()}; }
+    return parseComparison();
+  }
+  function parseComparison(){
+    const first=parseBitOr();
+    const ops=[], rest=[];
+    for(;;){
+      let op=null;
+      if(tt()==="OP"&&["<",">","<=",">=","==","!="].indexOf(tv())>=0) op=next().v;
+      else if(isKw("in")){ next(); op="in"; }
+      else if(isKw("not")&&peek(1).t==="KW"&&peek(1).v==="in"){ next(); next(); op="not in"; }
+      else if(isKw("is")){
+        next();
+        if(isKw("not")){ next(); op="is not"; } else op="is";
+      }
+      else break;
+      ops.push(op); rest.push(parseBitOr());
+    }
+    if(!ops.length) return first;
+    return {k:"Compare",first,ops,rest};
+  }
+  function binLevel(nextFn,opsList){
+    return function(){
+      let l=nextFn();
+      while(tt()==="OP"&&opsList.indexOf(tv())>=0){ const op=next().v; l={k:"Bin",op,l,r:nextFn()}; }
+      return l;
+    };
+  }
+  const parseArith=binLevel(()=>parseTerm(),["+","-"]);
+  function parseBitOr(){ let l=parseBitXor(); while(isOp("|")){ next(); l={k:"Bin",op:"|",l,r:parseBitXor()}; } return l; }
+  function parseBitXor(){ let l=parseBitAnd(); while(isOp("^")){ next(); l={k:"Bin",op:"^",l,r:parseBitAnd()}; } return l; }
+  function parseBitAnd(){ let l=parseShift(); while(isOp("&")){ next(); l={k:"Bin",op:"&",l,r:parseShift()}; } return l; }
+  function parseShift(){
+    let l=parseArith();
+    while(tt()==="OP"&&(tv()==="<<"||tv()===">>")){ const op=next().v; l={k:"Bin",op,l,r:parseArith()}; }
+    return l;
+  }
+  function parseTerm(){
+    let l=parseUnary();
+    while(tt()==="OP"&&["*","/","//","%","@"].indexOf(tv())>=0){ const op=next().v; l={k:"Bin",op:op==="@"?"*":op,l,r:parseUnary()}; }
+    return l;
+  }
+  function parseUnary(){
+    if(tt()==="OP"&&(tv()==="-"||tv()==="+"||tv()==="~")){ const op=next().v; return {k:"Unary",op,v:parseUnary()}; }
+    return parsePower();
+  }
+  function parsePower(){
+    const b=parseUnaryPostfix();
+    if(isOp("**")){ next(); return {k:"Bin",op:"**",l:b,r:parseUnary()}; }
+    return b;
+  }
+  function parseUnaryPostfix(){
+    let a=parseAtom();
+    for(;;){
+      if(isOp("(")){
+        next();
+        const args=[];
+        while(!isOp(")")){
+          if(isOp("*")){ next(); args.push({kind:"star",value:parseExpr()}); }
+          else if(isOp("**")){ next(); args.push({kind:"dstar",value:parseExpr()}); }
+          else if(tt()==="NAME"&&peek(1).t==="OP"&&peek(1).v==="="){
+            const nm=next().v; next();
+            args.push({kind:"kw",name:nm,value:parseExpr()});
+          }
+          else{
+            const e=parseExpr();
+            if(isKw("for")){ args.push({kind:"pos",value:parseCompTail(e,"list")}); }
+            else args.push({kind:"pos",value:e});
+          }
+          if(isOp(",")) next(); else break;
+        }
+        expectOp(")");
+        a={k:"Call",fn:a,args};
+        continue;
+      }
+      if(isOp("[")){
+        next();
+        const sl=parseSubscript();
+        expectOp("]");
+        a={k:"Sub",value:a,slice:sl};
+        continue;
+      }
+      if(isOp(".")){
+        next();
+        const nm=expect("NAME").v;
+        a={k:"Attr",value:a,attr:nm};
+        continue;
+      }
+      break;
+    }
+    return a;
+  }
+  function parseSubscript(){
+    let lo=null,hi=null,st=null,isSlice=false;
+    if(!isOp(":")) lo=parseExpr();
+    if(isOp(":")){
+      isSlice=true; next();
+      if(!isOp("]")&&!isOp(":")) hi=parseExpr();
+      if(isOp(":")){ next(); if(!isOp("]")) st=parseExpr(); }
+    }
+    if(!isSlice) return lo;
+    return {k:"Slice",lo,hi,st};
+  }
+  function parseCompTail(elt,kind,key,val){
+    const gens=[];
+    while(isKw("for")){
+      next();
+      const target=parseTargetList();
+      expectKw("in");
+      const iter=parseOr();
+      const ifs=[];
+      while(isKw("if")){ next(); ifs.push(parseOr()); }
+      gens.push({target,iter,ifs});
+    }
+    return {k:"Comp",kind,elt,key,val,gens};
+  }
+  function parseAtom(){
+    const tk=T[p];
+    if(tk.t==="NUM"){ next(); return {k:"Num",v:tk.v}; }
+    if(tk.t==="STR"){
+      next();
+      let s=tk.v;
+      while(tt()==="STR"){ s+=next().v; }                 // implicit concatenation
+      return {k:"Str",v:s};
+    }
+    if(tk.t==="FSTR"){ next(); return parseFString(tk.v,tk.line); }
+    if(tk.t==="NAME"){ next(); return {k:"Name",id:tk.v}; }
+    if(tk.t==="KW"){
+      if(tk.v==="True"){ next(); return {k:"Const",v:true}; }
+      if(tk.v==="False"){ next(); return {k:"Const",v:false}; }
+      if(tk.v==="None"){ next(); return {k:"Const",v:null}; }
+      if(tk.v==="lambda") return parseLambda();
+      if(tk.v==="not"){ next(); return {k:"Unary",op:"not",v:parseNot()}; }
+      throw pySyntax("unexpected keyword '"+tk.v+"'",tk.line);
+    }
+    if(isOp("(")){
+      next();
+      if(isOp(")")){ next(); return {k:"TupleLit",elts:[]}; }
+      const first=parseExpr();
+      if(isKw("for")){ const c=parseCompTail(first,"list"); expectOp(")"); return c; }
+      if(isOp(",")){
+        const elts=[first];
+        while(isOp(",")){ next(); if(isOp(")")) break; elts.push(parseExpr()); }
+        expectOp(")");
+        return {k:"TupleLit",elts};
+      }
+      expectOp(")");
+      return first;
+    }
+    if(isOp("[")){
+      next();
+      if(isOp("]")){ next(); return {k:"ListLit",elts:[]}; }
+      const first=parseExpr();
+      if(isKw("for")){ const c=parseCompTail(first,"list"); expectOp("]"); return c; }
+      const elts=[first];
+      while(isOp(",")){ next(); if(isOp("]")) break; elts.push(parseExpr()); }
+      expectOp("]");
+      return {k:"ListLit",elts};
+    }
+    if(isOp("{")){
+      next();
+      if(isOp("}")){ next(); return {k:"DictLit",keys:[],vals:[]}; }
+      const first=parseExpr();
+      if(isOp(":")){
+        next();
+        const firstVal=parseExpr();
+        if(isKw("for")){ const c=parseCompTail(null,"dict",first,firstVal); expectOp("}"); return c; }
+        const keys=[first], vals=[firstVal];
+        while(isOp(",")){
+          next(); if(isOp("}")) break;
+          keys.push(parseExpr()); expectOp(":"); vals.push(parseExpr());
+        }
+        expectOp("}");
+        return {k:"DictLit",keys,vals};
+      }
+      if(isKw("for")){ const c=parseCompTail(first,"set"); expectOp("}"); return c; }
+      const elts=[first];
+      while(isOp(",")){ next(); if(isOp("}")) break; elts.push(parseExpr()); }
+      expectOp("}");
+      return {k:"SetLit",elts};
+    }
+    throw pySyntax("unexpected "+describe(tk),tk.line);
+  }
+  function parseFString(raw,line){
+    const parts=[];
+    let buf="";
+    for(let i=0;i<raw.length;i++){
+      const c=raw[i];
+      if(c==="{"&&raw[i+1]==="{"){ buf+="{"; i++; continue; }
+      if(c==="}"&&raw[i+1]==="}"){ buf+="}"; i++; continue; }
+      if(c==="{"){
+        if(buf){ parts.push({t:"s",v:buf}); buf=""; }
+        let d=1, j=i+1, expr="";
+        while(j<raw.length&&d>0){
+          if(raw[j]==="{") d++;
+          else if(raw[j]==="}"){ d--; if(!d) break; }
+          expr+=raw[j]; j++;
+        }
+        i=j;
+        let spec=null, conv=null;
+        const bang=expr.lastIndexOf("!");
+        const colon=fstrSpecColon(expr);
+        if(colon>=0){ spec=expr.slice(colon+1); expr=expr.slice(0,colon); }
+        if(bang>=0 && bang>colon && /^[rsa]$/.test(expr.slice(bang+1))){ conv=expr.slice(bang+1); expr=expr.slice(0,bang); }
+        if(/=\s*$/.test(expr) && !/[=!<>]=\s*$/.test(expr)){        // f"{x=}" debug form
+          const src2=expr.replace(/=\s*$/,"");
+          parts.push({t:"s",v:src2+"="});
+          expr=src2;
+        }
+        let sub;
+        try{ sub=pyParseExpression(expr); }
+        catch(e){ throw pySyntax("bad expression in f-string: "+expr.trim(),line); }
+        parts.push({t:"e",node:sub,spec,conv});
+        continue;
+      }
+      buf+=c;
+    }
+    if(buf) parts.push({t:"s",v:buf});
+    return {k:"FStr",parts};
+  }
+  function fstrSpecColon(s){
+    let d=0;
+    for(let i=0;i<s.length;i++){
+      const c=s[i];
+      if(c==="("||c==="["||c==="{") d++;
+      else if(c===")"||c==="]"||c==="}") d--;
+      else if(c===":"&&d===0) return i;
+    }
+    return -1;
+  }
+  return parseModule();
+}
+function pyParseExpression(src){
+  const mod=pyParse(String(src).trim());
+  if(!mod.body.length||mod.body[0].k!=="Expr") throw pySyntax("not an expression",0);
+  return mod.body[0].e;
+}
+
+/* ---------------- environment ---------------- */
+class PyEnv{
+  constructor(parent){ this.v=new Map(); this.parent=parent||null; this.globals=null; }
+  get(n){ let e=this; while(e){ if(e.v.has(n)) return e.v.get(n); e=e.parent; } return undefined; }
+  setLocal(n,val){ this.v.set(n,val); }
+  set(n,val){
+    if(this.globals&&this.globals.has(n)){ let r=this; while(r.parent&&r.parent.parent) r=r.parent; r.v.set(n,val); return; }
+    this.v.set(n,val);
+  }
+}
+function envRoot(env){ let e=env; while(e.parent) e=e.parent; return e; }
+
+function classLookup(cls,name){
+  let c=cls, guard=0;
+  while(c&&guard++<20){
+    if(c.d.has(name)) return c.d.get(name);
+    c=c.bases&&c.bases[0];
+  }
+  return undefined;
+}
+function pyGetAttr(o,name){
+  if(o instanceof PyObj){
+    if(o.d.has(name)) return o.d.get(name);
+    const m=classLookup(o.cls,name);
+    if(m!==undefined) return (m instanceof PyFunc)?new PyBound(o,m):m;
+    throw pyErr("AttributeError","'"+o.cls.name+"' object has no attribute '"+name+"'");
+  }
+  if(o instanceof PyClass){
+    const m=classLookup(o,name);
+    if(m!==undefined) return m;
+    throw pyErr("AttributeError","type object '"+o.name+"' has no attribute '"+name+"'");
+  }
+  if(o instanceof PyModule){
+    if(Object.prototype.hasOwnProperty.call(o.d,name)) return o.d[name];
+    throw pyErr("AttributeError","module '"+o.name+"' has no attribute '"+name+"'");
+  }
+  const m=pyMethod(o,name);
+  if(m) return m;
+  throw pyErr("AttributeError","'"+pyTypeName(o)+"' object has no attribute '"+name+"'");
+}
+
+/* ---------------- built-in methods ---------------- */
+function argOr(args,i,d){ return args.length>i&&args[i]!==undefined?args[i]:d; }
+const STR_M={
+  upper:(s)=>s.toUpperCase(),
+  lower:(s)=>s.toLowerCase(),
+  title:(s)=>s.replace(/\w\S*/g,w=>w[0].toUpperCase()+w.slice(1).toLowerCase()),
+  capitalize:(s)=>s?s[0].toUpperCase()+s.slice(1).toLowerCase():s,
+  strip:(s,a)=>a.length?trimChars(s,pyStr(a[0]),3):s.trim(),
+  lstrip:(s,a)=>a.length?trimChars(s,pyStr(a[0]),1):s.replace(/^\s+/,""),
+  rstrip:(s,a)=>a.length?trimChars(s,pyStr(a[0]),2):s.replace(/\s+$/,""),
+  split:(s,a)=>{
+    if(!a.length||a[0]===null) return s.split(/\s+/).filter(x=>x!=="");
+    const sep=pyStr(a[0]);
+    const lim=a.length>1?pyIndexNum(a[1]):-1;
+    if(lim<0) return s.split(sep);
+    const parts=s.split(sep);
+    return parts.slice(0,lim).concat(parts.length>lim?[parts.slice(lim).join(sep)]:[]);
+  },
+  rsplit:(s,a)=>STR_M.split(s,a),
+  splitlines:(s)=>s.split(/\r\n?|\n/).filter((x,i,arr)=>!(i===arr.length-1&&x==="")),
+  join:(s,a)=>pyList(a[0]).map(x=>{ if(typeof x!=="string") throw pyErr("TypeError","sequence item: expected str instance"); return x; }).join(s),
+  replace:(s,a)=>{
+    const from=pyStr(a[0]), to=pyStr(a[1]);
+    if(a.length>2){
+      let n=pyIndexNum(a[2]), out=s;
+      while(n-->0 && out.indexOf(from)>=0) out=out.replace(from,to);
+      return out;
+    }
+    return s.split(from).join(to);
+  },
+  startswith:(s,a)=>{ const p=a[0]; if(p instanceof PyTuple) return [...p].some(x=>s.startsWith(pyStr(x))); return s.startsWith(pyStr(p)); },
+  endswith:(s,a)=>{ const p=a[0]; if(p instanceof PyTuple) return [...p].some(x=>s.endsWith(pyStr(x))); return s.endsWith(pyStr(p)); },
+  find:(s,a)=>s.indexOf(pyStr(a[0])),
+  rfind:(s,a)=>s.lastIndexOf(pyStr(a[0])),
+  index:(s,a)=>{ const i=s.indexOf(pyStr(a[0])); if(i<0) throw pyErr("ValueError","substring not found"); return i; },
+  count:(s,a)=>{ const t=pyStr(a[0]); if(!t) return s.length+1; return s.split(t).length-1; },
+  isdigit:(s)=>s.length>0&&/^[0-9]+$/.test(s),
+  isalpha:(s)=>s.length>0&&/^[A-Za-z]+$/.test(s),
+  isalnum:(s)=>s.length>0&&/^[A-Za-z0-9]+$/.test(s),
+  isspace:(s)=>s.length>0&&/^\s+$/.test(s),
+  isupper:(s)=>/[A-Z]/.test(s)&&s===s.toUpperCase(),
+  islower:(s)=>/[a-z]/.test(s)&&s===s.toLowerCase(),
+  zfill:(s,a)=>{ const w=pyIndexNum(a[0]); const neg=s[0]==="-"; const b=neg?s.slice(1):s; return (neg?"-":"")+(b.length>=w-(neg?1:0)?b:"0".repeat(w-(neg?1:0)-b.length)+b); },
+  ljust:(s,a)=>{ const w=pyIndexNum(a[0]), f=a.length>1?pyStr(a[1]):" "; return s.length>=w?s:s+f.repeat(w-s.length); },
+  rjust:(s,a)=>{ const w=pyIndexNum(a[0]), f=a.length>1?pyStr(a[1]):" "; return s.length>=w?s:f.repeat(w-s.length)+s; },
+  center:(s,a)=>{ const w=pyIndexNum(a[0]), f=a.length>1?pyStr(a[1]):" "; if(s.length>=w) return s; const l=Math.floor((w-s.length)/2); return f.repeat(l)+s+f.repeat(w-s.length-l); },
+  format:(s,a,kw)=>{
+    let auto=0;
+    return s.replace(/\{([^{}]*)\}/g,(m,inner)=>{
+      let spec=null;
+      const ci=inner.indexOf(":");
+      if(ci>=0){ spec=inner.slice(ci+1); inner=inner.slice(0,ci); }
+      let v;
+      if(inner==="") v=a[auto++];
+      else if(/^\d+$/.test(inner)) v=a[+inner];
+      else if(kw&&Object.prototype.hasOwnProperty.call(kw,inner)) v=kw[inner];
+      else v=null;
+      const f=pyFormatSpec(v,spec);
+      return f!=null?f:pyStr(v);
+    });
+  },
+};
+function trimChars(s,chars,mode){
+  let a=0,b=s.length;
+  if(mode&1){ while(a<b&&chars.indexOf(s[a])>=0) a++; }
+  if(mode&2){ while(b>a&&chars.indexOf(s[b-1])>=0) b--; }
+  return s.slice(a,b);
+}
+const LIST_M={
+  append:(l,a)=>{ l.push(argOr(a,0,null)); return null; },
+  extend:(l,a)=>{ for(const x of pyIter(a[0])) l.push(x); return null; },
+  insert:(l,a)=>{ let i=pyIndexNum(a[0]); if(i<0) i+=l.length; l.splice(Math.max(0,Math.min(l.length,i)),0,a[1]); return null; },
+  pop:(l,a)=>{
+    if(!l.length) throw pyErr("IndexError","pop from empty list");
+    let i=a.length?pyIndexNum(a[0]):l.length-1;
+    if(i<0) i+=l.length;
+    if(i<0||i>=l.length) throw pyErr("IndexError","pop index out of range");
+    return l.splice(i,1)[0];
+  },
+  remove:(l,a)=>{ for(let i=0;i<l.length;i++) if(pyEq(l[i],a[0])){ l.splice(i,1); return null; } throw pyErr("ValueError","list.remove(x): x not in list"); },
+  clear:(l)=>{ l.length=0; return null; },
+  index:(l,a)=>{ for(let i=0;i<l.length;i++) if(pyEq(l[i],a[0])) return i; throw pyErr("ValueError",pyRepr(a[0])+" is not in list"); },
+  count:(l,a)=>{ let n=0; for(const x of l) if(pyEq(x,a[0])) n++; return n; },
+  reverse:(l)=>{ l.reverse(); return null; },
+  copy:(l)=>l.slice(),
+  sort:function*(l,a,kw){ const s=yield* pySortArray(l,kw); l.length=0; l.push(...s); return null; },
+};
+LIST_M.sort.gen=true;
+const TUP_M={
+  index:LIST_M.index, count:LIST_M.count,
+};
+const DICT_M={
+  get:(d,a)=>{ const e=d.m.get(dkey(a[0])); return e?e[1]:argOr(a,1,null); },
+  keys:(d)=>[...d.m.values()].map(kv=>kv[0]),
+  values:(d)=>[...d.m.values()].map(kv=>kv[1]),
+  items:(d)=>[...d.m.values()].map(kv=>PyTuple.from([kv[0],kv[1]])),
+  pop:(d,a)=>{
+    const k=dkey(a[0]), e=d.m.get(k);
+    if(!e){ if(a.length>1) return a[1]; throw pyErr("KeyError",pyRepr(a[0])); }
+    d.m.delete(k); return e[1];
+  },
+  update:(d,a)=>{
+    const o=a[0];
+    if(o instanceof PyDict){ for(const kv of o.m.values()) d.m.set(dkey(kv[0]),[kv[0],kv[1]]); return null; }
+    for(const pair of pyIter(o)){ const p=pyList(pair); d.m.set(dkey(p[0]),[p[0],p[1]]); }
+    return null;
+  },
+  setdefault:(d,a)=>{
+    const k=dkey(a[0]), e=d.m.get(k);
+    if(e) return e[1];
+    const v=argOr(a,1,null); d.m.set(k,[a[0],v]); return v;
+  },
+  clear:(d)=>{ d.m.clear(); return null; },
+  copy:(d)=>{ const n=new PyDict(); for(const [k,kv] of d.m) n.m.set(k,[kv[0],kv[1]]); return n; },
+};
+const SET_M={
+  add:(s,a)=>{ s.m.set(dkey(a[0]),a[0]); return null; },
+  remove:(s,a)=>{ if(!s.m.delete(dkey(a[0]))) throw pyErr("KeyError",pyRepr(a[0])); return null; },
+  discard:(s,a)=>{ s.m.delete(dkey(a[0])); return null; },
+  clear:(s)=>{ s.m.clear(); return null; },
+  copy:(s)=>{ const n=new PySet(); for(const [k,v] of s.m) n.m.set(k,v); return n; },
+  union:(s,a)=>{ const n=SET_M.copy(s); for(const x of pyIter(a[0])) n.m.set(dkey(x),x); return n; },
+  intersection:(s,a)=>{ const o=new PySet(); for(const x of pyIter(a[0])) if(s.m.has(dkey(x))) o.m.set(dkey(x),x); return o; },
+  difference:(s,a)=>{ const n=SET_M.copy(s); for(const x of pyIter(a[0])) n.m.delete(dkey(x)); return n; },
+};
+function pyMethod(o,name){
+  let tbl=null;
+  if(typeof o==="string") tbl=STR_M;
+  else if(o instanceof PyTuple) tbl=TUP_M;
+  else if(Array.isArray(o)) tbl=LIST_M;
+  else if(o instanceof PyDict) tbl=DICT_M;
+  else if(o instanceof PySet) tbl=SET_M;
+  if(!tbl||!Object.prototype.hasOwnProperty.call(tbl,name)) return null;
+  const f=tbl[name];
+  let bound;
+  if(f.gen){ bound=function*(args,kw){ return yield* f(o,args||[],kw||null); }; bound.gen=true; }
+  else bound=(args,kw)=>f(o,args||[],kw||null);
+  bound.pyName=name;
+  return bound;
+}
+function* pySortArray(arr,kw){
+  const keyf=kw&&kw.key?kw.key:null;
+  const rev=!!(kw&&pyTruth(kw.reverse));
+  const decorated=[];
+  for(const x of arr) decorated.push([keyf?yield* callPy(keyf,[x],null):x, x]);
+  decorated.sort((p,q)=>pyCmp(p[0],q[0]));
+  if(rev) decorated.reverse();
+  return decorated.map(p=>p[1]);
+}
+
+/* ---------------- calling ---------------- */
+function* callPy(f,args,kw){
+  if(typeof f==="function"){
+    if(f.gen) return yield* f(args,kw);
+    const r=f(args,kw);
+    return r===undefined?null:r;
+  }
+  if(f instanceof PyBound) return yield* callPy(f.fn,[f.self,...args],kw);
+  if(f instanceof PyFunc){
+    if(PY.depth>180) throw pyErr("RecursionError","maximum recursion depth exceeded");
+    const env=new PyEnv(f.env);
+    yield* bindParams(f,args,kw,env);
+    PY.depth++;
+    try{ yield* execBlock(f.body,env); return null; }
+    catch(e){ if(e instanceof PyReturn) return e.v; throw e; }
+    finally{ PY.depth--; }
+  }
+  if(f instanceof PyClass){
+    const obj=new PyObj(f);
+    const init=classLookup(f,"__init__");
+    if(init) yield* callPy(new PyBound(obj,init),args,kw);
+    return obj;
+  }
+  throw pyErr("TypeError","'"+pyTypeName(f)+"' object is not callable");
+}
+function* bindParams(f,args,kw,env){
+  const p=f.params;
+  let i=0;
+  const used=new Set();
+  for(const par of p.names){
+    if(kw&&Object.prototype.hasOwnProperty.call(kw,par.name)){ env.setLocal(par.name,kw[par.name]); used.add(par.name); continue; }
+    if(i<args.length){ env.setLocal(par.name,args[i++]); continue; }
+    if(par.def){ env.setLocal(par.name, yield* evalNode(par.def,f.env)); continue; }
+    throw pyErr("TypeError",f.name+"() missing required positional argument: '"+par.name+"'");
+  }
+  if(p.star) env.setLocal(p.star,PyTuple.from(args.slice(i)));
+  else if(i<args.length) throw pyErr("TypeError",f.name+"() takes "+p.names.length+" positional argument(s) but "+args.length+" were given");
+  if(p.dstar){
+    const d=new PyDict();
+    if(kw) for(const k of Object.keys(kw)) if(!used.has(k)) d.m.set(dkey(k),[k,kw[k]]);
+    env.setLocal(p.dstar,d);
+  }else if(kw){
+    for(const k of Object.keys(kw)) if(!used.has(k)) throw pyErr("TypeError",f.name+"() got an unexpected keyword argument '"+k+"'");
+  }
+}
+
+/* ---------------- statements ---------------- */
+function* execBlock(body,env){ for(const st of body) yield* execStmt(st,env); }
+function* execStmt(n,env){
+  if(n.line) PY.line=n.line;
+  switch(n.k){
+    case "Expr": yield* evalNode(n.e,env); return;
+    case "Pass": return;
+    case "Assign": {
+      const val=yield* evalNode(n.value,env);
+      for(const t of n.targets) yield* assignTo(t,val,env);
+      return;
+    }
+    case "Aug": {
+      const cur=yield* evalNode(n.target,env);
+      const rhs=yield* evalNode(n.value,env);
+      if(n.op==="+"&&Array.isArray(cur)&&!(cur instanceof PyTuple)&&Array.isArray(rhs)){
+        for(const x of rhs) cur.push(x);                 // list += list mutates in place
+        return;
+      }
+      yield* assignTo(n.target,pyBin(n.op,cur,rhs),env);
+      return;
+    }
+    case "If":
+      if(pyTruth(yield* evalNode(n.test,env))) yield* execBlock(n.body,env);
+      else if(n.orelse) yield* execBlock(n.orelse,env);
+      return;
+    case "While":
+      for(;;){
+        if(--PY.fuel<=0) yield PY_TICK;
+        if(!pyTruth(yield* evalNode(n.test,env))) break;
+        try{ yield* execBlock(n.body,env); }
+        catch(e){
+          if(e instanceof PyBreak) break;
+          if(e instanceof PyContinue) continue;
+          throw e;
+        }
+      }
+      return;
+    case "For": {
+      const it=yield* evalNode(n.iter,env);
+      for(const v of pyIter(it)){
+        if(--PY.fuel<=0) yield PY_TICK;
+        yield* assignTo(n.target,v,env);
+        try{ yield* execBlock(n.body,env); }
+        catch(e){
+          if(e instanceof PyBreak) break;
+          if(e instanceof PyContinue) continue;
+          throw e;
+        }
+      }
+      return;
+    }
+    case "Def": env.set(n.name,new PyFunc(n.name,n.params,n.body,env)); return;
+    case "Class": {
+      const cenv=new PyEnv(env);
+      yield* execBlock(n.body,cenv);
+      const d=new Map();
+      for(const [k,v] of cenv.v) d.set(k,v);
+      const bases=[];
+      for(const b of n.bases){
+        const bv=yield* evalNode(b,env);
+        if(bv instanceof PyClass) bases.push(bv);
+      }
+      env.set(n.name,new PyClass(n.name,bases,d));
+      return;
+    }
+    case "Return": throw new PyReturn(n.value?yield* evalNode(n.value,env):null);
+    case "Break": throw new PyBreak();
+    case "Continue": throw new PyContinue();
+    case "Global": {
+      if(!env.globals) env.globals=new Set();
+      n.names.forEach(x=>env.globals.add(x));
+      return;
+    }
+    case "Del":
+      for(const t of n.targets){
+        if(t.k==="Name"){ let e=env; while(e){ if(e.v.has(t.id)){ e.v.delete(t.id); break; } e=e.parent; } }
+        else if(t.k==="Sub"){
+          const o=yield* evalNode(t.value,env);
+          const kk=yield* evalSlice(t.slice,env);
+          pyDelItem(o,kk);
+        }
+        else if(t.k==="Attr"){
+          const o=yield* evalNode(t.value,env);
+          if(o instanceof PyObj) o.d.delete(t.attr);
+        }
+      }
+      return;
+    case "Import":
+      for(const it of n.names){
+        const m=yield* pyImportG(it.name,env);
+        env.set(it.as||it.name.split(".")[0],m);
+      }
+      return;
+    case "From": {
+      const m=yield* pyImportG(n.module,env);
+      for(const it of n.names){
+        if(it.name==="*"){ Object.keys(m.d).forEach(k=>{ if(k[0]!=="_") env.set(k,m.d[k]); }); continue; }
+        if(!Object.prototype.hasOwnProperty.call(m.d,it.name))
+          throw pyErr("ImportError","cannot import name '"+it.name+"' from '"+n.module+"'");
+        env.set(it.as||it.name,m.d[it.name]);
+      }
+      return;
+    }
+    case "Assert": {
+      if(!pyTruth(yield* evalNode(n.test,env))){
+        const m=n.msg?pyStr(yield* evalNode(n.msg,env)):"";
+        throw pyErr("AssertionError",m);
+      }
+      return;
+    }
+    case "Raise": {
+      if(!n.exc) throw pyErr("RuntimeError","No active exception to re-raise");
+      const v=yield* evalNode(n.exc,env);
+      if(v instanceof PyExc) throw v;
+      if(typeof v==="function"&&v.excName) throw pyErr(v.excName,"");
+      throw pyErr("Exception",pyStr(v));
+    }
+    case "Try": {
+      let pending=null;
+      try{
+        try{ yield* execBlock(n.body,env); }
+        catch(e){
+          if(e instanceof PyReturn||e instanceof PyBreak||e instanceof PyContinue) throw e;
+          const exc=(e instanceof PyExc)?e:new PyExc(jsErrType(e),jsErrMsg(e));
+          let handled=false;
+          for(const h of n.handlers){
+            if(!h.types||h.types.some(t=>excMatches(exc,t))){
+              if(h.name) env.set(h.name,exc);
+              yield* execBlock(h.body,env);
+              handled=true; break;
+            }
+          }
+          if(!handled) throw exc;
+        }
+      }catch(e){ pending=e; }
+      if(n.fin) yield* execBlock(n.fin,env);
+      if(pending) throw pending;
+      return;
+    }
+    case "With": {
+      for(const it of n.items){
+        const v=yield* evalNode(it.value,env);
+        if(it.target) yield* assignTo(it.target,v,env);
+      }
+      yield* execBlock(n.body,env);
+      return;
+    }
+  }
+  throw pyErr("SyntaxError","unsupported statement");
+}
+function excMatches(exc,typeName){
+  if(typeName==="Exception"||typeName==="BaseException") return exc.type!=="SystemExit";
+  if(typeName===exc.type) return true;
+  if(typeName==="ArithmeticError") return exc.type==="ZeroDivisionError";
+  if(typeName==="LookupError") return exc.type==="IndexError"||exc.type==="KeyError";
+  return false;
+}
+function jsErrType(e){ return (e instanceof RangeError)?"RecursionError":"RuntimeError"; }
+function jsErrMsg(e){ return (e&&e.message)?String(e.message):String(e); }
+
+function* assignTo(t,val,env){
+  switch(t.k){
+    case "Name": env.set(t.id,val); return;
+    case "Tuple": case "TupleLit": case "ListLit": case "List": {
+      const elts=t.elts;
+      const items=pyList(val);
+      const si=elts.findIndex(e=>e.k==="Starred");
+      if(si<0){
+        if(items.length!==elts.length)
+          throw pyErr("ValueError", items.length<elts.length
+            ? "not enough values to unpack (expected "+elts.length+", got "+items.length+")"
+            : "too many values to unpack (expected "+elts.length+")");
+        for(let i=0;i<elts.length;i++) yield* assignTo(elts[i],items[i],env);
+      }else{
+        const before=elts.slice(0,si), after=elts.slice(si+1);
+        if(items.length<before.length+after.length) throw pyErr("ValueError","not enough values to unpack");
+        for(let i=0;i<before.length;i++) yield* assignTo(before[i],items[i],env);
+        const mid=items.length-before.length-after.length;
+        yield* assignTo(elts[si].value,items.slice(before.length,before.length+mid),env);
+        for(let i=0;i<after.length;i++) yield* assignTo(after[i],items[before.length+mid+i],env);
+      }
+      return;
+    }
+    case "Sub": {
+      const o=yield* evalNode(t.value,env);
+      const k=yield* evalSlice(t.slice,env);
+      pySetItem(o,k,val);
+      return;
+    }
+    case "Attr": {
+      const o=yield* evalNode(t.value,env);
+      if(o instanceof PyObj){ o.d.set(t.attr,val); return; }
+      if(o instanceof PyClass){ o.d.set(t.attr,val); return; }
+      if(o instanceof PyModule){ o.d[t.attr]=val; return; }
+      throw pyErr("AttributeError","can't set attribute '"+t.attr+"' on "+pyTypeName(o));
+    }
+  }
+  throw pyErr("SyntaxError","cannot assign to this expression");
+}
+
+/* ---------------- expressions ---------------- */
+function* evalSlice(node,env){
+  if(node&&node.k==="Slice"){
+    const a=node.lo?yield* evalNode(node.lo,env):null;
+    const b=node.hi?yield* evalNode(node.hi,env):null;
+    const c=node.st?yield* evalNode(node.st,env):null;
+    return new PySlice(a,b,c);
+  }
+  return yield* evalNode(node,env);
+}
+function* evalNode(n,env){
+  switch(n.k){
+    case "Num": case "Str": case "Const": return n.v;
+    case "Name": {
+      const v=env.get(n.id);
+      if(v===undefined) throw pyErr("NameError","name '"+n.id+"' is not defined");
+      return v;
+    }
+    case "FStr": {
+      let out="";
+      for(const part of n.parts){
+        if(part.t==="s"){ out+=part.v; continue; }
+        const v=yield* evalNode(part.node,env);
+        if(part.conv==="r"){ out+=pyRepr(v); continue; }
+        const f=pyFormatSpec(v,part.spec);
+        out += f!=null?f:(yield* pyStrG(v));
+      }
+      return out;
+    }
+    case "ListLit": {
+      const out=[];
+      for(const e of n.elts){
+        if(e.k==="Starred"){ for(const x of pyIter(yield* evalNode(e.value,env))) out.push(x); }
+        else out.push(yield* evalNode(e,env));
+      }
+      return out;
+    }
+    case "TupleLit": case "Tuple": {
+      const out=[];
+      for(const e of n.elts){
+        if(e.k==="Starred"){ for(const x of pyIter(yield* evalNode(e.value,env))) out.push(x); }
+        else out.push(yield* evalNode(e,env));
+      }
+      return PyTuple.from(out);
+    }
+    case "SetLit": {
+      const s=new PySet();
+      for(const e of n.elts){ const v=yield* evalNode(e,env); s.m.set(dkey(v),v); }
+      return s;
+    }
+    case "DictLit": {
+      const d=new PyDict();
+      for(let i=0;i<n.keys.length;i++){
+        const k=yield* evalNode(n.keys[i],env);
+        const v=yield* evalNode(n.vals[i],env);
+        d.m.set(dkey(k),[k,v]);
+      }
+      return d;
+    }
+    case "Comp": {
+      const cenv=new PyEnv(env);
+      if(n.kind==="dict"){
+        const d=new PyDict();
+        yield* compLoop(n,0,cenv,d);
+        return d;
+      }
+      const out=[];
+      yield* compLoop(n,0,cenv,out);
+      if(n.kind==="set"){ const s=new PySet(); for(const x of out) s.m.set(dkey(x),x); return s; }
+      return out;
+    }
+    case "Bool": {
+      const l=yield* evalNode(n.l,env);
+      if(n.op==="and") return pyTruth(l)?(yield* evalNode(n.r,env)):l;
+      return pyTruth(l)?l:(yield* evalNode(n.r,env));
+    }
+    case "Unary": {
+      const v=yield* evalNode(n.v,env);
+      if(n.op==="not") return !pyTruth(v);
+      if(n.op==="-") return -pyNum(v,"-");
+      if(n.op==="+") return +pyNum(v,"+");
+      if(n.op==="~") return ~pyNum(v,"~");
+      break;
+    }
+    case "Bin": {
+      const a=yield* evalNode(n.l,env);
+      const b=yield* evalNode(n.r,env);
+      return pyBin(n.op,a,b);
+    }
+    case "Compare": {
+      let left=yield* evalNode(n.first,env);
+      for(let i=0;i<n.ops.length;i++){
+        const right=yield* evalNode(n.rest[i],env);
+        const op=n.ops[i];
+        let ok;
+        if(op==="==") ok=pyEq(left,right);
+        else if(op==="!=") ok=!pyEq(left,right);
+        else if(op==="in") ok=pyIn(left,right);
+        else if(op==="not in") ok=!pyIn(left,right);
+        else if(op==="is") ok=(left===right)||(left===null&&right===null);
+        else if(op==="is not") ok=!((left===right)||(left===null&&right===null));
+        else{
+          const c=pyCmp(left,right);
+          ok = op==="<"?c<0 : op===">"?c>0 : op==="<="?c<=0 : c>=0;
+        }
+        if(!ok) return false;
+        left=right;
+      }
+      return true;
+    }
+    case "IfExp":
+      return pyTruth(yield* evalNode(n.test,env)) ? (yield* evalNode(n.body,env)) : (yield* evalNode(n.orelse,env));
+    case "Lambda":
+      return new PyFunc("<lambda>",n.params,[{k:"Return",value:n.body}],env);
+    case "Attr": {
+      const o=yield* evalNode(n.value,env);
+      return pyGetAttr(o,n.attr);
+    }
+    case "Sub": {
+      const o=yield* evalNode(n.value,env);
+      const k=yield* evalSlice(n.slice,env);
+      return pyGetItem(o,k);
+    }
+    case "Call": {
+      const fn=yield* evalNode(n.fn,env);
+      const args=[]; let kw=null;
+      for(const a of n.args){
+        if(a.kind==="star"){ for(const x of pyIter(yield* evalNode(a.value,env))) args.push(x); }
+        else if(a.kind==="kw"){ kw=kw||{}; kw[a.name]=yield* evalNode(a.value,env); }
+        else if(a.kind==="dstar"){
+          const v=yield* evalNode(a.value,env);
+          kw=kw||{};
+          if(v instanceof PyDict) for(const kv of v.m.values()) kw[pyStr(kv[0])]=kv[1];
+        }
+        else args.push(yield* evalNode(a.value,env));
+      }
+      if(--PY.fuel<=0) yield PY_TICK;
+      return yield* callPy(fn,args,kw);
+    }
+    case "Slice": return yield* evalSlice(n,env);
+    case "Starred": return yield* evalNode(n.value,env);
+  }
+  throw pyErr("SyntaxError","cannot evaluate this expression");
+}
+function* compLoop(n,gi,env,out){
+  const g=n.gens[gi];
+  const it=yield* evalNode(g.iter,env);
+  for(const v of pyIter(it)){
+    if(--PY.fuel<=0) yield PY_TICK;
+    yield* assignTo(g.target,v,env);
+    let ok=true;
+    for(const c of g.ifs){ if(!pyTruth(yield* evalNode(c,env))){ ok=false; break; } }
+    if(!ok) continue;
+    if(gi+1<n.gens.length){ yield* compLoop(n,gi+1,env,out); continue; }
+    if(n.kind==="dict"){
+      const k=yield* evalNode(n.key,env);
+      const val=yield* evalNode(n.val,env);
+      out.m.set(dkey(k),[k,val]);
+    }else out.push(yield* evalNode(n.elt,env));
+  }
+}
+
+/* ---------------- builtins ---------------- */
+const PY_EXC_NAMES=["Exception","BaseException","ValueError","TypeError","NameError","IndexError","KeyError",
+  "ZeroDivisionError","AttributeError","RuntimeError","StopIteration","AssertionError","ImportError",
+  "NotImplementedError","OverflowError","RecursionError","SystemExit","ArithmeticError","LookupError"];
+
+function makePyBuiltins(io){
+  const B={};
+  const def=(name,fn,isGen)=>{ fn.pyName=name; if(isGen) fn.gen=true; B[name]=fn; };
+  const type=(name,fn)=>{ fn.pyName=name; fn.typeName=name; B[name]=fn; };
+
+  def("print",function*(args,kw){
+    const sep=(kw&&kw.sep!=null)?pyStr(kw.sep):" ";
+    const end=(kw&&kw.end!=null)?pyStr(kw.end):"\n";
+    const parts=[];
+    for(const a of args) parts.push(yield* pyStrG(a));
+    io.write(parts.join(sep)+end);
+    return null;
+  },true);
+  def("input",function*(args){
+    const prompt=args.length?yield* pyStrG(args[0]):"";
+    const v=yield {input:prompt};
+    return v==null?"":String(v);
+  },true);
+  def("len",(a)=>pyLen(a[0]));
+  def("range",(a)=>{
+    const num=(x)=>Math.trunc(pyNum(x,"range"));
+    if(!a.length) throw pyErr("TypeError","range expected at least 1 argument");
+    if(a.length===1) return new PyRange(0,num(a[0]),1);
+    const step=a.length>2?num(a[2]):1;
+    if(step===0) throw pyErr("ValueError","range() arg 3 must not be zero");
+    return new PyRange(num(a[0]),num(a[1]),step);
+  });
+  type("int",(a)=>{
+    if(!a.length) return 0;
+    const v=a[0];
+    if(typeof v==="boolean") return v?1:0;
+    if(typeof v==="number") return Math.trunc(v);
+    if(typeof v==="string"){
+      const base=a.length>1?pyIndexNum(a[1]):10;
+      const s=v.trim();
+      const n=base===10?Number(s):parseInt(s,base);
+      if(s===""||Number.isNaN(n)) throw pyErr("ValueError","invalid literal for int() with base "+base+": "+pyRepr(v));
+      return Math.trunc(n);
+    }
+    throw pyErr("TypeError","int() argument must be a string or a number");
+  });
+  type("float",(a)=>{
+    if(!a.length) return 0;
+    const v=a[0];
+    if(typeof v==="boolean") return v?1:0;
+    if(typeof v==="number") return v;
+    if(typeof v==="string"){
+      const s=v.trim().toLowerCase();
+      if(s==="inf") return Infinity;
+      if(s==="-inf") return -Infinity;
+      if(s==="nan") return NaN;
+      const n=Number(s);
+      if(s===""||Number.isNaN(n)) throw pyErr("ValueError","could not convert string to float: "+pyRepr(v));
+      return n;
+    }
+    throw pyErr("TypeError","float() argument must be a string or a number");
+  });
+  const strFn=function*(a){ return a.length?yield* pyStrG(a[0]):""; };
+  strFn.gen=true; strFn.pyName="str"; strFn.typeName="str"; B.str=strFn;
+  type("bool",(a)=>a.length?pyTruth(a[0]):false);
+  type("list",(a)=>a.length?pyList(a[0]):[]);
+  type("tuple",(a)=>a.length?PyTuple.from(pyList(a[0])):PyTuple.from([]));
+  type("dict",(a,kw)=>{
+    const d=new PyDict();
+    if(a.length){
+      const o=a[0];
+      if(o instanceof PyDict){ for(const kv of o.m.values()) d.m.set(dkey(kv[0]),[kv[0],kv[1]]); }
+      else for(const pair of pyIter(o)){ const p=pyList(pair); d.m.set(dkey(p[0]),[p[0],p[1]]); }
+    }
+    if(kw) for(const k of Object.keys(kw)) d.m.set(dkey(k),[k,kw[k]]);
+    return d;
+  });
+  type("set",(a)=>{
+    const s=new PySet();
+    if(a.length) for(const x of pyIter(a[0])) s.m.set(dkey(x),x);
+    return s;
+  });
+  def("abs",(a)=>Math.abs(pyNum(a[0],"abs")));
+  def("round",(a)=>{
+    const v=pyNum(a[0],"round");
+    const d=a.length>1?pyIndexNum(a[1]):0;
+    const f=Math.pow(10,d);
+    const r=Math.round(Math.abs(v)*f)/f*(v<0?-1:1);
+    return d<=0?Math.round(r):r;
+  });
+  def("min",function*(a,kw){
+    const items=a.length===1?pyList(a[0]):a;
+    if(!items.length) throw pyErr("ValueError","min() arg is an empty sequence");
+    const keyf=kw&&kw.key?kw.key:null;
+    let best=items[0], bestK=keyf?yield* callPy(keyf,[best],null):best;
+    for(const x of items.slice(1)){
+      const k=keyf?yield* callPy(keyf,[x],null):x;
+      if(pyCmp(k,bestK)<0){ best=x; bestK=k; }
+    }
+    return best;
+  },true);
+  def("max",function*(a,kw){
+    const items=a.length===1?pyList(a[0]):a;
+    if(!items.length) throw pyErr("ValueError","max() arg is an empty sequence");
+    const keyf=kw&&kw.key?kw.key:null;
+    let best=items[0], bestK=keyf?yield* callPy(keyf,[best],null):best;
+    for(const x of items.slice(1)){
+      const k=keyf?yield* callPy(keyf,[x],null):x;
+      if(pyCmp(k,bestK)>0){ best=x; bestK=k; }
+    }
+    return best;
+  },true);
+  def("sum",(a)=>{
+    let acc=a.length>1?a[1]:0;
+    for(const x of pyIter(a[0])) acc=pyBin("+",acc,x);
+    return acc;
+  });
+  def("sorted",function*(a,kw){ return yield* pySortArray(pyList(a[0]),kw); },true);
+  def("reversed",(a)=>pyList(a[0]).reverse());
+  def("enumerate",(a)=>{
+    let i=a.length>1?pyIndexNum(a[1]):0;
+    return pyList(a[0]).map(x=>PyTuple.from([i++,x]));
+  });
+  def("zip",(a)=>{
+    const lists=a.map(pyList);
+    const n=lists.length?Math.min(...lists.map(l=>l.length)):0;
+    const out=[];
+    for(let i=0;i<n;i++) out.push(PyTuple.from(lists.map(l=>l[i])));
+    return out;
+  });
+  def("map",function*(a){
+    const f=a[0], out=[];
+    const lists=a.slice(1).map(pyList);
+    const n=lists.length?Math.min(...lists.map(l=>l.length)):0;
+    for(let i=0;i<n;i++) out.push(yield* callPy(f,lists.map(l=>l[i]),null));
+    return out;
+  },true);
+  def("filter",function*(a){
+    const f=a[0], out=[];
+    for(const x of pyIter(a[1])){
+      const keep=f===null?pyTruth(x):pyTruth(yield* callPy(f,[x],null));
+      if(keep) out.push(x);
+    }
+    return out;
+  },true);
+  def("any",(a)=>{ for(const x of pyIter(a[0])) if(pyTruth(x)) return true; return false; });
+  def("all",(a)=>{ for(const x of pyIter(a[0])) if(!pyTruth(x)) return false; return true; });
+  def("ord",(a)=>String(a[0]).charCodeAt(0));
+  def("chr",(a)=>String.fromCharCode(pyIndexNum(a[0])));
+  def("hex",(a)=>{ const v=Math.trunc(pyNum(a[0],"hex")); return (v<0?"-0x":"0x")+Math.abs(v).toString(16); });
+  def("bin",(a)=>{ const v=Math.trunc(pyNum(a[0],"bin")); return (v<0?"-0b":"0b")+Math.abs(v).toString(2); });
+  def("oct",(a)=>{ const v=Math.trunc(pyNum(a[0],"oct")); return (v<0?"-0o":"0o")+Math.abs(v).toString(8); });
+  def("repr",(a)=>pyRepr(a[0]));
+  def("divmod",(a)=>PyTuple.from([pyBin("//",a[0],a[1]),pyBin("%",a[0],a[1])]));
+  def("pow",(a)=>Math.pow(pyNum(a[0],"pow"),pyNum(a[1],"pow")));
+  def("id",(a)=>pyId(a[0]));
+  def("callable",(a)=>{ const v=a[0]; return typeof v==="function"||v instanceof PyFunc||v instanceof PyBound||v instanceof PyClass; });
+  def("type",(a)=>new PyClass(pyTypeName(a[0]),[],new Map()));
+  def("isinstance",(a)=>{
+    const v=a[0], t=a[1];
+    const check=(tt)=>{
+      if(tt&&tt.typeName){
+        const nm=tt.typeName;
+        if(nm==="int") return typeof v==="number"&&Number.isInteger(v);
+        if(nm==="float") return typeof v==="number";
+        if(nm==="str") return typeof v==="string";
+        if(nm==="bool") return typeof v==="boolean";
+        if(nm==="list") return Array.isArray(v)&&!(v instanceof PyTuple);
+        if(nm==="tuple") return v instanceof PyTuple;
+        if(nm==="dict") return v instanceof PyDict;
+        if(nm==="set") return v instanceof PySet;
+        return false;
+      }
+      if(tt instanceof PyClass){
+        let c=(v instanceof PyObj)?v.cls:null, guard=0;
+        while(c&&guard++<20){ if(c.name===tt.name) return true; c=c.bases&&c.bases[0]; }
+        return false;
+      }
+      return false;
+    };
+    return (t instanceof PyTuple)?[...t].some(check):check(t);
+  });
+  def("hasattr",(a)=>{ try{ pyGetAttr(a[0],pyStr(a[1])); return true; }catch(e){ return false; } });
+  def("getattr",(a)=>{ try{ return pyGetAttr(a[0],pyStr(a[1])); }catch(e){ if(a.length>2) return a[2]; throw e; } });
+  def("setattr",(a)=>{
+    const o=a[0];
+    if(o instanceof PyObj){ o.d.set(pyStr(a[1]),a[2]); return null; }
+    throw pyErr("AttributeError","can't set attribute");
+  });
+  def("exit",()=>{ throw pyErr("SystemExit",""); });
+  B.quit=B.exit;
+  PY_EXC_NAMES.forEach(nm=>{
+    const f=(a)=>{ const e=new PyExc(nm,a.length?pyStr(a[0]):""); e.line=PY.line; return e; };
+    f.pyName=nm; f.excName=nm;
+    B[nm]=f;
+  });
+  B.True=true; B.False=false; B.None=null;
+  return B;
+}
+
+/* ---------------- modules ---------------- */
+function makePyModules(io,stage){
+  const M={};
+  const mk=(name,d)=>{ M[name]=new PyModule(name,d); };
+  const fn=(name,f,isGen)=>{ f.pyName=name; if(isGen) f.gen=true; return f; };
+
+  mk("math",{
+    pi:Math.PI, e:Math.E, tau:Math.PI*2, inf:Infinity, nan:NaN,
+    sqrt:fn("sqrt",a=>{ const v=pyNum(a[0],"sqrt"); if(v<0) throw pyErr("ValueError","math domain error"); return Math.sqrt(v); }),
+    floor:fn("floor",a=>Math.floor(pyNum(a[0],"floor"))),
+    ceil:fn("ceil",a=>Math.ceil(pyNum(a[0],"ceil"))),
+    trunc:fn("trunc",a=>Math.trunc(pyNum(a[0],"trunc"))),
+    fabs:fn("fabs",a=>Math.abs(pyNum(a[0],"fabs"))),
+    sin:fn("sin",a=>Math.sin(pyNum(a[0],"sin"))),
+    cos:fn("cos",a=>Math.cos(pyNum(a[0],"cos"))),
+    tan:fn("tan",a=>Math.tan(pyNum(a[0],"tan"))),
+    asin:fn("asin",a=>Math.asin(pyNum(a[0],"asin"))),
+    acos:fn("acos",a=>Math.acos(pyNum(a[0],"acos"))),
+    atan:fn("atan",a=>Math.atan(pyNum(a[0],"atan"))),
+    atan2:fn("atan2",a=>Math.atan2(pyNum(a[0],"atan2"),pyNum(a[1],"atan2"))),
+    hypot:fn("hypot",a=>Math.hypot(...a.map(x=>pyNum(x,"hypot")))),
+    exp:fn("exp",a=>Math.exp(pyNum(a[0],"exp"))),
+    log:fn("log",a=>a.length>1?Math.log(pyNum(a[0],"log"))/Math.log(pyNum(a[1],"log")):Math.log(pyNum(a[0],"log"))),
+    log2:fn("log2",a=>Math.log2(pyNum(a[0],"log2"))),
+    log10:fn("log10",a=>Math.log10(pyNum(a[0],"log10"))),
+    pow:fn("pow",a=>Math.pow(pyNum(a[0],"pow"),pyNum(a[1],"pow"))),
+    degrees:fn("degrees",a=>pyNum(a[0],"degrees")*180/Math.PI),
+    radians:fn("radians",a=>pyNum(a[0],"radians")*Math.PI/180),
+    dist:fn("dist",a=>{ const p=pyList(a[0]),q=pyList(a[1]); let s=0; for(let i=0;i<p.length;i++) s+=Math.pow(p[i]-q[i],2); return Math.sqrt(s); }),
+    factorial:fn("factorial",a=>{ let n=Math.trunc(pyNum(a[0],"factorial")), r=1; while(n>1) r*=n--; return r; }),
+    isclose:fn("isclose",a=>Math.abs(pyNum(a[0],"isclose")-pyNum(a[1],"isclose"))<1e-9),
+  });
+
+  let seedState=null;
+  const rnd01=()=>{
+    if(seedState===null) return Math.random();
+    seedState=(seedState*1103515245+12345)&0x7fffffff;   // deterministic once seeded
+    return seedState/0x7fffffff;
+  };
+  mk("random",{
+    random:fn("random",()=>rnd01()),
+    seed:fn("seed",a=>{ seedState=a.length&&a[0]!==null?Math.abs(Math.trunc(pyNum(a[0],"seed")))||1:null; return null; }),
+    randint:fn("randint",a=>{
+      const lo=Math.trunc(pyNum(a[0],"randint")), hi=Math.trunc(pyNum(a[1],"randint"));
+      if(hi<lo) throw pyErr("ValueError","empty range for randint()");
+      return lo+Math.floor(rnd01()*(hi-lo+1));
+    }),
+    randrange:fn("randrange",a=>{
+      let lo=0,hi,step=1;
+      if(a.length===1) hi=Math.trunc(pyNum(a[0],"randrange"));
+      else { lo=Math.trunc(pyNum(a[0],"randrange")); hi=Math.trunc(pyNum(a[1],"randrange")); if(a.length>2) step=Math.trunc(pyNum(a[2],"randrange")); }
+      const n=Math.max(1,Math.ceil((hi-lo)/step));
+      return lo+step*Math.floor(rnd01()*n);
+    }),
+    uniform:fn("uniform",a=>{ const lo=pyNum(a[0],"uniform"), hi=pyNum(a[1],"uniform"); return lo+rnd01()*(hi-lo); }),
+    choice:fn("choice",a=>{
+      const l=pyList(a[0]);
+      if(!l.length) throw pyErr("IndexError","Cannot choose from an empty sequence");
+      return l[Math.floor(rnd01()*l.length)];
+    }),
+    shuffle:fn("shuffle",a=>{
+      const l=a[0];
+      if(!Array.isArray(l)) throw pyErr("TypeError","shuffle() expects a list");
+      for(let i=l.length-1;i>0;i--){ const j=Math.floor(rnd01()*(i+1)); const t=l[i]; l[i]=l[j]; l[j]=t; }
+      return null;
+    }),
+    sample:fn("sample",a=>{
+      const l=pyList(a[0]).slice(), k=pyIndexNum(a[1]), out=[];
+      for(let i=0;i<k&&l.length;i++) out.push(l.splice(Math.floor(rnd01()*l.length),1)[0]);
+      return out;
+    }),
+    gauss:fn("gauss",a=>{
+      const mu=a.length?pyNum(a[0],"gauss"):0, sg=a.length>1?pyNum(a[1],"gauss"):1;
+      const u=Math.max(1e-9,rnd01()), v=rnd01();
+      return mu+sg*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+    }),
+  });
+
+  const t0=Date.now();
+  mk("time",{
+    time:fn("time",()=>Date.now()/1000),
+    monotonic:fn("monotonic",()=>(Date.now()-t0)/1000),
+    sleep:fn("sleep",function*(a){
+      const s=a.length?pyNum(a[0],"sleep"):0;
+      yield {sleep:Math.min(30000,Math.max(0,s*1000))};
+      return null;
+    },true),
+  });
+
+  mk("sys",{
+    version:"3.x (WinClone mini-Python)",
+    platform:"winclone",
+    argv:[io.scriptName||"script.py"],
+    exit:fn("exit",()=>{ throw pyErr("SystemExit",""); }),
+    stdout:new PyModule("stdout",{write:fn("write",a=>{ io.write(pyStr(a[0])); return null; }),flush:fn("flush",()=>null)}),
+  });
+
+  if(stage) mk("wcgame",makeWcgameModule(stage,fn));
+  mk("winclone",makeWincloneModule(io,fn));
+  return M;
+}
+
+/* ---------------- the driver ---------------- */
+function pyRunSource(src, io, stage){
+  const runner={stopped:false, stop(){ this.stopped=true; try{ if(g&&g.return) g.return(); }catch(e){} }};
+  let mod;
+  try{ mod=pyParse(src); }
+  catch(e){ io.error(pyFormatError(e)); io.done(false); return runner; }
+
+  const root=new PyEnv(null);
+  const B=makePyBuiltins(io);
+  Object.keys(B).forEach(k=>root.setLocal(k,B[k]));
+  root.modules=makePyModules(io,stage);
+  root.io=io;                                  // so `import mymodule` can find .py files
+  const genv=new PyEnv(root);
+  genv.setLocal("__name__","__main__");
+
+  const g=execBlock(mod.body,genv);
+  function pump(send){
+    if(runner.stopped||!io.alive()) return;
+    PY.fuel=PY_FUEL; PY.depth=0;
+    let r;
+    try{ r=g.next(send); }
+    catch(e){
+      if(e instanceof PyExc && e.type==="SystemExit"){ io.done(true); return; }
+      io.error(pyFormatError(e));
+      io.done(false);
+      return;
+    }
+    if(r.done){ io.done(true); return; }
+    const y=r.value||{};
+    if(y.frame) requestAnimationFrame(()=>pump());
+    else if(y.sleep!=null) setTimeout(()=>pump(),Math.max(0,y.sleep));
+    // resume off a fresh task: an io.readLine that answers immediately must not
+    // recurse pump() into itself until the stack blows
+    else if(y.input!=null) io.readLine(y.input,v=>setTimeout(()=>pump(v),0));
+    else setTimeout(()=>pump(),0);
+  }
+  pump();
+  return runner;
+}
+function pyFormatError(e){
+  if(e instanceof PyExc){
+    const where=e.line?"  line "+e.line+"\n":"";
+    return "Traceback (most recent call last):\n"+where+e.type+(e.msg?": "+e.msg:"");
+  }
+  if(e instanceof RangeError) return "RecursionError: maximum recursion depth exceeded";
+  return "InternalError: "+((e&&e.message)||String(e));
+}
+
+/* ---------------- import ----------------
+   Built-in modules first, then a real .py file from the virtual filesystem:
+   one sitting next to the running script, or in Documents\Python, which acts
+   as WinClone's site-packages. Imported modules are cached like sys.modules. */
+function pyFindModuleSource(base,io){
+  const at=(path)=>{
+    if(!path||!path.length) return null;
+    const n=nodeAt(path);
+    const f=n&&n.children&&n.children[base+".py"];
+    if(!f||f.folder||f.content==null) return null;
+    if(f.web) throw pyErr("ImportError","'"+base+".py' came from the internet — WinClone won't run it");
+    return String(f.content);
+  };
+  const dirs=[];
+  if(io&&io.cwd&&io.cwd.length) dirs.push(io.cwd);
+  dirs.push([...HOME_PATH,"Documents","Python"]);
+  for(const d of dirs){ const s=at(d); if(s!=null) return s; }
+  return null;
+}
+function* pyImportG(name,env){
+  const root=envRoot(env);
+  const mods=root.modules||{};
+  const base=name.split(".")[0];
+  if(mods[base]) return mods[base];
+  const src=pyFindModuleSource(base,root.io);
+  if(src==null)
+    throw pyErr("ImportError","no module named '"+base+"'. WinClone ships math, random, time, sys, "+
+      "wcgame and winclone — anything else has to be a "+base+".py next to your script or in Documents\\Python");
+  if(root.loading&&root.loading.has(base)) throw pyErr("ImportError","circular import of '"+base+"'");
+  let ast;
+  try{ ast=pyParse(src); }
+  catch(e){ throw pyErr("ImportError","couldn't import '"+base+".py': "+(e&&e.msg?e.msg:"syntax error")+(e&&e.line?" (line "+e.line+")":"")); }
+  const menv=new PyEnv(root);
+  menv.setLocal("__name__",base);
+  (root.loading=root.loading||new Set()).add(base);
+  try{ yield* execBlock(ast.body,menv); }
+  finally{ root.loading.delete(base); }
+  const d={};
+  for(const [k,v] of menv.v) d[k]=v;
+  const mod=new PyModule(base,d);
+  mods[base]=mod;
+  return mod;
+}
+
+/* ============================ PYTHON: STAGE, MODULES, APPS ============================ */
+
+/* A "stage" is a running script's window: a console, an optional canvas, and
+   the keyboard/mouse state that wcgame reads. */
+function makePyStage(host, opts){
+  opts=opts||{};
+  const wrap=el("div","py-stage");
+  wrap.innerHTML=`<div class="py-canvaswrap"><canvas class="py-canvas"></canvas></div>
+    <div class="py-con"></div>
+    <div class="py-inrow"><span class="py-prompt"></span><input class="py-in" spellcheck="false" autocomplete="off"></div>`;
+  host.appendChild(wrap);
+  const cwrap=wrap.querySelector(".py-canvaswrap");
+  const cv=wrap.querySelector(".py-canvas");
+  const con=wrap.querySelector(".py-con");
+  const inrow=wrap.querySelector(".py-inrow");
+  const inp=wrap.querySelector(".py-in");
+  const promptEl=wrap.querySelector(".py-prompt");
+
+  const S={
+    w:0, h:0, ctx:null, canvas:cv,
+    held:new Set(), pressed:new Set(),
+    mx:0, my:0, mdown:false, clicked:false,
+    quitted:false, appId:opts.appId,
+  };
+  S.alive=()=>!S.quitted && document.body.contains(con) && !!state.wins[S.appId];
+  S.quit=()=>{ S.quitted=true; };
+  S.setTitle=opts.setTitle||function(){};
+
+  S.initCanvas=(w,h)=>{
+    w=Math.max(16,Math.min(1024,Math.round(w||320)));
+    h=Math.max(16,Math.min(768,Math.round(h||240)));
+    cv.width=w; cv.height=h; S.w=w; S.h=h;
+    S.ctx=cv.getContext("2d");
+    S.ctx.imageSmoothingEnabled=false;
+    S.ctx.fillStyle="#000"; S.ctx.fillRect(0,0,w,h);
+    cwrap.style.display="flex";
+    wrap.classList.add("has-canvas");
+  };
+  S.beginFrame=()=>{ S.pressed.clear(); S.clicked=false; };
+  S.endFrame=()=>{};
+
+  /* ---- console ---- */
+  S.write=(t)=>{ con.appendChild(document.createTextNode(String(t))); con.scrollTop=con.scrollHeight; };
+  S.error=(t)=>{
+    const s=el("span","py-err"); s.textContent=String(t)+"\n";
+    con.appendChild(s); con.scrollTop=con.scrollHeight;
+    try{ sfx("error"); }catch(e){}
+  };
+  S.clear=()=>{ con.innerHTML=""; };
+  S.readLine=(prompt,cb)=>{
+    promptEl.textContent=prompt||"";
+    inrow.style.display="flex";
+    inp.value="";
+    setTimeout(()=>{ try{ inp.focus(); }catch(e){} },10);
+    const go=(e)=>{
+      if(e.key!=="Enter") return;
+      e.preventDefault();
+      const v=inp.value;
+      inp.removeEventListener("keydown",go);
+      inrow.style.display="none";
+      S.write((prompt||"")+v+"\n");
+      cb(v);
+    };
+    inp.addEventListener("keydown",go);
+  };
+
+  /* ---- input ---- */
+  const keyName=(e)=>{
+    const k=e.key;
+    if(k===" ") return "space";
+    if(k==="ArrowLeft") return "left";
+    if(k==="ArrowRight") return "right";
+    if(k==="ArrowUp") return "up";
+    if(k==="ArrowDown") return "down";
+    if(k==="Escape") return "esc";
+    if(k==="Enter") return "enter";
+    if(k==="Backspace") return "backspace";
+    if(k==="Tab") return "tab";
+    if(k==="Shift") return "shift";
+    if(k==="Control") return "ctrl";
+    if(k==="Alt") return "alt";
+    return String(k).toLowerCase();
+  };
+  const detach=()=>{
+    document.removeEventListener("keydown",kd,true);
+    document.removeEventListener("keyup",ku,true);
+    removeEventListener("blur",clr);
+  };
+  const kd=(e)=>{
+    if(!S.alive()){ detach(); return; }
+    if(state.focused!==S.appId) return;
+    if(document.activeElement===inp) return;             // typing an answer to input()
+    const n=keyName(e);
+    if(!S.held.has(n)) S.pressed.add(n);
+    S.held.add(n);
+    if(["space","left","right","up","down","tab"].indexOf(n)>=0) e.preventDefault();
+  };
+  const ku=(e)=>{ if(!S.alive()){ detach(); return; } S.held.delete(keyName(e)); };
+  const clr=()=>S.held.clear();
+  document.addEventListener("keydown",kd,true);
+  document.addEventListener("keyup",ku,true);
+  addEventListener("blur",clr);
+
+  cv.addEventListener("mousemove",e=>{
+    const r=cv.getBoundingClientRect();
+    if(!r.width||!r.height) return;
+    S.mx=Math.floor((e.clientX-r.left)*cv.width/r.width);
+    S.my=Math.floor((e.clientY-r.top)*cv.height/r.height);
+  });
+  cv.addEventListener("mousedown",()=>{ S.mdown=true; S.clicked=true; });
+  addEventListener("mouseup",()=>{ S.mdown=false; });
+
+  S.beep=(f,d)=>{
+    try{
+      AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+      if(AC.state==="suspended") AC.resume();
+      const t=AC.currentTime, dur=Math.max(.01,Math.min(2,d||.08));
+      const o=AC.createOscillator(), g=AC.createGain();
+      o.type="square";
+      o.frequency.value=Math.max(40,Math.min(4000,f||440));
+      const vol=Math.max(0,Math.min(100,(typeof masterVol==="number"?masterVol:65)))/100*.05;
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(vol,t+.008);
+      g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+      o.connect(g); g.connect(AC.destination);
+      o.start(t); o.stop(t+dur+.05);
+    }catch(e){}
+  };
+  return S;
+}
+
+/* ---- the wcgame module: WinClone's tiny graphics library ---- */
+function makeWcgameModule(stage,fn){
+  const need=()=>{ if(!stage.ctx) stage.initCanvas(320,240); return stage.ctx; };
+  const C=(v,d)=>v==null?(d||"#ffffff"):pyStr(v);
+  const N=(v,d)=>v==null?(d||0):pyNum(v,"wcgame");
+  const outline=(kw)=>kw&&kw.fill!==undefined&&!pyTruth(kw.fill);
+  const d={};
+  d.init=fn("init",(a)=>{
+    stage.initCanvas(a[0]!=null?N(a[0]):320, a[1]!=null?N(a[1]):240);
+    if(a[2]!=null) stage.setTitle(pyStr(a[2]));
+    return null;
+  });
+  d.width =fn("width", ()=>stage.w||320);
+  d.height=fn("height",()=>stage.h||240);
+  d.fill=fn("fill",(a)=>{ const c=need(); c.fillStyle=C(a[0],"#000000"); c.fillRect(0,0,stage.w,stage.h); return null; });
+  d.rect=fn("rect",(a,kw)=>{
+    const c=need(), x=N(a[0]), y=N(a[1]), w=N(a[2]), h=N(a[3]), col=C(a[4]);
+    if(outline(kw)){ c.strokeStyle=col; c.lineWidth=kw.width!=null?N(kw.width):1; c.strokeRect(x+.5,y+.5,w-1,h-1); }
+    else { c.fillStyle=col; c.fillRect(x,y,w,h); }
+    return null;
+  });
+  d.circle=fn("circle",(a,kw)=>{
+    const c=need(), x=N(a[0]), y=N(a[1]), r=Math.abs(N(a[2])), col=C(a[3]);
+    c.beginPath(); c.arc(x,y,r,0,Math.PI*2);
+    if(outline(kw)){ c.strokeStyle=col; c.lineWidth=kw.width!=null?N(kw.width):1; c.stroke(); }
+    else { c.fillStyle=col; c.fill(); }
+    return null;
+  });
+  d.line=fn("line",(a,kw)=>{
+    const c=need();
+    c.strokeStyle=C(a[4]);
+    c.lineWidth=(kw&&kw.width!=null)?N(kw.width):(a[5]!=null?N(a[5]):1);
+    c.beginPath(); c.moveTo(N(a[0]),N(a[1])); c.lineTo(N(a[2]),N(a[3])); c.stroke();
+    return null;
+  });
+  d.poly=fn("poly",(a,kw)=>{
+    const c=need(), pts=pyList(a[0]).map(p=>pyList(p));
+    if(!pts.length) return null;
+    c.beginPath();
+    c.moveTo(pyNum(pts[0][0],"poly"),pyNum(pts[0][1],"poly"));
+    for(let i=1;i<pts.length;i++) c.lineTo(pyNum(pts[i][0],"poly"),pyNum(pts[i][1],"poly"));
+    c.closePath();
+    const col=C(a[1]);
+    if(outline(kw)){ c.strokeStyle=col; c.lineWidth=kw.width!=null?N(kw.width):1; c.stroke(); }
+    else { c.fillStyle=col; c.fill(); }
+    return null;
+  });
+  d.text=fn("text",(a,kw)=>{
+    const c=need();
+    const s=pyStr(a[0]), x=N(a[1]), y=N(a[2]), col=C(a[3]);
+    const size=(kw&&kw.size!=null)?N(kw.size):(a[4]!=null?N(a[4]):12);
+    c.fillStyle=col;
+    c.font=Math.max(5,size)+"px Consolas,'Courier New',monospace";
+    c.textBaseline="top";
+    c.textAlign=(kw&&kw.align)?pyStr(kw.align):"left";
+    c.fillText(s,x,y);
+    c.textAlign="left";
+    return null;
+  });
+  d.flip=fn("flip",function*(){ stage.endFrame(); yield {frame:1}; stage.beginFrame(); return null; },true);
+  d.wait=fn("wait",function*(a){
+    yield {sleep:Math.min(30000,Math.max(0,(a[0]!=null?N(a[0]):0)*1000))};
+    return null;
+  },true);
+  d.running=fn("running",()=>stage.alive());
+  d.key    =fn("key",    (a)=>stage.held.has(pyStr(a[0]).toLowerCase()));
+  d.pressed=fn("pressed",(a)=>stage.pressed.has(pyStr(a[0]).toLowerCase()));
+  d.keys   =fn("keys",   ()=>[...stage.held]);
+  d.mouse  =fn("mouse",  ()=>PyTuple.from([stage.mx,stage.my]));
+  d.mouse_down=fn("mouse_down",()=>stage.mdown);
+  d.click  =fn("click",  ()=>stage.clicked);
+  d.beep   =fn("beep",   (a)=>{ stage.beep(a[0]!=null?N(a[0]):440, a[1]!=null?N(a[1]):.08); return null; });
+  d.quit   =fn("quit",   ()=>{ stage.quit(); return null; });
+  return d;
+}
+
+/* ---- the winclone module: talk to the OS the script is running inside ---- */
+function makeWincloneModule(io,fn){
+  const home=()=>io.cwd&&io.cwd.length?io.cwd:[...HOME_PATH,"Documents"];
+  const resolve=(s)=>batResolve(home(),String(s));
+  const guard=(segs)=>{
+    if(segs.length<2) throw pyErr("ValueError","that path is not a file");
+    if(segs[0]==="C:"&&segs[1]==="Windows") throw pyErr("PermissionError","WinClone won't let a script write into C:\\Windows");
+  };
+  const d={};
+  d.notify=fn("notify",(a)=>{
+    notify({icon:"🐍",title:a.length?pyStr(a[0]):"Python",body:a.length>1?pyStr(a[1]):""});
+    return null;
+  });
+  d.user   =fn("user",   ()=>getUser());
+  d.version=fn("version",()=>WC_VERSION);
+  d.cwd    =fn("cwd",    ()=>"C:\\"+home().slice(1).join("\\"));
+  d.open_app=fn("open_app",(a)=>{
+    const id=pyStr(a[0]).toLowerCase();
+    if(!APPS[id]) throw pyErr("ValueError","there is no app called '"+id+"'");
+    openApp(id);
+    return null;
+  });
+  d.apps=fn("apps",()=>Object.keys(APPS).filter(k=>!APPS[k].hidden));
+  d.ls=fn("ls",(a)=>{
+    const segs=a.length?resolve(pyStr(a[0])):home();
+    const n=nodeAt(segs);
+    if(!n||!n.children) throw pyErr("FileNotFoundError","no folder at "+segs.join("\\"));
+    return Object.keys(n.children);
+  });
+  d.read=fn("read",(a)=>{
+    const segs=resolve(pyStr(a[0]));
+    const parent=nodeAt(segs.slice(0,-1));
+    const f=parent&&parent.children&&parent.children[segs[segs.length-1]];
+    if(!f||f.folder) throw pyErr("FileNotFoundError","no file called "+pyStr(a[0]));
+    if(f.locked) throw pyErr("PermissionError","that file is encrypted by ransomware — run Cork Defender");
+    return String(f.content==null?"":f.content);
+  });
+  d.write=fn("write",(a)=>{
+    const segs=resolve(pyStr(a[0]));
+    guard(segs);
+    const parent=nodeAt(segs.slice(0,-1));
+    if(!parent||!parent.children) throw pyErr("FileNotFoundError","no folder to write into");
+    const name=segs[segs.length-1];
+    const ex=parent.children[name];
+    if(ex&&ex.folder) throw pyErr("ValueError","a folder with that name already exists");
+    parent.children[name]=Object.assign(ex||{icon:glyphFor(name,null)},{content:pyStr(a[1])});
+    saveFS(); refreshFX();
+    return null;
+  });
+  d.beep=fn("beep",(a)=>{ try{ sfx(a.length&&pyStr(a[0])==="error"?"error":"notify"); }catch(e){} return null; });
+  return d;
+}
+
+/* ---- example programs (also written into Documents\Python on first run) ---- */
+function pySampleFiles(){
+  const o={};
+  Object.keys(PY_SAMPLES).forEach(k=>{ o[k]={icon:"🐍",content:PY_SAMPLES[k]}; });
+  return o;
+}
+const PY_SAMPLES={
+"hello.py":
+`# Welcome to Python, running inside WinClone.
+# Hit  Run  (or F5) to run this file.
+
+print("Hello from Python, inside a browser tab.")
+
+name = "WinClone"
+version = 1.2
+print(f"{name} v{version} says hi")
+
+def triangle(n):
+    for row in range(1, n + 1):
+        print("*" * row)
+
+triangle(5)
+
+numbers = [4, 8, 15, 16, 23, 42]
+print("numbers:", numbers)
+print("sum:", sum(numbers), "biggest:", max(numbers))
+
+evens = [n for n in numbers if n % 2 == 0]
+print("evens:", evens)
+
+people = {"ada": 36, "alan": 41}
+for who, age in people.items():
+    print(who, "is", age)
+
+import winclone
+print("signed in as:", winclone.user())
+winclone.notify("Python", "hello.py finished running")
+`,
+
+"guess.py":
+`# A guessing game - proves input() really works.
+import random
+
+secret = random.randint(1, 50)
+tries = 0
+
+print("I'm thinking of a number between 1 and 50.")
+
+while True:
+    answer = input("Your guess: ")
+    if not answer.isdigit():
+        print("Numbers only, please.")
+        continue
+
+    guess = int(answer)
+    tries = tries + 1
+
+    if guess < secret:
+        print("Too low.")
+    elif guess > secret:
+        print("Too high.")
+    else:
+        print(f"Got it! {secret} in {tries} tries.")
+        break
+`,
+
+"pong.py":
+`# Bat and ball, drawn with wcgame.
+# Left / Right arrows to move.
+import wcgame as g
+import random
+
+g.init(320, 240)
+
+paddle = 130
+ball_x = 160
+ball_y = 60
+vx = 2
+vy = 2
+score = 0
+lives = 3
+
+while g.running():
+    g.fill("#0b1020")
+
+    if g.key("left"):
+        paddle = paddle - 5
+    if g.key("right"):
+        paddle = paddle + 5
+    if paddle < 0:
+        paddle = 0
+    if paddle > 260:
+        paddle = 260
+
+    ball_x = ball_x + vx
+    ball_y = ball_y + vy
+
+    if ball_x < 4 or ball_x > 316:
+        vx = -vx
+        g.beep(600, 0.03)
+    if ball_y < 4:
+        vy = -vy
+        g.beep(600, 0.03)
+
+    hit_row = ball_y > 214 and ball_y < 226
+    on_paddle = ball_x > paddle and ball_x < paddle + 60
+    if hit_row and on_paddle and vy > 0:
+        vy = -vy
+        score = score + 1
+        g.beep(900, 0.04)
+
+    if ball_y > 244:
+        lives = lives - 1
+        ball_x = 160
+        ball_y = 60
+        vx = random.choice([-2, 2])
+        vy = 2
+        g.beep(180, 0.18)
+        if lives <= 0:
+            break
+
+    g.rect(paddle, 222, 60, 6, "#4cc2ff")
+    g.circle(ball_x, ball_y, 4, "#ffd166")
+    g.text("score " + str(score), 6, 6, "#9fb3c8", 11)
+    g.text("lives " + str(lives), 250, 6, "#9fb3c8", 11)
+    g.flip()
+
+g.fill("#0b1020")
+g.text("GAME OVER", 88, 96, "#ff6b6b", 22)
+g.text("score: " + str(score), 118, 130, "#e6e6e6", 12)
+g.flip()
+print("Final score:", score)
+`,
+
+"snake.py":
+`# Snake, written in Python, running in WinClone.
+# Arrow keys to steer.
+import wcgame as g
+import random
+
+CELL = 10
+COLS = 32
+ROWS = 20
+TOP = 20
+
+g.init(COLS * CELL, ROWS * CELL + TOP)
+
+snake = [(8, 10), (7, 10), (6, 10)]
+dx = 1
+dy = 0
+food = (20, 10)
+score = 0
+alive = True
+tick = 0
+
+def new_food():
+    while True:
+        spot = (random.randint(0, COLS - 1), random.randint(0, ROWS - 1))
+        if spot not in snake:
+            return spot
+
+while g.running() and alive:
+    if g.key("left") and dx == 0:
+        dx = -1
+        dy = 0
+    if g.key("right") and dx == 0:
+        dx = 1
+        dy = 0
+    if g.key("up") and dy == 0:
+        dx = 0
+        dy = -1
+    if g.key("down") and dy == 0:
+        dx = 0
+        dy = 1
+
+    tick = tick + 1
+    if tick % 6 == 0:
+        head = ((snake[0][0] + dx) % COLS, (snake[0][1] + dy) % ROWS)
+        if head in snake:
+            alive = False
+        else:
+            snake.insert(0, head)
+            if head == food:
+                score = score + 1
+                food = new_food()
+                g.beep(880, 0.04)
+            else:
+                snake.pop()
+
+    g.fill("#0a0f18")
+    g.rect(0, 0, COLS * CELL, TOP, "#141b26")
+    g.text("score " + str(score), 5, 5, "#7fa8d0", 11)
+    g.rect(food[0] * CELL, food[1] * CELL + TOP, CELL - 1, CELL - 1, "#e0491c")
+
+    for i in range(len(snake)):
+        part = snake[i]
+        shade = "#4cc2ff" if i == 0 else "#2f8fd0"
+        g.rect(part[0] * CELL, part[1] * CELL + TOP, CELL - 1, CELL - 1, shade)
+
+    g.flip()
+
+g.text("GAME OVER", 92, 96, "#ff6b6b", 20)
+g.flip()
+print("Snake finished. Score:", score)
+`,
+
+"stars.py":
+`# A starfield. Click the canvas to throw in more stars.
+import wcgame as g
+import random
+
+W = 320
+H = 240
+g.init(W, H)
+
+stars = []
+for i in range(90):
+    stars.append([random.randint(0, W), random.randint(0, H), random.uniform(0.4, 2.6)])
+
+while g.running():
+    g.fill("#04060d")
+
+    for s in stars:
+        s[0] = s[0] - s[2]
+        if s[0] < 0:
+            s[0] = W
+            s[1] = random.randint(0, H)
+        shade = int(110 + s[2] * 50)
+        colour = "rgb(" + str(shade) + "," + str(shade) + "," + str(min(255, shade + 45)) + ")"
+        size = 1 if s[2] < 1.5 else 2
+        g.rect(int(s[0]), int(s[1]), size, size, colour)
+
+    if g.click():
+        for i in range(12):
+            stars.append([W, random.randint(0, H), random.uniform(0.4, 2.6)])
+        g.beep(1200, 0.03)
+
+    g.text("stars: " + str(len(stars)), 6, 6, "#40567a", 10)
+    g.text("click for more", 6, H - 16, "#40567a", 10)
+    g.flip()
+`,
+};
+
+/* ---- shared: run a source string into a host element ---- */
+function pyLaunch(host, source, o){
+  o=o||{};
+  host.innerHTML="";
+  const stage=makePyStage(host,{appId:o.appId, setTitle:o.setTitle});
+  const io={
+    write:stage.write,
+    error:stage.error,
+    alive:stage.alive,
+    readLine:stage.readLine,
+    cwd:o.cwd||[...HOME_PATH,"Documents"],
+    scriptName:o.scriptName||"untitled.py",
+    done:(ok)=>{ stage.quit(); if(o.onDone) o.onDone(ok); },
+  };
+  const runner=pyRunSource(source, io, stage);
+  return {runner, stage};
+}
+
+/* ============================ PYTHON IDE ============================ */
+let PY_PENDING=null;
+const PYIDE={loader:null};
+function openPythonWith(pn){
+  if(state.wins.python && PYIDE.loader){
+    if(state.wins.python.min) toggleMin("python",false);
+    focusWin("python"); PYIDE.loader(pn);
+  } else { PY_PENDING=pn; openApp("python"); }
+}
+function buildPython(body,win){
+  body.innerHTML=`<div class="pyide">
+    <div class="py-bar">
+      <button class="py-btn" data-a="new">New</button>
+      <button class="py-btn" data-a="open">Open…</button>
+      <button class="py-btn" data-a="import" title="Bring a .py file in from your real computer">Import…</button>
+      <button class="py-btn" data-a="save">Save</button>
+      <span class="py-sep"></span>
+      <button class="py-btn go" data-a="run">▶ Run</button>
+      <button class="py-btn stop" data-a="stop">■ Stop</button>
+      <span class="py-sep"></span>
+      <button class="py-btn" data-a="samples">Examples ▾</button>
+      <button class="py-btn" data-a="help">Help</button>
+      <span class="py-status"></span>
+    </div>
+    <div class="py-editwrap">
+      <div class="py-gutter"></div>
+      <textarea class="py-code" spellcheck="false" wrap="off" placeholder="# type Python here…"></textarea>
+    </div>
+    <div class="py-split" title="Drag to resize"></div>
+    <div class="py-out"></div>
+  </div>`;
+  const ta=body.querySelector(".py-code");
+  const gutter=body.querySelector(".py-gutter");
+  const out=body.querySelector(".py-out");
+  const status=body.querySelector(".py-status");
+  const btnStop=body.querySelector('[data-a="stop"]');
+  const editwrap=body.querySelector(".py-editwrap");
+  let cur=null, live=null;
+
+  const setTitle=()=>{ const t=win.querySelector(".tt"); if(t) t.textContent=(cur?cur.name:"Untitled")+" — Python"; };
+  const setStatus=(t,cls)=>{ status.textContent=t||""; status.className="py-status"+(cls?" "+cls:""); };
+  const reflect=()=>{ btnStop.disabled=!live; };
+
+  function renderGutter(){
+    const n=ta.value.split("\n").length;
+    let s="";
+    for(let i=1;i<=n;i++) s+=i+"\n";
+    gutter.textContent=s;
+    gutter.scrollTop=ta.scrollTop;
+  }
+  ta.addEventListener("input",renderGutter);
+  ta.addEventListener("scroll",()=>{ gutter.scrollTop=ta.scrollTop; });
+  ta.addEventListener("keydown",e=>{
+    if(e.key==="Tab"){
+      e.preventDefault();
+      const s=ta.selectionStart, en=ta.selectionEnd;
+      ta.value=ta.value.slice(0,s)+"    "+ta.value.slice(en);
+      ta.selectionStart=ta.selectionEnd=s+4;
+      renderGutter();
+      return;
+    }
+    if(e.key==="Enter"){                       // keep the current indent, and add one after ":"
+      const s=ta.selectionStart;
+      const lineStart=ta.value.lastIndexOf("\n",s-1)+1;
+      const line=ta.value.slice(lineStart,s);
+      const indent=(/^[ \t]*/.exec(line)||[""])[0];
+      const extra=/:\s*$/.test(line)?"    ":"";
+      if(indent||extra){
+        e.preventDefault();
+        const ins="\n"+indent+extra;
+        ta.value=ta.value.slice(0,s)+ins+ta.value.slice(ta.selectionEnd);
+        ta.selectionStart=ta.selectionEnd=s+ins.length;
+        renderGutter();
+      }
+      return;
+    }
+    if(e.key==="F5"){ e.preventDefault(); run(); }
+  });
+
+  function load(pn){
+    const parent=nodeAt(pn.path), f=parent&&parent.children&&parent.children[pn.name];
+    if(!f){ winDialog({icon:"❌",title:"Python",msg:"That file couldn't be found."}); return; }
+    ta.value=String(f.content==null?"":f.content);
+    cur={path:[...pn.path],name:pn.name};
+    setTitle(); renderGutter(); setStatus("");
+  }
+  PYIDE.loader=load;
+
+  function doSave(path,name){
+    if(!/\.py$/i.test(name)) name+=".py";
+    const parent=nodeAt(path);
+    if(!parent||!parent.children) return;
+    const ex=parent.children[name];
+    if(ex&&ex.folder){ winDialog({icon:"❌",title:"Python",msg:"A folder with that name already exists."}); return; }
+    parent.children[name]=Object.assign(ex||{icon:"🐍"},{content:ta.value});
+    cur={path:[...path],name};
+    setTitle(); saveFS(); refreshFX();
+    setStatus("saved","ok");
+    setTimeout(()=>{ if(status.textContent==="saved") setStatus(""); },1500);
+  }
+
+  /* pull real .py files off the user's computer into the virtual filesystem */
+  function importPy(){
+    const inp=document.createElement("input");
+    inp.type="file"; inp.multiple=true;
+    inp.accept=".py,.pyw,.txt,text/x-python,text/plain";
+    inp.onchange=async()=>{
+      const files=[...(inp.files||[])];
+      if(!files.length) return;
+      let destPath=cur?[...cur.path]:[...HOME_PATH,"Documents","Python"];
+      let dest=nodeAt(destPath);
+      if(!dest||!dest.children){                       // the Python folder may not exist yet
+        const docs=nodeAt([...HOME_PATH,"Documents"]);
+        if(!docs||!docs.children){ winDialog({icon:"⚠️",title:"Import",msg:"Couldn't find a folder to import into."}); return; }
+        if(!docs.children["Python"]) docs.children["Python"]={folder:true,children:{}};
+        destPath=[...HOME_PATH,"Documents","Python"];
+        dest=docs.children["Python"];
+      }
+      let added=0, failed=0, last=null;
+      for(const f of files){
+        try{
+          let nm=(f.name||"script.py").replace(/[\\/:*?"<>|]/g,"_");
+          if(!/\.pyw?$/i.test(nm)) nm=nm.replace(/\.[^.]*$/,"")+".py";
+          nm=uniqueName(dest,nm);
+          dest.children[nm]={icon:"🐍",content:await f.text()};
+          last=nm; added++;
+        }catch(e){ failed++; }
+      }
+      saveFS(); refreshFX();
+      if(last){
+        load({path:destPath,name:last});
+        setStatus("imported "+added+" file"+(added===1?"":"s"),"ok");
+      }
+      if(failed) winDialog({icon:"⚠️",title:"Import",msg:failed+" file(s) couldn't be read."});
+      else if(added) notify({icon:"🐍",title:"Python",body:added+" script(s) imported into "+destPath[destPath.length-1]});
+    };
+    inp.click();
+  }
+
+  function stop(){
+    if(live){ try{ live.runner.stop(); }catch(e){} try{ live.stage.quit(); }catch(e){} }
+    live=null; reflect();
+  }
+  function run(){
+    stop();
+    setStatus("running…","run");
+    live=pyLaunch(out, ta.value, {
+      appId:"python",
+      cwd:cur?cur.path:[...HOME_PATH,"Documents"],
+      scriptName:cur?cur.name:"untitled.py",
+      setTitle:(t)=>{ const e=win.querySelector(".tt"); if(e) e.textContent=t+" — Python"; },
+      onDone:(ok)=>{ live=null; reflect(); setStatus(ok?"finished":"stopped — see the error above",ok?"ok":"bad"); },
+    });
+    reflect();
+  }
+
+  body.querySelectorAll("[data-a]").forEach(b=>b.onclick=()=>{
+    const a=b.dataset.a;
+    if(a==="new"){ stop(); ta.value=""; cur=null; setTitle(); renderGutter(); out.innerHTML=""; setStatus(""); }
+    else if(a==="open") fileDialog({mode:"open",cb:(p,n)=>load({path:p,name:n})});
+    else if(a==="import") importPy();
+    else if(a==="save"){ if(cur) doSave(cur.path,cur.name); else fileDialog({mode:"save",cb:doSave}); }
+    else if(a==="run") run();
+    else if(a==="stop"){ stop(); setStatus("stopped"); }
+    else if(a==="help") pyHelpDialog();
+    else if(a==="samples"){
+      const r=b.getBoundingClientRect();
+      showCtx(r.left, r.bottom, Object.keys(PY_SAMPLES).map(nm=>({
+        icon:"🐍", label:nm,
+        action:()=>{ stop(); ta.value=PY_SAMPLES[nm]; cur=null; setTitle(); renderGutter(); out.innerHTML=""; setStatus("loaded "+nm); }
+      })));
+    }
+  });
+
+  /* drag the divider to resize the editor */
+  const split=body.querySelector(".py-split");
+  split.addEventListener("mousedown",e=>{
+    e.preventDefault();
+    const startY=e.clientY, startH=editwrap.offsetHeight;
+    const mv=ev=>{
+      const h=Math.max(80,Math.min(body.offsetHeight-120, startH+(ev.clientY-startY)));
+      editwrap.style.flex="0 0 "+h+"px";
+    };
+    const up=()=>{ document.removeEventListener("mousemove",mv); document.removeEventListener("mouseup",up); };
+    document.addEventListener("mousemove",mv);
+    document.addEventListener("mouseup",up);
+  });
+
+  if(PY_PENDING){ load(PY_PENDING); PY_PENDING=null; }
+  else { ta.value=PY_SAMPLES["hello.py"]; setTitle(); }
+  renderGutter(); reflect();
+}
+
+/* ============================ PYTHON FILE RUNNER ============================ */
+let PYRUN_PENDING=null;
+const PYRUN={loader:null};
+function openPyFile(pn){
+  if(state.wins.pyrun && PYRUN.loader){
+    if(state.wins.pyrun.min) toggleMin("pyrun",false);
+    focusWin("pyrun"); PYRUN.loader(pn);
+  } else { PYRUN_PENDING=pn; openApp("pyrun"); }
+}
+function buildPyRun(body,win){
+  body.innerHTML=`<div class="pyide pyrunner">
+    <div class="py-bar">
+      <button class="py-btn go" data-a="again">⟳ Run again</button>
+      <button class="py-btn stop" data-a="stop">■ Stop</button>
+      <button class="py-btn" data-a="edit">📝 Edit</button>
+      <span class="py-status"></span>
+    </div>
+    <div class="py-out"></div>
+  </div>`;
+  const out=body.querySelector(".py-out");
+  const status=body.querySelector(".py-status");
+  let cur=null, live=null;
+  const setStatus=(t,cls)=>{ status.textContent=t||""; status.className="py-status"+(cls?" "+cls:""); };
+
+  function stop(){
+    if(live){ try{ live.runner.stop(); }catch(e){} try{ live.stage.quit(); }catch(e){} }
+    live=null;
+  }
+  function start(){
+    if(!cur) return;
+    const parent=nodeAt(cur.path), f=parent&&parent.children&&parent.children[cur.name];
+    if(!f){ out.innerHTML=""; setStatus("file not found","bad"); return; }
+    if(f.web){
+      out.innerHTML="";
+      setStatus("blocked","bad");
+      winDialog({icon:"🚫",title:cur.name,msg:"<b>"+esc(cur.name)+"</b> came from the internet.<br>WinClone won't run downloaded scripts."});
+      return;
+    }
+    stop();
+    setStatus("running…","run");
+    const t=win.querySelector(".tt"); if(t) t.textContent=cur.name+" — Python";
+    live=pyLaunch(out, String(f.content==null?"":f.content), {
+      appId:"pyrun",
+      cwd:[...cur.path],
+      scriptName:cur.name,
+      setTitle:(x)=>{ const e=win.querySelector(".tt"); if(e) e.textContent=x+" — Python"; },
+      onDone:(ok)=>{ live=null; setStatus(ok?"finished":"stopped — see the error above",ok?"ok":"bad"); },
+    });
+  }
+  function load(pn){ cur={path:[...pn.path],name:pn.name}; start(); }
+  PYRUN.loader=load;
+
+  body.querySelectorAll("[data-a]").forEach(b=>b.onclick=()=>{
+    const a=b.dataset.a;
+    if(a==="again") start();
+    else if(a==="stop"){ stop(); setStatus("stopped"); }
+    else if(a==="edit"){ if(cur) openPythonWith({path:cur.path,name:cur.name}); }
+  });
+
+  if(PYRUN_PENDING){ load(PYRUN_PENDING); PYRUN_PENDING=null; }
+  else { setStatus("open a .py file from File Explorer"); }
+}
+
+function pyHelpDialog(){
+  const d=winDialog({icon:"🐍",title:"Python in WinClone",msg:
+    `<div style="line-height:1.6;font-size:12.5px">
+    <b>What works</b><br>
+    Variables, <b>if / elif / else</b>, <b>while</b>, <b>for … in</b>, <b>def</b> (defaults, *args, **kwargs),
+    <b>class</b> with inheritance, lambdas, list/dict/set comprehensions, f-strings,
+    slicing, unpacking, <b>try / except / finally</b>, <b>import</b>, and the usual builtins
+    (print, input, len, range, sum, sorted, enumerate, zip, map, filter…).<br>
+    Modules: <b>math</b>, <b>random</b>, <b>time</b>, <b>sys</b>, <b>wcgame</b>, <b>winclone</b>.<br><br>
+
+    <b>Your own .py files</b><br>
+    <b>Import…</b> brings a real .py file in from your computer (File Explorer's
+    <i>Import files…</i> takes them too). <code>import mymodule</code> then loads
+    <code>mymodule.py</code> from the same folder as your script, or from
+    <code>Documents\\Python</code> — so you can split a project across files.<br><br>
+
+    <b>Drawing and games — <code>import wcgame as g</code></b><br>
+    <code>g.init(w, h)</code> open a canvas · <code>g.fill(colour)</code> clear<br>
+    <code>g.rect(x, y, w, h, colour)</code> · <code>g.circle(x, y, r, colour)</code><br>
+    <code>g.line(x1, y1, x2, y2, colour)</code> · <code>g.poly(points, colour)</code><br>
+    <code>g.text(s, x, y, colour, size)</code> · <code>g.beep(freq, seconds)</code><br>
+    <code>g.key("left")</code> held down · <code>g.pressed("space")</code> just pressed<br>
+    <code>g.mouse()</code> → (x, y) · <code>g.click()</code> · <code>g.running()</code><br>
+    <code>g.flip()</code> show the frame and wait for the next one<br><br>
+
+    <b>Talking to the OS — <code>import winclone</code></b><br>
+    <code>winclone.notify(title, body)</code> · <code>winclone.user()</code> ·
+    <code>winclone.ls()</code> · <code>winclone.read(name)</code> ·
+    <code>winclone.write(name, text)</code> · <code>winclone.open_app("paint")</code><br><br>
+
+    <b>What doesn't</b><br>
+    Ints and floats are the same thing here, so <code>4 / 2</code> prints <code>2</code>, not <code>2.0</code>.
+    No generators/yield, no decorators, no real file or network access, no third-party
+    packages — this interpreter was written from scratch inside WinClone.
+    </div>`});
+  if(d){                                   // the default dialog is too narrow for a cheat sheet
+    d.style.maxWidth="580px";
+    d.style.width="580px";
+    d.style.left=Math.max(10,(innerWidth-580)/2)+"px";
+    d.style.top =Math.max(10,(innerHeight-d.offsetHeight)/2)+"px";
+  }
+}
+
 /* ============================ VIRTUAL FILESYSTEM (persistent) ============================ */
 const FS_KEY="wc_fs", RC_KEY="wc_recycle", INF_KEY="wc_infect";
 function defaultFS(){ return {
@@ -1099,6 +5232,7 @@ function defaultFS(){ return {
         "Documents":{folder:true,children:{
           "resume.docx":{icon:"📘",content:"USER — RESUME\n\nSkills: building an operating system out of one HTML file."},
           "budget.xlsx":{icon:"📗"},
+          "Python":{folder:true,children:pySampleFiles()},
           "Projects":{folder:true,children:{"ideas.txt":{icon:"📄",content:"idea 1: winclone\nidea 2: winclone 2"}}}}},
         "Downloads":{folder:true,children:{
           "setup.exe":{icon:"⚙️",exe:true},
@@ -1145,6 +5279,22 @@ function nodeAt(path){ let n={folder:true,children:VFS}; for(const k of path){ i
 /* migrate a legacy WinClone.lnk (created before shortcuts worked) into a real shortcut */
 try{ const _d=nodeAt(["C:","Users","User","Desktop"]), _w=_d&&_d.children&&_d.children["WinClone.lnk"];
   if(_w && !_w.target && !_w.path){ _w.lnk=true; _w.target="settings"; saveFS(); } }catch(e){}
+/* one-time: drop the example scripts into Documents\Python on installs that
+   predate Python support (defaultFS only covers brand-new installs) */
+try{
+  if(!localStorage.getItem("wc_pysamples")){
+    const _docs=nodeAt([...HOME_PATH,"Documents"]);
+    if(_docs&&_docs.children){
+      if(!_docs.children["Python"]) _docs.children["Python"]={folder:true,children:{}};
+      const _pf=_docs.children["Python"];
+      if(_pf.children) Object.keys(PY_SAMPLES).forEach(k=>{
+        if(!_pf.children[k]) _pf.children[k]={icon:"🐍",content:PY_SAMPLES[k]};
+      });
+      saveFS();
+    }
+    localStorage.setItem("wc_pysamples","1");
+  }
+}catch(e){}
 
 /* open explorer windows re-render when the FS changes */
 const fxRefreshers=[];
@@ -1231,6 +5381,7 @@ const NEW_TYPES=[
   {label:"JSON File",           icon:"🗂️", base:"New File.json",              make:()=>({icon:"🗂️",content:"{\n  \n}"})},
   {label:"Log File",            icon:"📄", base:"New Log File.log",           make:()=>({icon:"📄",content:""})},
   {label:"Batch Script",        icon:"📜", base:"New Batch Script.bat",       make:()=>({icon:"📜",content:"@echo off\n"})},
+  {label:"Python Script",       icon:"🐍", base:"New Python Script.py",       make:()=>({icon:"🐍",content:"# A new Python script.\n# Double-click to run it, or right-click ‣ Edit to open it in Python.\n\nprint(\"hello from Python\")\n"})},
   {label:"Bitmap Image",        icon:"🖼️", base:"New Bitmap Image.bmp",       make:()=>({icon:"🖼️"})},
   {label:"ZIP Archive",         icon:"🗜️", base:"New Archive.zip",            make:()=>({icon:"🗜️",archive:true,children:{}})},
   {label:"RAR Archive",         icon:"🗜️", base:"New Archive.rar",            make:()=>({icon:"🗜️",archive:true,children:{}})},
@@ -1372,6 +5523,7 @@ function fsOpen(path,name,item){
   else if(isVid || isAud) openMediaIn({path:[...path],name});
   else if(/\.(wcdocs?|docx?|odt|rtf)$/.test(lo)) openDocs({path:[...path],name});
   else if(/\.(bat|cmd)$/.test(lo)) openBatch({path:[...path],name});
+  else if(/\.py$/.test(lo)) openPyFile({path:[...path],name});
   else if(item.exe||item.malware||lo.endsWith(".exe")) runFile(name,item);
   else openFileInNotepad({path:[...path],name}); // txt, md, json, log, rtf, csv, ini, bat, unknown-with-content
 }
@@ -1380,6 +5532,8 @@ function fsItemMenu(x,y,path,name,item,extra){
   const items=[{icon:"📂",label:"Open",action:()=>fsOpen(path,name,item)}];
   if(/\.(bat|cmd)$/i.test(name) && !item.web)
     items.push({icon:"📝",label:"Edit",action:()=>openFileInNotepad({path:[...path],name})});
+  if(/\.py$/i.test(name) && !item.web)
+    items.push({icon:"🐍",label:"Edit in Python",action:()=>openPythonWith({path:[...path],name})});
   if(!item.sys) items.push({icon:"📤",label:"Export (save to computer)…",action:()=>exportFile(path,name,item)});
   if(/\.(png|jpe?g|gif|bmp)$/i.test(name) && !item.locked)
     items.push({icon:"🖼️",label:"Set as wallpaper",action:()=>setWallpaper(artFor(name,item).g)});
@@ -1923,8 +6077,8 @@ function importImages(targetPath,done){
 
 /* ============================ IMPORT / EXPORT ============================ */
 /* Bridge between the user's real computer and WinClone's virtual filesystem. */
-const IE_TEXT_EXTS=["txt","html","htm","rtf","csv","ini","md","json","log","bat"];
-const IE_ACCEPT=".txt,.html,.htm,.docx,.wcdocs,.rtf,.csv,.ini,.md,.json,.log,.bat,.bmp,.zip,.rar";
+const IE_TEXT_EXTS=["txt","html","htm","rtf","csv","ini","md","json","log","bat","py","js","css","xml","yml","yaml","cfg","conf"];
+const IE_ACCEPT=".txt,.html,.htm,.docx,.wcdocs,.rtf,.csv,.ini,.md,.json,.log,.bat,.py,.js,.css,.xml,.yml,.yaml,.cfg,.conf,.bmp,.zip,.rar";
 
 /* --- byte / base64 helpers --- */
 function ieB64(bytes){ let s="",CH=0x8000; for(let i=0;i<bytes.length;i+=CH) s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH)); return btoa(s); }
@@ -3361,6 +7515,7 @@ $("#searchbtn").onclick = ()=>{ renderStartGrid(""); toggleFlyout("#startmenu");
 $("#quickbtn").onclick = ()=>{ toggleFlyout("#quick"); $("#wifilist").classList.add("open"); renderWifi(); };
 $("#tray-clock").onclick = ()=>{ renderCalendar(); toggleFlyout("#cal"); };
 $("#widgetsbtn").onclick = ()=>openApp("edge");
+if($("#taskviewbtn")) $("#taskviewbtn").onclick = ()=>toggleTaskView();
 $("#notifbtn").onclick = ()=>{ notifUnseen=0; notifBadge(); renderNotif(); toggleFlyout("#notif"); };
 $("#notif-clear").onclick = ()=>{ NOTIFS=[]; saveNotifs(); renderNotif(); notifUnseen=0; notifBadge(); };
 notifBadge();
