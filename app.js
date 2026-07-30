@@ -4814,7 +4814,13 @@ function makeWincloneModule(io,fn){
     const name=segs[segs.length-1];
     const parent=nodeAt(segs.slice(0,-1));
     const item=parent&&parent.children&&parent.children[name];
-    if(!item) throw pyErr("FileNotFoundError","no file called '"+pyStr(a[0])+"'");
+    if(!item){
+      /* a typo'd delete quietly doing nothing is worse than being told, so this
+         still raises — unless you say you don't mind, like Path.unlink does */
+      if(flagged(a,kw,"missing_ok",2)) return null;
+      throw pyErr("FileNotFoundError","no file called '"+pyStr(a[0])+"'. "+
+        "Pass missing_ok=True if you don't mind it being gone already");
+    }
     if(flagged(a,kw,"permanent",1)){        // skips the bin, so it actually frees storage
       delete parent.children[name];
       saveFS(); refreshFX();
@@ -5464,7 +5470,8 @@ function pyHelpDialog(){
     <code>winclone.new_file(name, text)</code> — same as plain write, named for when
     making a new copy is the whole point<br>
     <code>winclone.del_file(name)</code> — to the Recycle Bin; add
-    <code>permanent=True</code> to skip the bin and actually free the space<br>
+    <code>permanent=True</code> to skip the bin and actually free the space, or
+    <code>missing_ok=True</code> to shrug when it's already gone<br>
     <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
     anything else opens that file or folder with whatever handles it<br><br>
 
