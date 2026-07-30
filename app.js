@@ -18,8 +18,16 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.2.0";
+const WC_VERSION = "1.3.0";
 const WC_CHANGELOG = {
+  "1.3.0": [
+    "🛟 System Restore Points — a new app. Snapshot the whole PC before you try something risky, then roll back to it. Your password is never touched.",
+    "💾 Python can't clobber your files by accident any more: winclone.write() refuses to replace a file unless you pass overwrite=True.",
+    "➕ New Python file commands — winclone.append(), winclone.exists(), winclone.new_file() (keeps both copies, renaming to \"name (2)\") and winclone.del_file() (add permanent=True to skip the Recycle Bin and really free the space).",
+    "📂 winclone.open_app() opens anything now — an app, a file, or a folder, using whatever normally handles it.",
+    "🙋 winclone.set_user_name() renames your account from a script, everywhere at once.",
+    "🐛 Fixed: FileNotFoundError and PermissionError were being raised but didn't exist, so you couldn't catch them. Added those plus FileExistsError, IsADirectoryError and OSError.",
+  ],
   "1.2.0": [
     "🗂️ Task View — the taskbar button opens an overview of every open window, with live thumbnails you can click, close, or drag.",
     "🖥️ Virtual desktops: make as many as 8, drag windows between them, and the taskbar only shows what's on the one you're using.",
@@ -4807,7 +4815,7 @@ function makeWincloneModule(io,fn){
     const parent=nodeAt(segs.slice(0,-1));
     const item=parent&&parent.children&&parent.children[name];
     if(!item) throw pyErr("FileNotFoundError","no file called '"+pyStr(a[0])+"'");
-    if(kw&&pyTruth(kw.permanent)){          // skips the bin, so it actually frees storage
+    if(flagged(a,kw,"permanent",1)){        // skips the bin, so it actually frees storage
       delete parent.children[name];
       saveFS(); refreshFX();
       try{ applySystemHealth(); }catch(e){}
@@ -4854,15 +4862,28 @@ function makeWincloneModule(io,fn){
   d.exists=fn("exists",(a)=>{
     try{ const t=target(a[0]); return !!t.parent.children[t.name]; }catch(e){ return false; }
   });
+  /* accept the flag either way — write(name, text, True) is the obvious guess,
+     and silently ignoring it would be a maddening thing to debug */
+  const flagged=(a,kw,name,pos)=>(kw&&pyTruth(kw[name])) || (a.length>pos&&pyTruth(a[pos]));
   d.write=fn("write",(a,kw)=>{
     const t=target(a[0]);
     const ex=writable(t);
-    if(ex && !(kw&&pyTruth(kw.overwrite)))
+    if(ex && !flagged(a,kw,"overwrite",2))
       throw pyErr("FileExistsError","'"+t.name+"' already exists. Pass overwrite=True to replace it, "+
         "or use winclone.append() to add to it");
     t.parent.children[t.name]=Object.assign(ex||{icon:glyphFor(t.name,null)},{content:pyStr(a[1])});
     saveFS(); refreshFX();
     return t.name;
+  });
+  /* always creates something, never replaces: on a clash it renames the way the
+     rest of WinClone does — notes.txt becomes "notes (2).txt". Returns the name
+     it actually used. */
+  d.new_file=fn("new_file",(a)=>{
+    const t=target(a[0]);
+    const name=uniqueName(t.parent,t.name);
+    t.parent.children[name]={icon:glyphFor(name,null),content:a.length>1?pyStr(a[1]):""};
+    saveFS(); refreshFX();
+    return name;
   });
   d.append=fn("append",(a)=>{
     const t=target(a[0]);
@@ -5395,7 +5416,7 @@ function buildPyRun(body,win){
 
 function pyHelpDialog(){
   const d=winDialog({icon:"🐍",title:"Python in WinClone",msg:
-    `<div style="line-height:1.6;font-size:12.5px">
+    `<div style="line-height:1.6;font-size:12.5px;max-height:66vh;overflow:auto;padding-right:4px">
     <b>What works</b><br>
     Variables, <b>if / elif / else</b>, <b>while</b>, <b>for … in</b>, <b>def</b> (defaults, *args, **kwargs),
     <b>class</b> with inheritance, lambdas, list/dict/set comprehensions, f-strings,
@@ -5410,24 +5431,41 @@ function pyHelpDialog(){
     <code>Documents\\Python</code> — so you can split a project across files.<br><br>
 
     <b>Drawing and games — <code>import wcgame as g</code></b><br>
-    <code>g.init(w, h)</code> open a canvas · <code>g.fill(colour)</code> clear<br>
+    <code>g.init(w, h)</code> open a canvas · <code>g.width()</code> · <code>g.height()</code><br>
+    <code>g.fill(colour)</code> clear the screen<br>
     <code>g.rect(x, y, w, h, colour)</code> · <code>g.circle(x, y, r, colour)</code><br>
     <code>g.line(x1, y1, x2, y2, colour)</code> · <code>g.poly(points, colour)</code><br>
+    <span style="color:#9a9a9a">rect, circle, line and poly all take <code>fill=False</code> and <code>width=n</code> to outline instead</span><br>
     <code>g.text(s, x, y, colour, size)</code> · <code>g.beep(freq, seconds)</code><br>
-    <code>g.key("left")</code> held down · <code>g.pressed("space")</code> just pressed<br>
-    <code>g.mouse()</code> → (x, y) · <code>g.click()</code> · <code>g.running()</code><br>
-    <code>g.flip()</code> show the frame and wait for the next one<br><br>
+    <code>g.key("left")</code> held down · <code>g.pressed("space")</code> just pressed ·
+    <code>g.keys()</code> everything held<br>
+    <code>g.mouse()</code> → (x, y) · <code>g.mouse_down()</code> · <code>g.click()</code><br>
+    <code>g.flip()</code> show the frame and wait for the next · <code>g.wait(seconds)</code><br>
+    <code>g.running()</code> False once the window closes · <code>g.quit()</code> stop early<br><br>
 
     <b>Talking to the OS — <code>import winclone</code></b><br>
-    <code>winclone.notify(title, body)</code> · <code>winclone.user()</code> ·
-    <code>winclone.ls()</code> · <code>winclone.read(name)</code> ·
+    <code>winclone.notify(title, body)</code> · <code>winclone.beep()</code><br>
+    <code>winclone.user()</code> · <code>winclone.set_user_name(name)</code> — renames the
+    account everywhere<br>
+    <code>winclone.version()</code> · <code>winclone.cwd()</code> · <code>winclone.apps()</code><br>
+    <code>winclone.ls(folder)</code> · <code>winclone.read(name)</code> · <code>winclone.exists(name)</code><br>
     <code>winclone.write(name, text)</code> — <b>refuses if the file already exists</b>;
     add <code>overwrite=True</code> to replace it<br>
-    <code>winclone.append(name, text)</code> · <code>winclone.exists(name)</code><br>
-    <code>winclone.open_app(x)</code> — an app id opens the app, anything else opens
-    that file or folder with whatever handles it<br>
+    <code>winclone.append(name, text)</code> — adds to the end, creates it if missing<br>
+    <code>winclone.new_file(name, text)</code> — always makes a new file; if the name is
+    taken it becomes <code>name (2)</code>, and it returns the name it used<br>
     <code>winclone.del_file(name)</code> — to the Recycle Bin; add
-    <code>permanent=True</code> to skip the bin and actually free the space<br><br>
+    <code>permanent=True</code> to skip the bin and actually free the space<br>
+    <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
+    anything else opens that file or folder with whatever handles it<br><br>
+
+    <b>Catching problems</b><br>
+    <code>ValueError</code>, <code>TypeError</code>, <code>NameError</code>, <code>IndexError</code>,
+    <code>KeyError</code>, <code>ZeroDivisionError</code>, <code>AttributeError</code>,
+    <code>AssertionError</code>, <code>ImportError</code><br>
+    File ones: <code>FileNotFoundError</code>, <code>FileExistsError</code>,
+    <code>PermissionError</code>, <code>IsADirectoryError</code> — or catch the lot with
+    <code>OSError</code>. <code>Exception</code> catches everything.<br><br>
 
     <b>What doesn't</b><br>
     Ints and floats are the same thing here, so <code>4 / 2</code> prints <code>2</code>, not <code>2.0</code>.
