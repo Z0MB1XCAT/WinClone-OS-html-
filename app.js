@@ -28,6 +28,7 @@ const WC_CHANGELOG = {
     "🎮 Python games actually run: import wcgame for a canvas, keys and sound. Five examples ship in Documents\\Python, Pong and Snake included.",
     "📄 New ▸ Python Script, double-click any .py to run it, or type python file.py in the Terminal.",
     "👹 CloneDOOM — a first-person raycaster with textured walls, sliding doors, demons that hunt you, a shotgun and a status bar. Yes, WinClone runs DOOM.",
+    "🛟 System Restore Points — take a snapshot before you do something risky, and roll the whole PC back to it later. Your password is never touched.",
   ],
   "1.1.0": [
     "🔒 Your PC has a password now — set one on first boot, and pick a security question in case you forget it.",
@@ -67,6 +68,7 @@ const APPS = {
   snake:     {title:"Snake",         icon:"🐍", w:440, h:520, build:buildSnake},
   python:    {title:"Python",        icon:"🐍", w:840, h:620, build:buildPython},
   doom:      {title:"CloneDOOM",     icon:"👹", w:800, h:560, build:buildDoom},
+  restore:   {title:"System Restore Points", icon:"🛟", w:680, h:520, build:buildRestore},
   archive:   {title:"Archive",       icon:"🗜️", w:560, h:420, build:buildArchive, hidden:true},
   pyrun:     {title:"Python",        icon:"🐍", w:660, h:520, build:buildPyRun, hidden:true},
   htmlview:  {title:"HTML Viewer",   icon:"🌐", w:760, h:560, build:buildHtmlView, hidden:true},
@@ -92,12 +94,13 @@ const TILE_BG = {
   snake:   "linear-gradient(135deg,#166534,#84cc16)",
   python:  "linear-gradient(135deg,#2b5b84,#ffd43b)",
   doom:    "linear-gradient(135deg,#5c1008,#c62d1f)",
+  restore: "linear-gradient(135deg,#0f5c52,#2fb8a0)",
   pyrun:   "linear-gradient(135deg,#2b5b84,#ffd43b)",
   archive: "linear-gradient(135deg,#6b7280,#d1d5db)",
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
   batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
 };
-const PINNED = ["edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","recycle"];
+const PINNED = ["edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
 const TASKBAR_PINS = ["explorer","edge","notepad","terminal"];
 const DESKTOP_ICONS = [
   {app:"recycle",  label:"Recycle Bin"},
@@ -1401,6 +1404,153 @@ function runBatchScript(text, cwd, io){
     sched();
   }
   step();
+}
+
+/* ============================ SYSTEM RESTORE POINTS ============================
+   A snapshot of the machine's state you can roll back to. It captures the
+   filesystem, the Recycle Bin, infections and your look-and-feel settings.
+
+   It deliberately does NOT capture your password or security question — rolling
+   back should never change how you sign in — and it doesn't touch the installed
+   copy of WinClone's own code, so restoring never downgrades the OS.
+
+   Snapshots live in the same localStorage as everything else, so they cost real
+   space: keeping one roughly doubles what your files take up. That's why
+   there's a cap, a size readout, and a clear error when the drive is full. */
+const RP_KEY="wc_restore", RP_MAX=6;
+/* keys a restore point carries; wc_pass / wc_sq / wc_sqa / wc_sys_* stay out on purpose */
+const RP_KEYS=["wc_fs","wc_recycle","wc_infect","wc_user","wc_wall","wc_theme","wc_accent","wc_iconpos","wc_notifs"];
+
+function rpLoad(){ try{ return JSON.parse(localStorage.getItem(RP_KEY))||[]; }catch(e){ return []; } }
+function rpBytes(o){ try{ return JSON.stringify(o).length; }catch(e){ return 0; } }
+function rpSizeLabel(n){
+  if(n<1024) return n+" B";
+  if(n<1024*1024) return (n/1024).toFixed(1)+" KB";
+  return (n/1048576).toFixed(2)+" MB";
+}
+function rpWhenLabel(ts){
+  const d=new Date(ts);
+  return d.toLocaleDateString([], {day:"numeric",month:"short"})+" "+
+         d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+}
+function rpCapture(name){
+  try{ saveFS(); }catch(e){}                       // make sure the snapshot sees the current files
+  const data={};
+  RP_KEYS.forEach(k=>{ data[k]=localStorage.getItem(k); });
+  return {
+    id:"rp"+Date.now().toString(36)+Math.floor(Math.random()*46656).toString(36),
+    name:String(name||"Restore point").slice(0,48),
+    when:Date.now(),
+    version:WC_VERSION,
+    data,
+  };
+}
+/* Returns null on success, or a message explaining why it couldn't be saved. */
+function rpCreate(name){
+  const list=rpLoad();
+  if(list.length>=RP_MAX) return "You already have "+RP_MAX+" restore points. Delete one first.";
+  const pt=rpCapture(name);
+  const next=[pt,...list];
+  try{
+    localStorage.setItem(RP_KEY,JSON.stringify(next));
+  }catch(e){
+    return "Not enough storage to save a restore point ("+rpSizeLabel(rpBytes(pt))+" needed). "+
+           "Delete an old restore point, empty the Recycle Bin, or remove some large files.";
+  }
+  return null;
+}
+function rpDelete(id){
+  const next=rpLoad().filter(p=>p.id!==id);
+  try{ localStorage.setItem(RP_KEY,JSON.stringify(next)); }catch(e){}
+}
+function rpRestore(id){
+  const pt=rpLoad().find(p=>p.id===id);
+  if(!pt) return false;
+  const d=pt.data||{};
+  RP_KEYS.forEach(k=>{
+    const v=d[k];
+    try{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k,v); }catch(e){}
+  });
+  return true;
+}
+
+function buildRestore(body,win){
+  const draw=()=>{
+    const list=rpLoad();
+    const used=rpBytes(list);
+    body.innerHTML=`<div class="rp">
+      <div class="rp-head">
+        <div>
+          <div class="rp-title">System Restore Points</div>
+          <div class="rp-sub">Take a snapshot now, and you can put WinClone back exactly how it is today.</div>
+        </div>
+        <button class="rp-new">＋ Create restore point</button>
+      </div>
+      <div class="rp-list"></div>
+      <div class="rp-foot">
+        <span>${list.length} of ${RP_MAX} restore points · using ${rpSizeLabel(used)}</span>
+        <span class="rp-note">Your password is never changed by a restore.</span>
+      </div>
+    </div>`;
+    const listEl=body.querySelector(".rp-list");
+    if(!list.length){
+      listEl.innerHTML=`<div class="rp-empty">
+        <div class="rp-eic">🛟</div>
+        <b>No restore points yet</b>
+        <span>Make one before you try something risky — installing junk, deleting system
+        files, or letting a Python script loose on your filesystem.</span></div>`;
+    }else{
+      list.forEach(p=>{
+        const row=el("div","rp-row",
+          `<div class="rp-ic">🛟</div>
+           <div class="rp-meta">
+             <b>${esc(p.name)}</b>
+             <span>${rpWhenLabel(p.when)} · ${rpSizeLabel(rpBytes(p))}${p.version?" · WinClone "+esc(p.version):""}</span>
+           </div>`);
+        const go=el("button","rp-btn pri","Restore");
+        const rm=el("button","rp-btn","Delete");
+        go.onclick=()=>confirmRestore(p);
+        rm.onclick=()=>{
+          winDialog({icon:"🗑️",title:"Delete restore point",
+            msg:`Delete <b>${esc(p.name)}</b>?<br><small style="color:#9a9a9a">The files it saved can't be recovered afterwards.</small>`,
+            buttons:[{label:"Delete",primary:true,action:()=>{ rpDelete(p.id); draw(); }},{label:"Cancel"}]});
+        };
+        row.appendChild(go); row.appendChild(rm);
+        listEl.appendChild(row);
+      });
+    }
+    body.querySelector(".rp-new").onclick=()=>{
+      const d=new Date();
+      inputDialog({
+        title:"Create restore point",
+        ok:"Create",
+        value:"Before "+d.toLocaleDateString([], {day:"numeric",month:"short"})+" "+d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}),
+        cb:(nm)=>{
+          const err=rpCreate(nm);
+          if(err){ winDialog({icon:"⚠️",title:"Couldn't create restore point",msg:esc(err)}); return; }
+          draw();
+          notify({icon:"🛟",title:"Restore point created",body:nm});
+        }
+      });
+    };
+  };
+  function confirmRestore(p){
+    winDialog({icon:"🛟",title:"Restore this PC",
+      msg:`Put WinClone back to <b>${esc(p.name)}</b>, taken ${rpWhenLabel(p.when)}?<br><br>
+        <small style="color:#9a9a9a">Your files, Recycle Bin, wallpaper and settings all go back to how
+        they were. Anything you've made since then is lost. Your password stays as it is now.<br>
+        WinClone will restart.</small>`,
+      buttons:[
+        {label:"Restore and restart",primary:true,action:()=>{
+          if(!rpRestore(p.id)){ winDialog({icon:"⚠️",title:"Restore failed",msg:"That restore point couldn't be read."}); return; }
+          const sd=$("#shutdown");
+          if(sd){ sd.style.display="flex"; $("#sd-text").textContent="Restoring your files…"; }
+          setTimeout(()=>location.reload(),2000);
+        }},
+        {label:"Cancel"}
+      ]});
+  }
+  draw();
 }
 
 /* ============================ CLONEDOOM ============================
@@ -3794,11 +3944,13 @@ function* execStmt(n,env){
   }
   throw pyErr("SyntaxError","unsupported statement");
 }
+const PY_OS_ERRORS=["FileNotFoundError","FileExistsError","PermissionError","IsADirectoryError","OSError","IOError"];
 function excMatches(exc,typeName){
   if(typeName==="Exception"||typeName==="BaseException") return exc.type!=="SystemExit";
   if(typeName===exc.type) return true;
   if(typeName==="ArithmeticError") return exc.type==="ZeroDivisionError";
   if(typeName==="LookupError") return exc.type==="IndexError"||exc.type==="KeyError";
+  if(typeName==="OSError"||typeName==="IOError") return PY_OS_ERRORS.indexOf(exc.type)>=0;
   return false;
 }
 function jsErrType(e){ return (e instanceof RangeError)?"RecursionError":"RuntimeError"; }
@@ -4009,7 +4161,8 @@ function* compLoop(n,gi,env,out){
 /* ---------------- builtins ---------------- */
 const PY_EXC_NAMES=["Exception","BaseException","ValueError","TypeError","NameError","IndexError","KeyError",
   "ZeroDivisionError","AttributeError","RuntimeError","StopIteration","AssertionError","ImportError",
-  "NotImplementedError","OverflowError","RecursionError","SystemExit","ArithmeticError","LookupError"];
+  "NotImplementedError","OverflowError","RecursionError","SystemExit","ArithmeticError","LookupError",
+  "OSError","IOError","FileNotFoundError","FileExistsError","PermissionError","IsADirectoryError"];
 
 function makePyBuiltins(io){
   const B={};
@@ -4621,13 +4774,47 @@ function makeWincloneModule(io,fn){
     return null;
   });
   d.user   =fn("user",   ()=>getUser());
+  d.set_user_name=fn("set_user_name",(a)=>{
+    const want=a.length?pyStr(a[0]).trim():"";
+    if(want.length>24) throw pyErr("ValueError","that name is too long — 24 characters max");
+    setUser(want);                          // "" resets to the default, "User"
+    return getUser();                       // updates the Start menu, lock screen and avatar
+  });
   d.version=fn("version",()=>WC_VERSION);
   d.cwd    =fn("cwd",    ()=>"C:\\"+home().slice(1).join("\\"));
+  /* Works like `start` on the real thing: an app id opens the app, anything
+     else is looked up in the filesystem and opened with whatever handles it —
+     images to Photos, .html to the viewer, .py to Python, folders to Explorer. */
   d.open_app=fn("open_app",(a)=>{
-    const id=pyStr(a[0]).toLowerCase();
-    if(!APPS[id]) throw pyErr("ValueError","there is no app called '"+id+"'");
-    openApp(id);
-    return null;
+    const raw=pyStr(a[0]);
+    const id=raw.toLowerCase();
+    if(APPS[id]){ openApp(id); return id; }
+    const segs=resolve(raw);
+    const name=segs[segs.length-1];
+    const parent=nodeAt(segs.slice(0,-1));
+    const item=parent&&parent.children&&parent.children[name];
+    if(!item)
+      throw pyErr("FileNotFoundError","nothing called '"+raw+"' — not an app, and no such file. "+
+        "winclone.apps() lists the apps, winclone.ls() lists the folder");
+    if(item.folder){ openExplorerAt(segs); return name; }
+    fsOpen(segs.slice(0,-1),name,item);
+    return name;
+  });
+  d.open=d.open_app;
+  d.del_file=fn("del_file",(a,kw)=>{
+    const segs=resolve(pyStr(a[0]));
+    const name=segs[segs.length-1];
+    const parent=nodeAt(segs.slice(0,-1));
+    const item=parent&&parent.children&&parent.children[name];
+    if(!item) throw pyErr("FileNotFoundError","no file called '"+pyStr(a[0])+"'");
+    if(kw&&pyTruth(kw.permanent)){          // skips the bin, so it actually frees storage
+      delete parent.children[name];
+      saveFS(); refreshFX();
+      try{ applySystemHealth(); }catch(e){}
+    }else{
+      deleteAt(segs.slice(0,-1),name);      // to the Recycle Bin, exactly like Explorer
+    }
+    return name;
   });
   d.apps=fn("apps",()=>Object.keys(APPS).filter(k=>!APPS[k].hidden));
   d.ls=fn("ls",(a)=>{
@@ -4644,17 +4831,46 @@ function makeWincloneModule(io,fn){
     if(f.locked) throw pyErr("PermissionError","that file is encrypted by ransomware — run Cork Defender");
     return String(f.content==null?"":f.content);
   });
-  d.write=fn("write",(a)=>{
-    const segs=resolve(pyStr(a[0]));
+  /* write() refuses to clobber by default. A script quietly replacing a file
+     the user cares about is a nastier surprise than an error message, so
+     replacing has to be asked for: winclone.write(name, text, overwrite=True).
+     append() and exists() cover the rest. */
+  const target=(p)=>{
+    const segs=resolve(pyStr(p));
     guard(segs);
     const parent=nodeAt(segs.slice(0,-1));
-    if(!parent||!parent.children) throw pyErr("FileNotFoundError","no folder to write into");
+    if(!parent||!parent.children) throw pyErr("FileNotFoundError","there's no folder at "+segs.slice(0,-1).join("\\"));
     const name=segs[segs.length-1];
-    const ex=parent.children[name];
-    if(ex&&ex.folder) throw pyErr("ValueError","a folder with that name already exists");
-    parent.children[name]=Object.assign(ex||{icon:glyphFor(name,null)},{content:pyStr(a[1])});
+    if(!name) throw pyErr("ValueError","that path doesn't name a file");
+    return {parent,name};
+  };
+  const writable=(t)=>{
+    const ex=t.parent.children[t.name];
+    if(ex&&ex.folder) throw pyErr("IsADirectoryError","'"+t.name+"' is a folder, not a file");
+    if(ex&&ex.locked) throw pyErr("PermissionError","'"+t.name+"' is encrypted by ransomware — run Cork Defender");
+    if(ex&&ex.sys) throw pyErr("PermissionError","'"+t.name+"' is a system file");
+    return ex;
+  };
+  d.exists=fn("exists",(a)=>{
+    try{ const t=target(a[0]); return !!t.parent.children[t.name]; }catch(e){ return false; }
+  });
+  d.write=fn("write",(a,kw)=>{
+    const t=target(a[0]);
+    const ex=writable(t);
+    if(ex && !(kw&&pyTruth(kw.overwrite)))
+      throw pyErr("FileExistsError","'"+t.name+"' already exists. Pass overwrite=True to replace it, "+
+        "or use winclone.append() to add to it");
+    t.parent.children[t.name]=Object.assign(ex||{icon:glyphFor(t.name,null)},{content:pyStr(a[1])});
     saveFS(); refreshFX();
-    return null;
+    return t.name;
+  });
+  d.append=fn("append",(a)=>{
+    const t=target(a[0]);
+    const ex=writable(t);
+    const before=(ex&&ex.content!=null)?String(ex.content):"";
+    t.parent.children[t.name]=Object.assign(ex||{icon:glyphFor(t.name,null)},{content:before+pyStr(a[1])});
+    saveFS(); refreshFX();
+    return t.name;
   });
   d.beep=fn("beep",(a)=>{ try{ sfx(a.length&&pyStr(a[0])==="error"?"error":"notify"); }catch(e){} return null; });
   return d;
@@ -5205,7 +5421,13 @@ function pyHelpDialog(){
     <b>Talking to the OS — <code>import winclone</code></b><br>
     <code>winclone.notify(title, body)</code> · <code>winclone.user()</code> ·
     <code>winclone.ls()</code> · <code>winclone.read(name)</code> ·
-    <code>winclone.write(name, text)</code> · <code>winclone.open_app("paint")</code><br><br>
+    <code>winclone.write(name, text)</code> — <b>refuses if the file already exists</b>;
+    add <code>overwrite=True</code> to replace it<br>
+    <code>winclone.append(name, text)</code> · <code>winclone.exists(name)</code><br>
+    <code>winclone.open_app(x)</code> — an app id opens the app, anything else opens
+    that file or folder with whatever handles it<br>
+    <code>winclone.del_file(name)</code> — to the Recycle Bin; add
+    <code>permanent=True</code> to skip the bin and actually free the space<br><br>
 
     <b>What doesn't</b><br>
     Ints and floats are the same thing here, so <code>4 / 2</code> prints <code>2</code>, not <code>2.0</code>.
