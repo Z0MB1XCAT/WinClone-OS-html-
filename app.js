@@ -22,8 +22,8 @@ const WC_VERSION = "1.3.0";
 const WC_CHANGELOG = {
   "1.3.0": [
     "🛟 System Restore Points — a new app. Snapshot the whole PC before you try something risky, then roll back to it. Your password is never touched.",
-    "💾 Python can't clobber your files by accident any more: winclone.write() refuses to replace a file unless you pass overwrite=True.",
-    "➕ New Python file commands — winclone.append(), winclone.exists(), winclone.new_file() (keeps both copies, renaming to \"name (2)\") and winclone.del_file() (add permanent=True to skip the Recycle Bin and really free the space).",
+    "💾 Python can't clobber your files by accident any more: winclone.write() on a name that's taken makes \"name (2)\" instead, just like pasting a file twice. Pass overwrite=True when you do mean replace.",
+    "➕ New Python file commands — winclone.append(), winclone.exists(), winclone.new_file() and winclone.del_file() (add permanent=True to skip the Recycle Bin and really free the space).",
     "📂 winclone.open_app() opens anything now — an app, a file, or a folder, using whatever normally handles it.",
     "🙋 winclone.set_user_name() renames your account from a script, everywhere at once.",
     "🐛 Fixed: FileNotFoundError and PermissionError were being raised but didn't exist, so you couldn't catch them. Added those plus FileExistsError, IsADirectoryError and OSError.",
@@ -4865,12 +4865,20 @@ function makeWincloneModule(io,fn){
   /* accept the flag either way — write(name, text, True) is the obvious guess,
      and silently ignoring it would be a maddening thing to debug */
   const flagged=(a,kw,name,pos)=>(kw&&pyTruth(kw[name])) || (a.length>pos&&pyTruth(a[pos]));
+  /* A name that's already taken doesn't destroy anything and doesn't blow up —
+     it makes another file, the way Explorer does when you paste twice. Pass
+     overwrite=True when you really do mean "replace that one". Either way you
+     get back the name it actually wrote. */
   d.write=fn("write",(a,kw)=>{
     const t=target(a[0]);
-    const ex=writable(t);
-    if(ex && !flagged(a,kw,"overwrite",2))
-      throw pyErr("FileExistsError","'"+t.name+"' already exists. Pass overwrite=True to replace it, "+
-        "or use winclone.append() to add to it");
+    const ex=t.parent.children[t.name];
+    if(ex && !flagged(a,kw,"overwrite",2)){
+      const name=uniqueName(t.parent,t.name);
+      t.parent.children[name]={icon:glyphFor(name,null),content:pyStr(a[1])};
+      saveFS(); refreshFX();
+      return name;
+    }
+    writable(t);                      // replacing for real: folders, locked and system files still say no
     t.parent.children[t.name]=Object.assign(ex||{icon:glyphFor(t.name,null)},{content:pyStr(a[1])});
     saveFS(); refreshFX();
     return t.name;
@@ -5449,11 +5457,12 @@ function pyHelpDialog(){
     account everywhere<br>
     <code>winclone.version()</code> · <code>winclone.cwd()</code> · <code>winclone.apps()</code><br>
     <code>winclone.ls(folder)</code> · <code>winclone.read(name)</code> · <code>winclone.exists(name)</code><br>
-    <code>winclone.write(name, text)</code> — <b>refuses if the file already exists</b>;
-    add <code>overwrite=True</code> to replace it<br>
+    <code>winclone.write(name, text)</code> — if that name is taken it makes
+    <code>name (2)</code> instead of replacing it, and returns the name it used<br>
+    <code>winclone.write(name, text, overwrite=True)</code> — replace the existing one<br>
     <code>winclone.append(name, text)</code> — adds to the end, creates it if missing<br>
-    <code>winclone.new_file(name, text)</code> — always makes a new file; if the name is
-    taken it becomes <code>name (2)</code>, and it returns the name it used<br>
+    <code>winclone.new_file(name, text)</code> — same as plain write, named for when
+    making a new copy is the whole point<br>
     <code>winclone.del_file(name)</code> — to the Recycle Bin; add
     <code>permanent=True</code> to skip the bin and actually free the space<br>
     <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
