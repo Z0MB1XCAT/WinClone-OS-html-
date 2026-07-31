@@ -5340,8 +5340,15 @@ function makeWincloneModule(io,fn){
     if(ex&&ex.sys) throw pyErr("PermissionError","'"+t.name+"' is a system file");
     return ex;
   };
+  /* deliberately does NOT go through target(): that applies the *write* guard,
+     which made exists() answer False for everything in C:\Windows — including
+     files del_file() will happily delete. Asking whether something is there
+     isn't writing to it. */
   d.exists=fn("exists",(a)=>{
-    try{ const t=target(a[0]); return !!t.parent.children[t.name]; }catch(e){ return false; }
+    const segs=resolve(pyStr(a[0]));
+    if(segs.length<2) return false;
+    const parent=nodeAt(segs.slice(0,-1));
+    return !!(parent&&parent.children&&parent.children[segs[segs.length-1]]);
   });
   /* accept the flag either way — write(name, text, True) is the obvious guess,
      and silently ignoring it would be a maddening thing to debug */
