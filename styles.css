@@ -727,6 +727,76 @@
   #desktop.drop-target{outline:3px dashed rgba(120,180,255,.45);outline-offset:-8px}
   .rc-bar{display:flex;gap:8px;padding:10px 12px;border-bottom:1px solid #000;background:#232323;flex:0 0 auto}
 
+
+  /* ---------- SCREEN FX ----------
+     #scrfx is the effect layer: pinned over the whole shell, never clickable.
+     It sits above the windows, the taskbar and the ransom screen, but below the
+     BSOD (200000) and the BIOS (200001) — those stay legible on purpose, since
+     the BIOS is how you factory-reset out of trouble.
+     --p is the intensity slider, 0.3–2. */
+  #scrfx{position:fixed;inset:0;z-index:190000;pointer-events:none;overflow:hidden;--p:1}
+  #scrfx .sx-l{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .sx-svghost{position:absolute;width:0;height:0;overflow:hidden}
+
+  .sx-static{opacity:calc(.20 * var(--p));mix-blend-mode:screen;image-rendering:pixelated}
+  .sx-matrix{opacity:calc(.55 * var(--p));mix-blend-mode:screen}
+  .sx-crack{opacity:.95}
+
+  .sx-crt{background:
+      repeating-linear-gradient(to bottom, rgba(0,0,0,.34) 0 1px, transparent 1px 3px),
+      radial-gradient(120% 120% at 50% 50%, transparent 55%, rgba(0,0,0,.55) 100%);
+    opacity:calc(.75 * var(--p))}
+  .sx-crt .sx-roll{position:absolute;left:0;right:0;height:16vh;
+    background:linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,.09), rgba(255,255,255,0));
+    animation:sxroll 5.5s linear infinite}
+  @keyframes sxroll{from{top:-20vh}to{top:110vh}}
+
+  .sx-band{position:absolute;left:-6%;width:112%;
+    backdrop-filter:invert(1) hue-rotate(150deg) saturate(2.4);
+    -webkit-backdrop-filter:invert(1) hue-rotate(150deg) saturate(2.4);
+    transition:opacity .05s}
+
+  .sx-cur{position:absolute;top:0;left:0;width:20px;height:26px;will-change:transform;
+    filter:drop-shadow(0 2px 3px rgba(0,0,0,.5))}
+  .sx-bug{position:absolute;top:0;left:0;font-size:22px;line-height:1;will-change:transform;
+    filter:drop-shadow(0 2px 4px rgba(0,0,0,.55))}
+  .sx-strobe{opacity:calc(.45 * var(--p));mix-blend-mode:hard-light}
+
+  /* Screen FX app */
+  .sx-app{display:flex;flex-direction:column;height:100%;background:#1b1b1b;font-size:13px}
+  .sx-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;
+    padding:16px 18px 12px;border-bottom:1px solid #2e2e2e;flex:0 0 auto}
+  .sx-title{font-size:19px;font-weight:600}
+  .sx-sub{color:#a5a5a5;font-size:12px;margin-top:3px;max-width:430px;line-height:1.5}
+  .sx-headbtns{display:flex;gap:8px;flex:0 0 auto}
+  .sx-btn{background:#2f2f2f;border:1px solid #3f3f3f;color:#eee;padding:7px 13px;font-size:12.5px;cursor:default;white-space:nowrap}
+  .sx-btn:hover{background:#3b3b3b}
+  .sx-btn.stop{background:#7a1f1f;border-color:#a02b2b}
+  .sx-btn.stop:hover{background:#932626}
+  .sx-power{display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid #2e2e2e;
+    color:#c9c9c9;flex:0 0 auto}
+  .sx-power .sx-range{flex:1;max-width:280px;accent-color:var(--accent)}
+  .sx-power b{min-width:44px;text-align:right;color:#fff}
+  .sx-grid{flex:1 1 auto;overflow:auto;padding:6px 14px 14px}
+  .sx-cat{font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:#7e7e7e;margin:14px 4px 7px}
+  .sx-card{display:flex;align-items:center;gap:13px;padding:10px 12px;margin-bottom:6px;
+    background:#242424;border:1px solid #303030;cursor:default}
+  .sx-card:hover{background:#2c2c2c;border-color:#3d3d3d}
+  .sx-card.on{background:rgba(0,120,215,.18);border-color:var(--accent)}
+  .sx-card .sx-ic{font-size:22px;width:30px;text-align:center;flex:0 0 auto}
+  .sx-meta{flex:1;min-width:0}
+  .sx-meta b{font-weight:600}
+  .sx-meta span{display:block;color:#9b9b9b;font-size:11.5px;margin-top:2px;line-height:1.45}
+  .sx-sw{flex:0 0 auto;width:38px;height:20px;border-radius:10px;background:#3a3a3a;border:1px solid #4a4a4a;
+    position:relative;transition:background .15s}
+  .sx-sw i{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#bbb;
+    transition:transform .15s,background .15s}
+  .sx-card.on .sx-sw{background:var(--accent-solid);border-color:var(--accent)}
+  .sx-card.on .sx-sw i{transform:translateX(18px);background:#fff}
+  .sx-foot{display:flex;justify-content:space-between;gap:14px;padding:9px 18px;border-top:1px solid #2e2e2e;
+    color:#9b9b9b;font-size:11.5px;flex:0 0 auto}
+  .sx-note b{color:#ddd}
+
   /* Win10 scrollbars: chunky, square, always-visible track */
   ::-webkit-scrollbar{width:14px;height:14px}
   ::-webkit-scrollbar-thumb{background:#4d4d4d;border-radius:0}

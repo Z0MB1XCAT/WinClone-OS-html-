@@ -18,8 +18,15 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.3.0";
+const WC_VERSION = "1.4.0";
 const WC_CHANGELOG = {
+  "1.4.0": [
+    "🌀 Screen FX — a new app full of effects that happen to the whole screen instead of inside a window. The desktop shakes, spins, melts, cracks, fills with static or turns upside down, and everything underneath keeps working.",
+    "🫠 Twenty of them: Earthquake, Spin, Upside Down, Mirror, Breathe, Drunk, Melt, Heat Haze, Inverted, Rainbow, Lost My Glasses, Dread, TV Static, CRT, Datamosh, Cracked Screen, Cursor Swarm, Bugs, Digital Rain and Strobe. Stack as many as you like and drag the intensity slider.",
+    "🤡 Joke.SalineClone — a new fake download that hijacks the effects and keeps picking new ones on its own. Cork Defender removes it.",
+    "🐍 Python can take over the screen too: winclone.effect(\"melt\"), winclone.effect(\"all\"), winclone.effects() and winclone.stop_effects().",
+    "⌨️ fx in the Terminal toggles any effect, and Ctrl+Alt+X is the panic button that stops everything at once.",
+  ],
   "1.3.0": [
     "🛟 System Restore Points — a new app. Snapshot the whole PC before you try something risky, then roll back to it. Your password is never touched.",
     "💾 Python can't clobber your files by accident any more: winclone.write() on a name that's taken makes \"name (2)\" instead, just like pasting a file twice. Pass overwrite=True when you do mean replace.",
@@ -77,6 +84,7 @@ const APPS = {
   python:    {title:"Python",        icon:"🐍", w:840, h:620, build:buildPython},
   doom:      {title:"CloneDOOM",     icon:"👹", w:800, h:560, build:buildDoom},
   restore:   {title:"System Restore Points", icon:"🛟", w:680, h:520, build:buildRestore},
+  screenfx:  {title:"Screen FX",     icon:"🌀", w:620, h:600, build:buildScreenFX},
   archive:   {title:"Archive",       icon:"🗜️", w:560, h:420, build:buildArchive, hidden:true},
   pyrun:     {title:"Python",        icon:"🐍", w:660, h:520, build:buildPyRun, hidden:true},
   htmlview:  {title:"HTML Viewer",   icon:"🌐", w:760, h:560, build:buildHtmlView, hidden:true},
@@ -103,6 +111,7 @@ const TILE_BG = {
   python:  "linear-gradient(135deg,#2b5b84,#ffd43b)",
   doom:    "linear-gradient(135deg,#5c1008,#c62d1f)",
   restore: "linear-gradient(135deg,#0f5c52,#2fb8a0)",
+  screenfx:"linear-gradient(135deg,#3b0764,#a855f7)",
   pyrun:   "linear-gradient(135deg,#2b5b84,#ffd43b)",
   archive: "linear-gradient(135deg,#6b7280,#d1d5db)",
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
@@ -610,6 +619,14 @@ addEventListener("keydown", e=>{
     if(e.key==="ArrowLeft" ){ e.preventDefault(); switchDesktop(VD.cur-1); return; }
     if(e.key==="ArrowUp"   ){ e.preventDefault(); toggleTaskView(); return; }
     if(e.key==="d"||e.key==="D"){ e.preventDefault(); newDesktop(true); return; }
+    if(e.key==="x"||e.key==="X"){                        // panic button for Screen FX
+      e.preventDefault();
+      const had=SFX.on.size;
+      sfxStopAll();
+      if(had&&hasKind("joke")) malToast("🤡","Joke.SalineClone","Screen cleared — but the joke virus is still installed and will start again. Run Cork Defender.");
+      else if(had) showToast({icon:"🌀",title:"Screen FX stopped",body:"All "+had+" effect(s) switched off."});
+      return;
+    }
   }
   if(e.key==="Escape"){
     if(ALT.open){ e.preventDefault(); altClose(); return; }
@@ -1168,7 +1185,22 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "fx": {
+        const sub=(args[0]||"").toLowerCase();
+        if(!sub||sub==="list"){
+          printHtml(`<span class="cyan">Screen effects</span> — they happen to the whole screen, not in this window.<br>`+
+            SFX_LIST.map(e=>`&nbsp;&nbsp;${SFX.on.has(e.id)?'<span class="green">●</span>':"○"} `+
+              `<b>${esc(e.id)}</b>${" ".repeat(Math.max(1,10-e.id.length)).replace(/ /g,"&nbsp;")}`+
+              `<span style="color:#9a9a9a">${esc(e.desc)}</span>`).join("<br>")+
+            `<br><br>fx &lt;name&gt; toggles one, <b>fx all</b> runs the lot, <b>fx off</b> stops everything (so does Ctrl+Alt+X).`);
+        }
+        else if(sub==="off"||sub==="stop"){ sfxStopAll(); print("all screen effects stopped"); }
+        else if(sub==="all"||sub==="chaos"){ sfxAll(); print("good luck"); }
+        else if(SFX_BY_ID[sub]){ const on=!SFX.on.has(sub); sfxSet(sub,on); print(sub+" "+(on?"on":"off")); }
+        else print("no effect called '"+sub+"' — try: fx list");
+        break;
+      }
       case "cls": case "clear": term.innerHTML=""; break;
       case "ver": print("WinClone [Version 10.0.26100]"); break;
       case "winver":
@@ -1559,6 +1591,449 @@ function buildRestore(body,win){
       ]});
   }
   draw();
+}
+
+/* ============================ SCREEN FX ============================
+   Effects that happen to the *screen* instead of inside a window: the whole
+   desktop shakes, spins, melts, fills with static. Nothing here is a picture of
+   a broken screen — every effect is applied to the real, live desktop, so your
+   windows keep working (badly) underneath it.
+
+   How it works: warping effects write a combined transform/filter onto <body>,
+   which drags the desktop, the taskbar and every open window along with them.
+   Overlay effects draw into #scrfx, a full-screen layer pinned above the shell
+   but below the BSOD and the BIOS — those two stay readable on purpose, because
+   the BIOS is the escape hatch of last resort.
+
+   The engine costs nothing when idle: no timers, no rAF, no canvases. Turning
+   the last effect off tears the whole layer back down. */
+const SFX = {
+  on:new Set(),         // ids currently running
+  power:1,              // intensity, 0.3 – 2
+  raf:0, t0:0,
+  root:null, layers:{}, st:{},   // st = per-effect scratch state
+  mouse:{x:innerWidth/2, y:innerHeight/2},
+  panels:[],            // open Screen FX windows that want repainting
+  bound:false,
+};
+const SFX_ARROW=`<svg viewBox="0 0 20 26" width="20" height="26"><path d="M2 1 L2 21 L7 16.5 L10.5 24.5 L14 23 L10.5 15 L17 15 Z"
+  fill="#fff" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/></svg>`;
+
+/* ---- plumbing ---- */
+function sfxRoot(){
+  if(SFX.root && SFX.root.isConnected) return SFX.root;
+  const r=el("div"); r.id="scrfx";
+  document.body.appendChild(r);
+  SFX.root=r; SFX.layers={};
+  r.style.setProperty("--p", SFX.power);
+  return r;
+}
+function sfxLayer(id,tag,cls){
+  const r=sfxRoot();
+  const have=SFX.layers[id];
+  if(have && have.isConnected) return have;
+  const n=document.createElement(tag||"div");
+  n.className="sx-l "+(cls||("sx-"+id));
+  r.appendChild(n); SFX.layers[id]=n; return n;
+}
+function sfxDrop(id){
+  const n=SFX.layers[id]; if(n) n.remove();
+  delete SFX.layers[id]; delete SFX.st[id];
+}
+function sfxFit(c,scale){
+  const s=scale||1;
+  c.width =Math.max(1,Math.round(innerWidth *s));
+  c.height=Math.max(1,Math.round(innerHeight*s));
+}
+/* the SVG filters behind melt / liquid. One <svg>, reused, animated per frame. */
+function sfxFilters(){
+  let s=$("#sfx-svg");
+  if(s) return s;
+  const host=el("div","sx-svghost",
+    `<svg id="sfx-svg" width="0" height="0" aria-hidden="true">
+      <filter id="sfx-melt" x="-25%" y="-25%" width="150%" height="150%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.002 0.014" numOctaves="2" seed="7" result="n"/>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="0" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+      <filter id="sfx-liquid" x="-15%" y="-15%" width="130%" height="130%" color-interpolation-filters="sRGB">
+        <feTurbulence type="turbulence" baseFrequency="0.012" numOctaves="1" seed="3" result="n"/>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="0" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </svg>`);
+  sfxRoot().appendChild(host);
+  return $("#sfx-svg");
+}
+function sfxDisp(id,scale,freq,seed){
+  const f=$("#"+id); if(!f) return;
+  const t=f.querySelector("feTurbulence"), d=f.querySelector("feDisplacementMap");
+  if(d) d.setAttribute("scale", scale.toFixed(1));
+  if(t){
+    if(freq!=null) t.setAttribute("baseFrequency", freq);
+    if(seed!=null) t.setAttribute("seed", seed);
+  }
+}
+
+/* ---- the catalogue ----
+   warp() adds to body's transform, tint() adds to its filter, start()/stop()
+   own a layer, frame() runs once per rAF. tame:true = safe to inflict on
+   someone without warning; the strobe is deliberately not tame. */
+const SFX_LIST=[
+  /* --- warp --- */
+  {id:"shake", name:"Earthquake", icon:"〰️", cat:"Warp", tame:true,
+   desc:"The whole screen judders like someone kicked the desk.",
+   warp:(t,p)=>`translate(${((Math.random()-.5)*16*p).toFixed(1)}px,${((Math.random()-.5)*16*p).toFixed(1)}px)`},
+
+  {id:"spin", name:"Spin", icon:"🌀", cat:"Warp", tame:true,
+   desc:"The desktop rotates, forever, and the mouse no longer agrees with it.",
+   warp:(t,p)=>`rotate(${(t*40*p).toFixed(2)}deg)`},
+
+  {id:"flip", name:"Upside Down", icon:"🙃", cat:"Warp", tame:true,
+   desc:"Turns the screen 180°. Everything still works. You don't.",
+   warp:()=>"rotate(180deg)"},
+
+  {id:"mirror", name:"Mirror", icon:"🪞", cat:"Warp", tame:true,
+   desc:"Flips the screen left-to-right. Reading gets interesting.",
+   warp:()=>"scaleX(-1)"},
+
+  {id:"breathe", name:"Breathe", icon:"🫁", cat:"Warp", tame:true,
+   desc:"The screen slowly zooms in and out, like the monitor is inhaling.",
+   warp:(t,p)=>`scale(${(1+0.22*p*Math.sin(t*1.5)).toFixed(4)})`},
+
+  {id:"drunk", name:"Drunk", icon:"🍺", cat:"Warp", tame:true,
+   desc:"A slow, queasy sway with a skew in it. Nothing sits still.",
+   warp:(t,p)=>`rotate(${(5*p*Math.sin(t*.9)).toFixed(2)}deg) skewX(${(4*p*Math.sin(t*1.31)).toFixed(2)}deg) `+
+     `translate(${(22*p*Math.sin(t*.55)).toFixed(1)}px,${(11*p*Math.cos(t*.7)).toFixed(1)}px)`},
+
+  {id:"melt", name:"Melt", icon:"🫠", cat:"Warp", tame:true,
+   desc:"The picture sags and drips downward, and keeps getting worse the longer it runs.",
+   start(){ sfxFilters(); },
+   stop(){ sfxDisp("sfx-melt",0); },
+   frame(t,p){ sfxDisp("sfx-melt", Math.min(90, t*7)*p, "0.002 "+(0.014+0.004*Math.sin(t*.3)).toFixed(4)); },
+   tint:()=>"url(#sfx-melt)"},
+
+  {id:"liquid", name:"Heat Haze", icon:"♨️", cat:"Warp", tame:true,
+   desc:"Everything ripples like you're looking at it through hot air.",
+   start(){ sfxFilters(); },
+   stop(){ sfxDisp("sfx-liquid",0); },
+   frame(t,p){ sfxDisp("sfx-liquid", 9*p, null, (t*8|0)%90); },
+   tint:()=>"url(#sfx-liquid)"},
+
+  /* --- colour --- */
+  {id:"invert", name:"Inverted", icon:"🌗", cat:"Colour", tame:true, group:"tint",
+   desc:"Every colour on screen becomes its opposite.",
+   tint:()=>"invert(1)"},
+
+  {id:"rainbow", name:"Rainbow", icon:"🌈", cat:"Colour", tame:true, group:"tint",
+   desc:"Cycles the hue of the entire desktop.",
+   tint:(t)=>`hue-rotate(${(t*140).toFixed(1)}deg) saturate(1.7)`},
+
+  {id:"blurry", name:"Lost My Glasses", icon:"👓", cat:"Colour", tame:true, group:"tint",
+   desc:"A soft blur that drifts in and out of focus.",
+   tint:(t,p)=>`blur(${(p*(1.6+1.6*Math.sin(t*1.9))).toFixed(2)}px)`},
+
+  {id:"dread", name:"Dread", icon:"🩸", cat:"Colour", tame:true, group:"tint",
+   desc:"Drains the colour, crushes the contrast and leaves everything sickly.",
+   tint:()=>"grayscale(.85) contrast(1.7) sepia(.5) hue-rotate(-25deg)"},
+
+  /* --- overlays --- */
+  {id:"static", name:"TV Static", icon:"📺", cat:"Overlay", tame:true, group:"wash",
+   desc:"A layer of rolling analogue snow over the whole screen.",
+   start(){
+     const c=sfxLayer("static","canvas"); sfxFit(c,0.34);
+     const frames=[];
+     for(let k=0;k<6;k++){
+       const o=document.createElement("canvas"); o.width=c.width; o.height=c.height;
+       const g=o.getContext("2d"), d=g.createImageData(o.width,o.height);
+       for(let i=0;i<d.data.length;i+=4){
+         const v=Math.random()*255|0;
+         d.data[i]=d.data[i+1]=d.data[i+2]=v; d.data[i+3]=255;
+       }
+       g.putImageData(d,0,0); frames.push(o);
+     }
+     SFX.st.static={c,ctx:c.getContext("2d"),frames,i:0};
+   },
+   stop(){ sfxDrop("static"); },
+   frame(){ const S=SFX.st.static; if(!S) return;
+     S.i=(S.i+1)%S.frames.length; S.ctx.drawImage(S.frames[S.i],0,0); }},
+
+  {id:"crt", name:"CRT", icon:"🖥️", cat:"Overlay", tame:true,
+   desc:"Scanlines, a curved vignette and a bright band rolling down the tube.",
+   start(){ sfxLayer("crt").innerHTML=`<i class="sx-roll"></i>`; },
+   stop(){ sfxDrop("crt"); }},
+
+  {id:"glitch", name:"Datamosh", icon:"📡", cat:"Overlay", tame:true,
+   desc:"Bands of the picture tear loose, invert and slide sideways.",
+   start(){
+     const l=sfxLayer("glitch"); l.innerHTML="";
+     const bands=[];
+     for(let i=0;i<5;i++){ const b=el("div","sx-band"); l.appendChild(b); bands.push(b); }
+     const move=()=>{
+       bands.forEach(b=>{
+         if(Math.random()<0.35){ b.style.opacity="0"; return; }
+         b.style.opacity="1";
+         b.style.top=(Math.random()*100).toFixed(1)+"%";
+         b.style.height=(4+Math.random()*44*SFX.power).toFixed(0)+"px";
+         b.style.transform="translateX("+((Math.random()-.5)*46*SFX.power).toFixed(0)+"px)";
+       });
+     };
+     move();
+     SFX.st.glitch={iv:setInterval(move,90)};
+   },
+   stop(){ const G=SFX.st.glitch; if(G) clearInterval(G.iv); sfxDrop("glitch"); }},
+
+  {id:"crack", name:"Cracked Screen", icon:"🪟", cat:"Overlay", tame:true,
+   desc:"Shatters the glass. Click anywhere to crack it again — it never heals.",
+   start(){
+     const c=sfxLayer("crack","canvas"); sfxFit(c,1);
+     SFX.st.crack={c,ctx:c.getContext("2d"),hits:[]};
+     sfxCrack(innerWidth*0.5, innerHeight*0.42);
+   },
+   stop(){ sfxDrop("crack"); }},
+
+  {id:"cursors", name:"Cursor Swarm", icon:"🖱️", cat:"Overlay", tame:true,
+   desc:"A trail of pointers chases yours around, each one slower than the last.",
+   start(){
+     const l=sfxLayer("cursors"); l.innerHTML="";
+     const arr=[];
+     for(let i=0;i<9;i++){
+       const d=el("div","sx-cur",SFX_ARROW);
+       d.style.opacity=(0.85-i*0.07).toFixed(2);
+       l.appendChild(d);
+       arr.push({d,x:SFX.mouse.x,y:SFX.mouse.y,k:0.020+i*0.013});
+     }
+     SFX.st.cursors=arr;
+   },
+   stop(){ sfxDrop("cursors"); },
+   frame(){ const A=SFX.st.cursors; if(!A) return;
+     A.forEach(o=>{
+       o.x+=(SFX.mouse.x-o.x)*o.k; o.y+=(SFX.mouse.y-o.y)*o.k;
+       o.d.style.transform=`translate(${o.x.toFixed(1)}px,${o.y.toFixed(1)}px)`;
+     }); }},
+
+  {id:"bugs", name:"Bugs", icon:"🐛", cat:"Overlay", tame:true,
+   desc:"Something is crawling on the screen. On the inside.",
+   start(){
+     const l=sfxLayer("bugs"); l.innerHTML="";
+     const kinds=["🐛","🕷️","🪲","🐜","🦗"], arr=[];
+     for(let i=0;i<11;i++){
+       const d=el("div","sx-bug",kinds[i%kinds.length]);
+       l.appendChild(d);
+       arr.push({d,x:Math.random()*innerWidth,y:Math.random()*innerHeight,
+                 a:Math.random()*6.28,v:0.4+Math.random()*1.1});
+     }
+     SFX.st.bugs=arr;
+   },
+   stop(){ sfxDrop("bugs"); },
+   frame(t,p){ const A=SFX.st.bugs; if(!A) return;
+     A.forEach(o=>{
+       o.a+=(Math.random()-.5)*0.35;
+       o.x+=Math.cos(o.a)*o.v*p*1.6; o.y+=Math.sin(o.a)*o.v*p*1.6;
+       if(o.x<-30) o.x=innerWidth+20; if(o.x>innerWidth+30) o.x=-20;
+       if(o.y<-30) o.y=innerHeight+20; if(o.y>innerHeight+30) o.y=-20;
+       o.d.style.transform=`translate(${o.x.toFixed(0)}px,${o.y.toFixed(0)}px) rotate(${(o.a*57.3+90).toFixed(0)}deg)`;
+     }); }},
+
+  {id:"matrix", name:"Digital Rain", icon:"🟩", cat:"Overlay", tame:true, group:"wash",
+   desc:"Green characters pour down over everything you're doing.",
+   start(){
+     const c=sfxLayer("matrix","canvas"); sfxFit(c,0.6);
+     const cols=Math.max(1,Math.floor(c.width/13));
+     SFX.st.matrix={c,ctx:c.getContext("2d"),cols,
+       y:Array.from({length:cols},()=>Math.random()*-60)};
+   },
+   stop(){ sfxDrop("matrix"); },
+   frame(){ const M=SFX.st.matrix; if(!M) return;
+     const g=M.ctx;
+     g.fillStyle="rgba(0,0,0,.09)"; g.fillRect(0,0,M.c.width,M.c.height);
+     g.font="13px 'Consolas',monospace"; g.fillStyle="#66ff88";
+     for(let i=0;i<M.cols;i++){
+       g.fillText(String.fromCharCode(0x30A0+(Math.random()*96|0)), i*13, M.y[i]*15);
+       if(M.y[i]*15>M.c.height && Math.random()>0.975) M.y[i]=0;
+       M.y[i]++;
+     } }},
+
+  {id:"strobe", name:"Strobe", icon:"🚨", cat:"Overlay",
+   desc:"Full-screen colour flashes. Deliberately slow — under three a second — and never switched on by anything but you.",
+   start(){
+     const l=sfxLayer("strobe");
+     const cols=["#ff2d2d","#1d4ed8","#ffffff","#0b0b0b"]; let i=0;
+     l.style.background=cols[0];
+     SFX.st.strobe={iv:setInterval(()=>{ i=(i+1)%cols.length; l.style.background=cols[i]; },420)};
+   },
+   stop(){ const S=SFX.st.strobe; if(S) clearInterval(S.iv); sfxDrop("strobe"); }},
+];
+const SFX_BY_ID={}; SFX_LIST.forEach(e=>{ SFX_BY_ID[e.id]=e; });
+
+/* one impact: jagged radials plus the rings that join them */
+function sfxCrack(x,y){
+  const C=SFX.st.crack; if(!C) return;
+  if(C.hits.length>11) return;
+  C.hits.push([x,y]);
+  const g=C.ctx, spokes=9+(Math.random()*6|0), angs=[];
+  for(let i=0;i<spokes;i++) angs.push(i/spokes*6.283+Math.random()*0.28);
+  const reach=angs.map(()=>140+Math.random()*Math.max(innerWidth,innerHeight)*0.42);
+  const draw=(w,col)=>{
+    g.strokeStyle=col; g.lineWidth=w; g.lineJoin="round";
+    angs.forEach((a,i)=>{
+      g.beginPath(); g.moveTo(x,y);
+      let px=x,py=y;
+      for(let r=18;r<reach[i];r+=26+Math.random()*22){
+        const j=a+(Math.random()-.5)*0.22;
+        px=x+Math.cos(j)*r; py=y+Math.sin(j)*r;
+        g.lineTo(px,py);
+      }
+      g.stroke();
+    });
+    for(let ring=1;ring<=3;ring++){
+      g.beginPath();
+      angs.forEach((a,i)=>{
+        const r=reach[i]*(ring/4.2)*(0.8+Math.random()*0.35);
+        const px=x+Math.cos(a)*r, py=y+Math.sin(a)*r;
+        i?g.lineTo(px,py):g.moveTo(px,py);
+      });
+      g.closePath(); g.stroke();
+    }
+  };
+  draw(3.2,"rgba(0,0,0,.55)");      // dark under-stroke so cracks read on pale windows too
+  draw(1.1,"rgba(255,255,255,.92)");
+  g.fillStyle="rgba(255,255,255,.75)";
+  g.beginPath(); g.arc(x,y,3.5,0,6.283); g.fill();
+}
+
+/* ---- driver ---- */
+function sfxTick(){
+  SFX.raf=requestAnimationFrame(sfxTick);
+  const t=(performance.now()-SFX.t0)/1000, p=SFX.power;
+  let tf="", fl="";
+  for(const e of SFX_LIST){
+    if(!SFX.on.has(e.id)) continue;
+    if(e.frame) e.frame(t,p);
+    if(e.warp){ const s=e.warp(t,p); if(s) tf+=s+" "; }
+    if(e.tint){ const s=e.tint(t,p); if(s) fl+=s+" "; }
+  }
+  const b=document.body;
+  if(b.style.transform!==tf) b.style.transform=tf;
+  if(b.style.filter!==fl)    b.style.filter=fl;
+}
+function sfxOnMove(e){ SFX.mouse.x=e.clientX; SFX.mouse.y=e.clientY; }
+function sfxOnDown(e){ if(SFX.on.has("crack")) sfxCrack(e.clientX,e.clientY); }
+function sfxOnResize(){
+  if(SFX.st.static){ SFX_BY_ID.static.stop(); SFX_BY_ID.static.start(); }
+  if(SFX.st.matrix){ SFX_BY_ID.matrix.stop(); SFX_BY_ID.matrix.start(); }
+  const C=SFX.st.crack;
+  if(C){ const hits=C.hits; sfxFit(C.c,1); C.hits=[]; hits.forEach(h=>sfxCrack(h[0],h[1])); }
+}
+function sfxBind(on){
+  if(on===SFX.bound) return;
+  SFX.bound=on;
+  if(on){
+    addEventListener("mousemove",sfxOnMove,true);
+    addEventListener("pointerdown",sfxOnDown,true);
+    addEventListener("resize",sfxOnResize);
+  }else{
+    removeEventListener("mousemove",sfxOnMove,true);
+    removeEventListener("pointerdown",sfxOnDown,true);
+    removeEventListener("resize",sfxOnResize);
+  }
+}
+function sfxSync(){
+  if(SFX.on.size){
+    sfxRoot().style.setProperty("--p",SFX.power);
+    if(!SFX.raf){ SFX.t0=performance.now(); sfxBind(true); SFX.raf=requestAnimationFrame(sfxTick); }
+  }else{
+    if(SFX.raf) cancelAnimationFrame(SFX.raf);
+    SFX.raf=0; sfxBind(false);
+    document.body.style.transform=""; document.body.style.filter="";
+    if(SFX.root) SFX.root.remove();
+    SFX.root=null; SFX.layers={}; SFX.st={};   // nothing left running, nothing left allocated
+  }
+  SFX.panels=SFX.panels.filter(f=>{ try{ return f(); }catch(e){ return false; } });
+}
+function sfxSet(id,on){
+  const e=SFX_BY_ID[id]; if(!e) return false;
+  on=(on!==false);
+  if(on===SFX.on.has(id)) return true;
+  if(on){ SFX.on.add(id); sfxRoot(); if(e.start) e.start(); }
+  else  { SFX.on.delete(id); if(e.stop) e.stop(); }
+  sfxSync();
+  return true;
+}
+function sfxStopAll(){
+  SFX_LIST.forEach(e=>{ if(SFX.on.has(e.id)){ SFX.on.delete(e.id); try{ e.stop&&e.stop(); }catch(err){} } });
+  sfxSync();
+}
+/* Every effect except the strobe — but only one per `group`. Some of these
+   drown each other: stacking all four colour filters cancels them into a white
+   smear, and static + digital rain both blend in screen mode, which washes the
+   picture out until you can't see any of the good ones underneath. */
+function sfxAll(){
+  sfxRoot();
+  const keep={};
+  SFX_LIST.forEach(e=>{
+    if(!e.tame||!e.group) return;
+    (keep[e.group]=keep[e.group]||[]).push(e.id);
+  });
+  Object.keys(keep).forEach(g=>{ keep[g]=keep[g][rnd(keep[g].length)]; });
+  SFX_LIST.forEach(e=>{ if(e.tame && (!e.group||keep[e.group]===e.id)) sfxSet(e.id,true); });
+}
+function sfxPower(v){
+  SFX.power=Math.max(0.3,Math.min(2,Number(v)||1));
+  if(SFX.root) SFX.root.style.setProperty("--p",SFX.power);
+  sfxSync();
+}
+
+/* ---- the app ---- */
+function buildScreenFX(body,win){
+  body.innerHTML=`<div class="sx-app">
+    <div class="sx-head">
+      <div>
+        <div class="sx-title">Screen FX</div>
+        <div class="sx-sub">These don't happen in a window — they happen to the screen. Everything underneath keeps running.</div>
+      </div>
+      <div class="sx-headbtns">
+        <button class="sx-btn chaos">🎲 Total chaos</button>
+        <button class="sx-btn stop">■ Stop everything</button>
+      </div>
+    </div>
+    <div class="sx-power">
+      <span>Intensity</span>
+      <input type="range" min="30" max="200" value="${Math.round(SFX.power*100)}" class="sx-range">
+      <b class="sx-pval">${Math.round(SFX.power*100)}%</b>
+    </div>
+    <div class="sx-grid"></div>
+    <div class="sx-foot">
+      <span><b class="sx-count">0</b> running</span>
+      <span class="sx-note">Panic button: <b>Ctrl + Alt + X</b> stops everything. Reloading the page also clears it.</span>
+    </div>
+  </div>`;
+
+  const grid=body.querySelector(".sx-grid");
+  const cards={};
+  let cat=null;
+  SFX_LIST.forEach(e=>{
+    if(e.cat!==cat){ cat=e.cat; grid.appendChild(el("div","sx-cat",esc(cat))); }
+    const c=el("div","sx-card",
+      `<div class="sx-ic">${e.icon}</div>
+       <div class="sx-meta"><b>${esc(e.name)}</b><span>${esc(e.desc)}</span></div>
+       <div class="sx-sw"><i></i></div>`);
+    c.onclick=()=>sfxSet(e.id,!SFX.on.has(e.id));
+    grid.appendChild(c);
+    cards[e.id]=c;
+  });
+
+  const range=body.querySelector(".sx-range"), pval=body.querySelector(".sx-pval");
+  range.oninput=()=>{ pval.textContent=range.value+"%"; sfxPower(range.value/100); };
+  body.querySelector(".sx-btn.stop").onclick=()=>sfxStopAll();
+  body.querySelector(".sx-btn.chaos").onclick=()=>sfxAll();
+
+  const paint=()=>{
+    if(!body.isConnected) return false;            // window closed — drop the repainter
+    SFX_LIST.forEach(e=>cards[e.id].classList.toggle("on",SFX.on.has(e.id)));
+    body.querySelector(".sx-count").textContent=SFX.on.size;
+    return true;
+  };
+  SFX.panels.push(paint);
+  paint();
 }
 
 /* ============================ CLONEDOOM ============================
@@ -4908,6 +5383,21 @@ function makeWincloneModule(io,fn){
     return t.name;
   });
   d.beep=fn("beep",(a)=>{ try{ sfx(a.length&&pyStr(a[0])==="error"?"error":"notify"); }catch(e){} return null; });
+  /* screen effects — these escape the window and take over the whole display */
+  d.effects=fn("effects",()=>SFX_LIST.map(e=>e.id));
+  d.effect=fn("effect",(a,kw)=>{
+    const id=pyStr(a[0]).toLowerCase().trim();
+    if(id==="off"||id==="none"||id==="all"){
+      if(id==="all") sfxAll(); else sfxStopAll();
+      return id;
+    }
+    if(!SFX_BY_ID[id])
+      throw pyErr("ValueError","no screen effect called '"+id+"' — winclone.effects() lists them all");
+    const on=(kw&&"on" in kw) ? pyTruth(kw.on) : (a.length>1 ? pyTruth(a[1]) : true);
+    sfxSet(id,on);
+    return id;
+  });
+  d.stop_effects=fn("stop_effects",()=>{ sfxStopAll(); return null; });
   return d;
 }
 
@@ -5475,6 +5965,16 @@ function pyHelpDialog(){
     <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
     anything else opens that file or folder with whatever handles it<br><br>
 
+    <b>Taking over the screen — <code>import winclone</code></b><br>
+    <code>winclone.effect("melt")</code> — starts a screen effect. It runs over the
+    <i>whole</i> desktop, not in this window, and keeps running after your script ends<br>
+    <code>winclone.effect("melt", False)</code> — turn that one off again<br>
+    <code>winclone.effect("all")</code> — every effect at once. You have been warned<br>
+    <code>winclone.effects()</code> — the list of names ·
+    <code>winclone.stop_effects()</code> — stop the lot<br>
+    <span style="color:#9a9a9a">Ctrl+Alt+X is the panic button if a script leaves the screen
+    unusable, and reloading the page always clears it.</span><br><br>
+
     <b>Catching problems</b><br>
     <code>ValueError</code>, <code>TypeError</code>, <code>NameError</code>, <code>IndexError</code>,
     <code>KeyError</code>, <code>ZeroDivisionError</code>, <code>AttributeError</code>,
@@ -5990,6 +6490,7 @@ const MALWARE={
   miner:    {family:"CoinMiner", name:"CoinMiner.BitCork",reveal:"⛏️", onMsg:"A <b>crypto miner</b> is now pegging your CPU to mine ₿Cork for someone else (top-right)."},
   keylogger:{family:"Spyware",   name:"Spyware.Keylog",   reveal:"⌨️", onMsg:"A <b>keylogger</b> is recording everything you type. Watch the bar at the bottom of the screen."},
   spyware:  {family:"Spyware",   name:"Spyware.PeepCam",  reveal:"👁️", onMsg:"<b>Spyware</b> just switched on your camera and mic. Say cheese."},
+  joke:     {family:"Joke",      name:"Joke.SalineClone", reveal:"🤡", onMsg:"That wasn't a screensaver. Your <b>screen</b> is the toy now — it'll keep finding new ways to mess with itself and it won't stop on its own. Ctrl+Alt+X buys you a few seconds; Cork Defender actually removes it."},
 };
 const ADS=[
   {icon:"🎉",title:"CONGRATULATIONS!!!",msg:"You are the <b>1,000,000th</b> WinClone user! Click OK to claim your free cruise 🚢"},
@@ -6197,6 +6698,25 @@ function hideRansom(temp){
   if(temp && hasKind("ransomware")) setTimeout(()=>{ if(hasKind("ransomware")&&loggedIn()) showRansom(); },40000);
 }
 
+/* ---- joke virus: drives the Screen FX engine ----
+   Picks a couple of effects, lives with them for a bit, then picks again. The
+   strobe is left out — nothing gets to inflict full-screen flashing on you
+   unless you switch it on yourself in Screen FX. */
+let jokeTimer=null;
+function startJokeFx(){
+  clearInterval(jokeTimer);
+  const roll=()=>{
+    if(!hasKind("joke")||!loggedIn()) return;
+    sfxStopAll();
+    const pool=SFX_LIST.filter(e=>e.tame);
+    const n=1+rnd(2);
+    for(let i=0;i<n;i++) sfxSet(pool[rnd(pool.length)].id,true);
+  };
+  setTimeout(roll,1200);
+  jokeTimer=setInterval(roll,9000);
+}
+function stopJokeFx(){ clearInterval(jokeTimer); jokeTimer=null; }
+
 /* ---- master effect controller ---- */
 function refreshInfectionFX(){
   const on=loggedIn();
@@ -6206,6 +6726,7 @@ function refreshInfectionFX(){
   (on&&hasKind("miner"))?startMiner():stopMiner();
   (on&&hasKind("keylogger"))?startKeylogger():stopKeylogger();
   (on&&hasKind("spyware"))?startSpyware():stopSpyware();
+  (on&&hasKind("joke"))?startJokeFx():stopJokeFx();
   clearInterval(wormTimer); wormTimer=null;
   if(on && hasKind("worm")) wormTimer=setInterval(wormSpread,9000);
   if(on && hasKind("ransomware")) showRansom(); else if(!hasKind("ransomware")) hideRansom(false);
@@ -6213,6 +6734,7 @@ function refreshInfectionFX(){
 function stopAllEffectsUI(){
   clearInterval(adTimer); adTimer=null;
   stopBackdoor(); stopMiner(); stopKeylogger(); stopSpyware();
+  stopJokeFx(); sfxStopAll();
   clearInterval(wormTimer); wormTimer=null;
   hideRansom(false);
   document.querySelectorAll(".dlg.ad,.mal-toast").forEach(d=>d.remove());
@@ -6768,6 +7290,7 @@ const STORE_APPS=[
   {file:"PhotoViewer_Pro.exe",   icon:"🖼️", name:"Photo Viewer Pro",     desc:"Nicer than the built-in viewer. Trusted★★★★", malware:true, kind:"ransomware"},
   {file:"Minecraft_1.20_FULL.exe",icon:"🟩",name:"Minecraft FREE (full)", desc:"Full version, no login needed!! working", malware:true, kind:"worm"},
   {file:"SystemCleaner_Pro.exe", icon:"🧹", name:"System Cleaner Pro",    desc:"Speed up your PC by 300%! free download", malware:true, kind:"spyware"},
+  {file:"3D_ScreenSaver_FREE.scr",icon:"🌀", name:"3D Screensavers FREE", desc:"1000+ amazing 3D screensavers, no virus!!", malware:true, kind:"joke"},
 ];
 /* Curated frame-friendly bookmarks. Real sites that allow being embedded. */
 const EDGE_BOOKMARKS=[
