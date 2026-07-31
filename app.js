@@ -67,6 +67,11 @@ const WC_CHANGELOG = {
   ],
 };
 
+/* ============================ COMMUNITY ============================
+   Shown as a copyable notification every time you sign in. Put your real
+   Discord invite here; set it to "" to turn the sign-in notification off. */
+const WC_DISCORD = "https://discord.gg/368nsJU2J
+
 /* ============================ APP REGISTRY ============================ */
 const APPS = {
   explorer:  {title:"File Explorer", icon:"📁", w:760, h:500, build:buildExplorer},
@@ -6255,17 +6260,51 @@ let notifUnseen=0;
 function saveNotifs(){ try{ localStorage.setItem("wc_notifs",JSON.stringify(NOTIFS.slice(0,50))); }catch(e){} }
 function notifTimeAgo(ts){ const s=Math.floor((Date.now()-ts)/1000); if(s<60)return "just now"; const m=Math.floor(s/60); if(m<60)return m+"m ago"; const h=Math.floor(m/60); if(h<24)return h+"h ago"; return Math.floor(h/24)+"d ago"; }
 function notifBadge(){ const b=$("#notif-badge"); if(!b) return; b.textContent=notifUnseen>9?"9+":notifUnseen; b.style.display=notifUnseen>0?"grid":"none"; }
+/* ---- copyable link (used by notifications) ----
+   Text is unselectable everywhere in WinClone (user-select:none), so a link the
+   user is meant to copy needs a real Copy button — you can't drag-select it. */
+function clipFallback(url,ok){
+  try{
+    const ta=el("textarea"); ta.value=url;
+    ta.style.cssText="position:fixed;top:-200px;left:0;opacity:0";
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    document.execCommand("copy"); ta.remove(); ok&&ok();
+  }catch(e){}
+}
+function copyLink(url,btn){
+  const ok=()=>{ if(btn){ btn.textContent="Copied!"; btn.classList.add("done");
+    setTimeout(()=>{ if(btn.isConnected){ btn.textContent="Copy"; btn.classList.remove("done"); } },1500); } };
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(url).then(ok, ()=>clipFallback(url,ok));
+    else clipFallback(url,ok);
+  }catch(e){ clipFallback(url,ok); }
+}
+function linkRow(url){
+  const row=el("div","cl-row",`<span class="cl-url">${esc(url)}</span><button class="cl-btn" data-copy>Copy</button>`);
+  const btn=row.querySelector("[data-copy]");
+  const doCopy=(e)=>{ if(e){ e.preventDefault(); e.stopPropagation(); } copyLink(url,btn); };
+  btn.onclick=doCopy;
+  row.querySelector(".cl-url").onclick=doCopy;
+  return row;
+}
 function showToast(n){
   const wrap=$("#toasts"); if(!wrap) return;
   sfx("notify");
   const t=el("div","toast",`<span class="ti">${n.icon}</span><div class="tc"><b>${esc(n.title)}</b><span>${esc(n.body)}</span></div>`);
+  if(n.link) t.querySelector(".tc").appendChild(linkRow(n.link));
   wrap.appendChild(t);
   setTimeout(()=>t.classList.add("in"),20);   // setTimeout (not rAF) so it shows even if fired in a background tab
   const kill=()=>{ t.classList.remove("in"); setTimeout(()=>t.remove(),260); };
-  t.onclick=kill; setTimeout(kill,5000);
+  if(n.link){
+    t.addEventListener("click",e=>{ if(!e.target.closest(".cl-row")) kill(); });  // don't dismiss while copying
+    setTimeout(kill,12000);                                                       // linger — you need time to click Copy
+  }else{
+    t.onclick=kill; setTimeout(kill,5000);
+  }
 }
 function notify(o){
-  const n={icon:(o&&o.icon)||"🔔",title:(o&&o.title)||"WinClone",body:(o&&(o.body||o.msg))||"",ts:Date.now()};
+  const n={icon:(o&&o.icon)||"🔔",title:(o&&o.title)||"WinClone",body:(o&&(o.body||o.msg))||"",link:(o&&o.link)||null,ts:Date.now()};
   NOTIFS.unshift(n); NOTIFS=NOTIFS.slice(0,50); saveNotifs();
   showToast(n);
   if($("#notif") && $("#notif").classList.contains("open")) renderNotif();
@@ -6275,7 +6314,11 @@ function renderNotif(){
   const list=$("#notif-list"); if(!list) return;
   if(!NOTIFS.length){ list.innerHTML=`<div class="notif-empty">🔔 No notifications</div>`; return; }
   list.innerHTML="";
-  NOTIFS.forEach(n=>list.appendChild(el("div","notif-item",`<span class="ni">${n.icon}</span><div class="nc"><b>${esc(n.title)}</b><span>${esc(n.body)}</span><small>${notifTimeAgo(n.ts)}</small></div>`)));
+  NOTIFS.forEach(n=>{
+    const item=el("div","notif-item",`<span class="ni">${n.icon}</span><div class="nc"><b>${esc(n.title)}</b><span>${esc(n.body)}</span><small>${notifTimeAgo(n.ts)}</small></div>`);
+    if(n.link){ const nc=item.querySelector(".nc"); nc.insertBefore(linkRow(n.link), nc.querySelector("small")); }
+    list.appendChild(item);
+  });
 }
 function malInfo(icon,title,msg){ try{ notify({icon,title,body:msg}); }catch(e){ try{ malToast(icon,title,msg); }catch(_){} } }
 
@@ -8565,6 +8608,7 @@ function doSignIn(){
   refreshInfectionFX();
   ssArm();
   notify({icon:"👋",title:"Welcome back, "+getUser(),body:"You're signed in to WinClone."});
+  if(WC_DISCORD) setTimeout(()=>notify({icon:"💬",title:"Join the Discord",body:"Come hang out with other WinClone users.",link:WC_DISCORD}),1800);
   setTimeout(()=>checkForUpdates({notify:true}), 3000);   // quietly look for a new version after login
   /* If the running version is newer than what we last showed, we just updated:
      reveal "What's new" once, then a confirmation toast. */
