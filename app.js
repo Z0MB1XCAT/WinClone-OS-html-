@@ -18,14 +18,18 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.4.0";
+const WC_VERSION = "1.5.0";
 const WC_CHANGELOG = {
+  "1.5.0": [
+    "🫥 Python can hide its own window: winclone.show_py_window(False) makes the running window vanish — Stop button, taskbar, Task View and Alt+Tab all — so a script has no button you can click to stop it. show_py_window(True) brings it back, and the script runs the whole time either way.",
+    "⌨️ Removed the Ctrl+Alt+X panic shortcut. Screen effects are now cleared from Screen FX ▸ Stop everything (or by reloading the page).",
+  ],
   "1.4.0": [
     "🌀 Screen FX — a new app full of effects that happen to the whole screen instead of inside a window. The desktop shakes, spins, melts, cracks, fills with static or turns upside down, and everything underneath keeps working.",
     "🫠 Twenty of them: Earthquake, Spin, Upside Down, Mirror, Breathe, Drunk, Melt, Heat Haze, Inverted, Rainbow, Lost My Glasses, Dread, TV Static, CRT, Datamosh, Cracked Screen, Cursor Swarm, Bugs, Digital Rain and Strobe. Stack as many as you like and drag the intensity slider.",
     "🤡 Joke.SalineClone — a new fake download that hijacks the effects and keeps picking new ones on its own. Cork Defender removes it.",
     "🐍 Python can take over the screen too: winclone.effect(\"melt\"), winclone.effect(\"all\"), winclone.effects() and winclone.stop_effects().",
-    "⌨️ fx in the Terminal toggles any effect, and Ctrl+Alt+X is the panic button that stops everything at once.",
+    "⌨️ fx in the Terminal toggles any effect, and Screen FX ▸ Stop everything clears them all at once.",
   ],
   "1.3.0": [
     "🛟 System Restore Points — a new app. Snapshot the whole PC before you try something risky, then roll back to it. Your password is never touched.",
@@ -355,10 +359,11 @@ function removeTaskItem(id){
 function updateTaskItems(){
   document.querySelectorAll("#tb-apps .tbtn").forEach(b=>{
     const id=b.dataset.app, rec=state.wins[id];
-    const here = !!rec && rec.vd===VD.cur;
+    const hidden = !!(rec && rec.hidden);                 // script-hidden runner
+    const here = !!rec && rec.vd===VD.cur && !hidden;
     b.classList.toggle("run", here);
     b.classList.toggle("active", here && !rec.min && state.focused===id);
-    b.style.display = (TASKBAR_PINS.includes(id) || here) ? "" : "none";
+    b.style.display = (!hidden && (TASKBAR_PINS.includes(id) || here)) ? "" : "none";
   });
 }
 function taskClick(id){
@@ -387,7 +392,9 @@ function taskClick(id){
    reach the page, with Alt+` as the reliable stand-in. */
 const VD = {list:[{name:"Desktop 1"}], cur:0};
 
-function vdWindows(d){ return Object.keys(state.wins).filter(id=>state.wins[id].vd===d); }
+/* a script-hidden runner (winclone.show_py_window(False)) is left out of every
+   surface — Task View, Alt+Tab and the per-desktop taskbar all read this. */
+function vdWindows(d){ return Object.keys(state.wins).filter(id=>state.wins[id].vd===d && !state.wins[id].hidden); }
 function applyVD(){
   Object.keys(state.wins).forEach(id=>{
     const rec=state.wins[id];
@@ -619,14 +626,6 @@ addEventListener("keydown", e=>{
     if(e.key==="ArrowLeft" ){ e.preventDefault(); switchDesktop(VD.cur-1); return; }
     if(e.key==="ArrowUp"   ){ e.preventDefault(); toggleTaskView(); return; }
     if(e.key==="d"||e.key==="D"){ e.preventDefault(); newDesktop(true); return; }
-    if(e.key==="x"||e.key==="X"){                        // panic button for Screen FX
-      e.preventDefault();
-      const had=SFX.on.size;
-      sfxStopAll();
-      if(had&&hasKind("joke")) malToast("🤡","Joke.SalineClone","Screen cleared — but the joke virus is still installed and will start again. Run Cork Defender.");
-      else if(had) showToast({icon:"🌀",title:"Screen FX stopped",body:"All "+had+" effect(s) switched off."});
-      return;
-    }
   }
   if(e.key==="Escape"){
     if(ALT.open){ e.preventDefault(); altClose(); return; }
@@ -1193,7 +1192,7 @@ function buildTerminal(body){
             SFX_LIST.map(e=>`&nbsp;&nbsp;${SFX.on.has(e.id)?'<span class="green">●</span>':"○"} `+
               `<b>${esc(e.id)}</b>${" ".repeat(Math.max(1,10-e.id.length)).replace(/ /g,"&nbsp;")}`+
               `<span style="color:#9a9a9a">${esc(e.desc)}</span>`).join("<br>")+
-            `<br><br>fx &lt;name&gt; toggles one, <b>fx all</b> runs the lot, <b>fx off</b> stops everything (so does Ctrl+Alt+X).`);
+            `<br><br>fx &lt;name&gt; toggles one, <b>fx all</b> runs the lot, <b>fx off</b> stops everything.`);
         }
         else if(sub==="off"||sub==="stop"){ sfxStopAll(); print("all screen effects stopped"); }
         else if(sub==="all"||sub==="chaos"){ sfxAll(); print("good luck"); }
@@ -2003,7 +2002,7 @@ function buildScreenFX(body,win){
     <div class="sx-grid"></div>
     <div class="sx-foot">
       <span><b class="sx-count">0</b> running</span>
-      <span class="sx-note">Panic button: <b>Ctrl + Alt + X</b> stops everything. Reloading the page also clears it.</span>
+      <span class="sx-note"><b>Stop everything</b> clears them all. Reloading the page does too.</span>
     </div>
   </div>`;
 
@@ -5405,6 +5404,24 @@ function makeWincloneModule(io,fn){
     return id;
   });
   d.stop_effects=fn("stop_effects",()=>{ sfxStopAll(); return null; });
+  /* Hide (False) or show (True) the very window this script runs in. Hidden, it's
+     gone from the screen, the taskbar, Task View and Alt+Tab — and with the
+     window gone so is its Stop button, so there's no click to halt the script.
+     The script keeps running the whole time; call it again with True to bring
+     the window back. Reloading the page or a BIOS reset still clear everything. */
+  d.show_py_window=fn("show_py_window",(a)=>{
+    const show=a.length?pyTruth(a[0]):true;
+    const rec=state.wins[io.appId];
+    if(rec&&rec.el){
+      rec.hidden=!show;
+      rec.el.style.display=show?"":"none";
+      if(show){ rec.el.style.zIndex=++state.z; state.focused=io.appId; }
+      else if(state.focused===io.appId){ state.focused=null; }
+      updateTaskItems();
+      try{ if(tvIsOpen()) renderTaskView(); }catch(e){}
+    }
+    return show;
+  });
   return d;
 }
 
@@ -5663,6 +5680,7 @@ function pyLaunch(host, source, o){
     readLine:stage.readLine,
     cwd:o.cwd||[...HOME_PATH,"Documents"],
     scriptName:o.scriptName||"untitled.py",
+    appId:o.appId,                              // so winclone.show_py_window() can find its own window
     done:(ok)=>{ stage.quit(); if(o.onDone) o.onDone(ok); },
   };
   const runner=pyRunSource(source, io, stage);
@@ -5970,7 +5988,10 @@ function pyHelpDialog(){
     <code>permanent=True</code> to skip the bin and actually free the space, or
     <code>missing_ok=True</code> to shrug when it's already gone<br>
     <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
-    anything else opens that file or folder with whatever handles it<br><br>
+    anything else opens that file or folder with whatever handles it<br>
+    <code>winclone.show_py_window(False)</code> — hide the window this script runs in,
+    Stop button and all; <code>show_py_window(True)</code> brings it back. The script
+    keeps running the whole time<br><br>
 
     <b>Taking over the screen — <code>import winclone</code></b><br>
     <code>winclone.effect("melt")</code> — starts a screen effect. It runs over the
@@ -5979,8 +6000,8 @@ function pyHelpDialog(){
     <code>winclone.effect("all")</code> — every effect at once. You have been warned<br>
     <code>winclone.effects()</code> — the list of names ·
     <code>winclone.stop_effects()</code> — stop the lot<br>
-    <span style="color:#9a9a9a">Ctrl+Alt+X is the panic button if a script leaves the screen
-    unusable, and reloading the page always clears it.</span><br><br>
+    <span style="color:#9a9a9a">Screen FX ▸ Stop everything clears effects, and reloading the
+    page always clears them too.</span><br><br>
 
     <b>Catching problems</b><br>
     <code>ValueError</code>, <code>TypeError</code>, <code>NameError</code>, <code>IndexError</code>,
@@ -6497,7 +6518,7 @@ const MALWARE={
   miner:    {family:"CoinMiner", name:"CoinMiner.BitCork",reveal:"⛏️", onMsg:"A <b>crypto miner</b> is now pegging your CPU to mine ₿Cork for someone else (top-right)."},
   keylogger:{family:"Spyware",   name:"Spyware.Keylog",   reveal:"⌨️", onMsg:"A <b>keylogger</b> is recording everything you type. Watch the bar at the bottom of the screen."},
   spyware:  {family:"Spyware",   name:"Spyware.PeepCam",  reveal:"👁️", onMsg:"<b>Spyware</b> just switched on your camera and mic. Say cheese."},
-  joke:     {family:"Joke",      name:"Joke.SalineClone", reveal:"🤡", onMsg:"That wasn't a screensaver. Your <b>screen</b> is the toy now — it'll keep finding new ways to mess with itself and it won't stop on its own. Ctrl+Alt+X buys you a few seconds; Cork Defender actually removes it."},
+  joke:     {family:"Joke",      name:"Joke.SalineClone", reveal:"🤡", onMsg:"That wasn't a screensaver. Your <b>screen</b> is the toy now — it'll keep finding new ways to mess with itself and it won't stop on its own. Cork Defender is the only thing that actually removes it."},
 };
 const ADS=[
   {icon:"🎉",title:"CONGRATULATIONS!!!",msg:"You are the <b>1,000,000th</b> WinClone user! Click OK to claim your free cruise 🚢"},
