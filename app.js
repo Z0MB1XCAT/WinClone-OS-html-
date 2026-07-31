@@ -70,7 +70,7 @@ const WC_CHANGELOG = {
 /* ============================ COMMUNITY ============================
    Shown as a copyable notification every time you sign in. Put your real
    Discord invite here; set it to "" to turn the sign-in notification off. */
-const WC_DISCORD = "https://discord.gg/368nsJU2J
+const WC_DISCORD = "https://discord.gg/368nsJU2J";
 
 /* ============================ APP REGISTRY ============================ */
 const APPS = {
