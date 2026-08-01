@@ -18,8 +18,13 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.5.0";
+const WC_VERSION = "1.6.0";
 const WC_CHANGELOG = {
+  "1.6.0": [
+    "\ud83e\udde0 brain.py — a neural network, in Documents\\Python. Draw a digit on the 7×7 pad with the mouse and it tells you what it thinks it is, with how sure it is about all ten answers.",
+    "\ud83c\udf93 It learns your handwriting: draw a digit, press the number key for what you actually drew, and it retrains on the spot. Wonky sevens and open-topped fours included.",
+    "\u2699\ufe0f Real backpropagation — 49 pixels, 16 hidden neurons, 10 answers, written out in Python with nothing imported but math and random. You watch it train the first time (about 15 seconds), then it saves its brain to brain.weights and starts instantly forever after.",
+  ],
   "1.5.0": [
     "🫥 Python can hide its own window: winclone.show_py_window(False) makes the running window vanish — Stop button, taskbar, Task View and Alt+Tab all — so a script has no button you can click to stop it. show_py_window(True) brings it back, and the script runs the whole time either way.",
     "⌨️ Removed the Ctrl+Alt+X panic shortcut. Screen effects are now cleared from Screen FX ▸ Stop everything (or by reloading the page).",
@@ -5676,6 +5681,520 @@ while g.running():
     g.text("click for more", 6, H - 16, "#40567a", 10)
     g.flip()
 `,
+
+"brain.py":
+`# brain.py - a real neural network, living inside WinClone.
+#
+# Nothing here is faked. The numbers it thinks with are found by actual
+# backpropagation, running in a Python interpreter that is itself running
+# inside a browser tab. Draw a digit with the mouse and it guesses. Tell it
+# when it is wrong and it learns YOUR handwriting instead of the textbook one.
+#
+#   drag the mouse .... draw          hold E while dragging .... erase
+#   0 - 9 ............. "what I just drew was THIS digit" (teach it)
+#   C ................. clear the pad
+#   R ................. forget everything and retrain from scratch
+#   Q ................. quit
+#
+# The network is 49 inputs (a 7x7 pad) -> 16 hidden neurons -> 10 outputs.
+# Sigmoid hidden layer, softmax output, cross-entropy loss, plain SGD.
+# Its brain is saved to brain.weights, so it only trains the first time.
+
+import wcgame as g
+import winclone
+import math
+import random
+
+GRID = 7
+N_IN = GRID * GRID
+N_HID = 16
+N_OUT = 10
+BRAIN_FILE = "brain.weights"
+
+# --- what a digit looks like, before anyone has drawn one --------------------
+# These ten pictures are the whole textbook. Everything else the network knows
+# it works out for itself.
+TEMPLATES = [
+    ".#####.##...####...####...####...####...##.#####.",
+    "...##....###.....##.....##.....##.....##...#####.",
+    ".#####.##...##....##....##....##....##.....######",
+    "######......##.....##.#####......##.....########.",
+    "...###...####..##.##.##..##.#######....##.....##.",
+    "#########.....######......##.....####...##.#####.",
+    "..####..##....##.....######.##...####...##.#####.",
+    "#########...##....##....##....##....##....##.....",
+    ".#####.##...####...##.#####.##...####...##.#####.",
+    ".#####.##...####...##.######.....##....##..####..",
+]
+
+
+def unpack(art):
+    """Turn one of the strings above into 49 zeroes and ones."""
+    pat = []
+    for ch in art:
+        if ch == "#":
+            pat.append(1)
+        else:
+            pat.append(0)
+    return pat
+
+
+DIGITS = []
+for art in TEMPLATES:
+    DIGITS.append(unpack(art))
+
+
+# --- the network ------------------------------------------------------------
+
+def new_net():
+    """Random weights. Right now it knows nothing at all."""
+    w1 = []
+    for h in range(N_HID):
+        row = []
+        for i in range(N_IN):
+            row.append(random.uniform(-0.4, 0.4))
+        w1.append(row)
+    b1 = [0.0] * N_HID
+    w2 = []
+    for o in range(N_OUT):
+        row = []
+        for h in range(N_HID):
+            row.append(random.uniform(-0.4, 0.4))
+        w2.append(row)
+    b2 = [0.0] * N_OUT
+    return [w1, b1, w2, b2]
+
+
+def lit(pat):
+    """The indexes of the pixels that are switched on.
+
+    Every input here is a 0 or a 1, so multiplying by the zeroes is a waste of
+    a browser's time - a drawn digit only lights about 20 of the 49 pixels.
+    Skipping them is not an approximation: a weight times zero really is zero,
+    and its gradient really is zero too.
+    """
+    on = []
+    for i in range(N_IN):
+        if pat[i]:
+            on.append(i)
+    return on
+
+
+def forward(net, on):
+    """Run the pixels through the network and see what comes out the far end."""
+    w1 = net[0]
+    b1 = net[1]
+    w2 = net[2]
+    b2 = net[3]
+
+    hid = []
+    for h in range(N_HID):
+        row = w1[h]
+        s = b1[h]
+        for i in on:
+            s = s + row[i]
+        if s < -30.0:
+            s = -30.0
+        if s > 30.0:
+            s = 30.0
+        hid.append(1.0 / (1.0 + math.exp(-s)))
+
+    raw = []
+    top = -1000.0
+    for o in range(N_OUT):
+        row = w2[o]
+        s = b2[o]
+        for h in range(N_HID):
+            s = s + row[h] * hid[h]
+        raw.append(s)
+        if s > top:
+            top = s
+
+    # softmax: turn ten raw scores into ten percentages that add up to 1
+    total = 0.0
+    for o in range(N_OUT):
+        e = math.exp(raw[o] - top)
+        raw[o] = e
+        total = total + e
+    for o in range(N_OUT):
+        raw[o] = raw[o] / total
+
+    return hid, raw
+
+
+def learn(net, on, label, lr):
+    """One example, one nudge to every weight. This is backpropagation."""
+    w1 = net[0]
+    b1 = net[1]
+    w2 = net[2]
+    b2 = net[3]
+
+    hid, out = forward(net, on)
+
+    # For softmax with cross-entropy the output error is just guess - truth.
+    # All that algebra, and it collapses to a subtraction.
+    dhid = [0.0] * N_HID
+    for o in range(N_OUT):
+        d = out[o]
+        if o == label:
+            d = d - 1.0
+        row = w2[o]
+        step = lr * d
+        for h in range(N_HID):
+            dhid[h] = dhid[h] + d * row[h]
+            row[h] = row[h] - step * hid[h]
+        b2[o] = b2[o] - step
+
+    for h in range(N_HID):
+        # the slope of the sigmoid, which is oddly just hid * (1 - hid)
+        d = dhid[h] * hid[h] * (1.0 - hid[h]) * lr
+        if d != 0.0:
+            row = w1[h]
+            for i in on:
+                row[i] = row[i] - d
+            b1[h] = b1[h] - d
+
+    p = out[label]
+    if p < 0.000001:
+        p = 0.000001
+    return -math.log(p)
+
+
+def best(probs):
+    """Which output shouted loudest."""
+    pick = 0
+    for o in range(N_OUT):
+        if probs[o] > probs[pick]:
+            pick = o
+    return pick
+
+
+# --- making up training data ------------------------------------------------
+
+def smudge(pat):
+    """Shove the digit around by a pixel and speckle it.
+
+    Ten perfect pictures would teach the network ten perfect pictures. Moving
+    them and roughing them up is what forces it to learn the shape instead.
+    """
+    dx = random.randint(-1, 1)
+    dy = random.randint(-1, 1)
+    out = [0] * N_IN
+    for r in range(GRID):
+        for c in range(GRID):
+            if pat[r * GRID + c]:
+                rr = r + dy
+                cc = c + dx
+                if rr >= 0 and rr < GRID and cc >= 0 and cc < GRID:
+                    out[rr * GRID + cc] = 1
+    for i in range(N_IN):
+        if random.random() < 0.03:
+            if out[i]:
+                out[i] = 0
+            else:
+                out[i] = 1
+    return out
+
+
+def a_sample(taught):
+    """One training example: usually a textbook digit, sometimes one of yours."""
+    if len(taught) > 0 and random.random() < 0.55:
+        item = random.choice(taught)
+        return smudge(item[0]), item[1]
+    d = random.randint(0, 9)
+    return smudge(DIGITS[d]), d
+
+
+def score(net, taught, n):
+    """How often it gets a fresh, never-seen example right."""
+    right = 0
+    for k in range(n):
+        pat, label = a_sample(taught)
+        hid, probs = forward(net, lit(pat))
+        if best(probs) == label:
+            right = right + 1
+    return right * 100 // n
+
+
+# --- the screen -------------------------------------------------------------
+
+W = 470
+H = 336
+PAD_X = 16
+PAD_Y = 72
+CELL = 30
+PAD_W = GRID * CELL
+
+BG = "#0d1117"
+INK = "#4cc2ff"
+DIM = "#7d8da1"
+PALE = "#c9d6e4"
+GOLD = "#ffd166"
+GREEN = "#3fb950"
+LINE = "#1e2733"
+
+g.init(W, H, "brain.py - a neural network")
+
+
+def frame(title, subtitle):
+    g.fill(BG)
+    g.text(title, 16, 14, PALE, 15)
+    g.text(subtitle, 16, 36, DIM, 11)
+
+
+def training_screen(ep, epochs, loss, acc, history):
+    frame("teaching it to see", "backpropagation, live. this only happens once.")
+
+    bar_w = W - 32
+    done = bar_w * ep // epochs
+    g.rect(16, 70, bar_w, 14, "#161d27")
+    g.rect(16, 70, done, 14, INK)
+    g.text("pass " + str(ep) + " of " + str(epochs), 16, 92, DIM, 11)
+    g.text(str(acc) + "% right", W - 90, 92, GREEN, 11)
+
+    # the loss curve: how wrong it is, dropping
+    g.text("how wrong it is", 16, 122, DIM, 10)
+    base = 300
+    hi = 0.1
+    for v in history:
+        if v > hi:
+            hi = v
+    g.line(16, base, W - 16, base, LINE, 1)
+    px = 16
+    py = base
+    step = 1
+    if len(history) > 1:
+        step = (W - 32) / (len(history) - 1)
+    for i in range(len(history)):
+        x = 16 + step * i
+        y = base - (history[i] / hi) * 150
+        if i > 0:
+            g.line(px, py, x, y, GOLD, 2)
+        px = x
+        py = y
+    g.text("loss " + f"{loss:.3f}", W - 110, 122, GOLD, 10)
+    g.flip()
+
+
+def train(net, taught, epochs, batch, lr0):
+    history = []
+    acc = 0
+    for ep in range(epochs):
+        lr = lr0 * (1.0 - 0.6 * ep / epochs)
+        total = 0.0
+        for k in range(batch):
+            pat, label = a_sample(taught)
+            total = total + learn(net, lit(pat), label, lr)
+        history.append(total / batch)
+        if ep % 3 == 0 or ep == epochs - 1:
+            acc = score(net, taught, 30)
+        training_screen(ep + 1, epochs, history[len(history) - 1], acc, history)
+        if not g.running():
+            return acc
+    return acc
+
+
+# --- saving and loading its brain -------------------------------------------
+
+def floats_to_text(values):
+    bits = []
+    for v in values:
+        bits.append(str(round(v, 4)))
+    return ",".join(bits)
+
+
+def text_to_floats(text):
+    out = []
+    for piece in text.split(","):
+        if len(piece) > 0:
+            out.append(float(piece))
+    return out
+
+
+def save_brain(net, taught):
+    lines = ["brain 2 " + str(N_IN) + " " + str(N_HID) + " " + str(N_OUT)]
+    for h in range(N_HID):
+        lines.append(floats_to_text(net[0][h]))
+    lines.append(floats_to_text(net[1]))
+    for o in range(N_OUT):
+        lines.append(floats_to_text(net[2][o]))
+    lines.append(floats_to_text(net[3]))
+    lines.append("taught " + str(len(taught)))
+    for item in taught:
+        marks = []
+        for v in item[0]:
+            marks.append(str(v))
+        lines.append(str(item[1]) + " " + "".join(marks))
+    winclone.write(BRAIN_FILE, "\\n".join(lines), overwrite=True)
+
+
+def load_brain():
+    """Returns [net, taught], or None if there is nothing usable on disk."""
+    if not winclone.exists(BRAIN_FILE):
+        return None
+    try:
+        lines = winclone.read(BRAIN_FILE).split("\\n")
+        head = lines[0].split(" ")
+        if head[0] != "brain" or int(head[2]) != N_IN or int(head[3]) != N_HID:
+            return None
+        at = 1
+        w1 = []
+        for h in range(N_HID):
+            w1.append(text_to_floats(lines[at]))
+            at = at + 1
+        b1 = text_to_floats(lines[at])
+        at = at + 1
+        w2 = []
+        for o in range(N_OUT):
+            w2.append(text_to_floats(lines[at]))
+            at = at + 1
+        b2 = text_to_floats(lines[at])
+        at = at + 1
+        taught = []
+        if at < len(lines) and lines[at].split(" ")[0] == "taught":
+            count = int(lines[at].split(" ")[1])
+            at = at + 1
+            for k in range(count):
+                row = lines[at]
+                at = at + 1
+                label = int(row.split(" ")[0])
+                marks = row.split(" ")[1]
+                pat = []
+                for ch in marks:
+                    pat.append(int(ch))
+                taught.append([pat, label])
+        return [[w1, b1, w2, b2], taught]
+    except Exception as e:
+        return None
+
+
+# --- boot -------------------------------------------------------------------
+
+frame("brain.py", "waking up...")
+g.flip()
+
+net = None
+taught = []
+saved = load_brain()
+if saved != None:
+    net = saved[0]
+    taught = saved[1]
+    print("loaded a trained brain from " + BRAIN_FILE)
+    if len(taught) > 0:
+        print("it remembers " + str(len(taught)) + " digits you drew yourself")
+else:
+    print("no brain on disk - training a new one")
+    net = new_net()
+    acc = train(net, taught, 40, 80, 0.5)
+    print("trained. " + str(acc) + "% on fresh examples")
+    save_brain(net, taught)
+    print("saved to " + BRAIN_FILE + " - next run starts instantly")
+
+pad = [0] * N_IN
+hid, probs = forward(net, lit(pad))
+status = "draw a digit with the mouse"
+flash = 0
+
+
+def draw_all(pad, probs, status, flash, taught):
+    frame("brain.py", "49 pixels -> 16 neurons -> 10 answers")
+
+    # the pad
+    g.rect(PAD_X - 2, PAD_Y - 2, PAD_W + 4, PAD_W + 4, "#1b2430")
+    for r in range(GRID):
+        for c in range(GRID):
+            x = PAD_X + c * CELL
+            y = PAD_Y + r * CELL
+            if pad[r * GRID + c]:
+                g.rect(x + 1, y + 1, CELL - 2, CELL - 2, INK)
+            else:
+                g.rect(x + 1, y + 1, CELL - 2, CELL - 2, "#121a24")
+
+    # what it thinks
+    px = PAD_X + PAD_W + 26
+    total = 0
+    for v in pad:
+        total = total + v
+    if total == 0:
+        g.text("-", px + 10, PAD_Y + 4, "#2b3745", 54)
+        g.text("nothing drawn", px, PAD_Y + 70, DIM, 11)
+    else:
+        pick = best(probs)
+        colour = GOLD
+        if flash > 0:
+            colour = GREEN
+        g.text(str(pick), px + 10, PAD_Y + 4, colour, 54)
+        g.text(str(int(probs[pick] * 100)) + "% sure", px + 62, PAD_Y + 34, DIM, 12)
+
+        # every answer, as a bar
+        by = PAD_Y + 78
+        for d in range(N_OUT):
+            y = by + d * 13
+            g.text(str(d), px, y, DIM, 10)
+            w = int(probs[d] * 150)
+            g.rect(px + 14, y + 2, 150, 6, "#161d27")
+            if w > 0:
+                col = "#2f5f8a"
+                if d == pick:
+                    col = INK
+                g.rect(px + 14, y + 2, w, 6, col)
+
+    g.text(status, PAD_X, PAD_Y + PAD_W + 12, PALE, 11)
+    hint = "0-9 teach   C clear   R retrain   Q quit"
+    g.text(hint, PAD_X, H - 20, "#5a6b7d", 10)
+    if len(taught) > 0:
+        g.text(str(len(taught)) + " of your own digits learned", PAD_X + 250, H - 20, "#5a6b7d", 10)
+    g.flip()
+
+
+while g.running():
+    if g.pressed("q"):
+        break
+
+    if g.pressed("c"):
+        pad = [0] * N_IN
+        status = "cleared"
+
+    if g.pressed("r"):
+        taught = []
+        net = new_net()
+        acc = train(net, taught, 40, 80, 0.5)
+        save_brain(net, taught)
+        pad = [0] * N_IN
+        status = "retrained from scratch - " + str(acc) + "% right"
+
+    # teaching: press the digit you actually drew
+    lit_now = lit(pad)
+    if len(lit_now) > 0:
+        for d in range(10):
+            if g.pressed(str(d)):
+                taught.append([pad, d])
+                status = "learning that that was a " + str(d) + "..."
+                draw_all(pad, probs, status, 0, taught)
+                acc = train(net, taught, 8, 50, 0.3)
+                save_brain(net, taught)
+                pad = [0] * N_IN
+                status = "got it. that was a " + str(d) + ". draw another"
+                flash = 30
+
+    # drawing
+    if g.mouse_down():
+        mx, my = g.mouse()
+        c = (mx - PAD_X) // CELL
+        r = (my - PAD_Y) // CELL
+        if c >= 0 and c < GRID and r >= 0 and r < GRID:
+            v = 1
+            if g.key("e"):
+                v = 0
+            pad[r * GRID + c] = v
+
+    hid, probs = forward(net, lit(pad))
+    if flash > 0:
+        flash = flash - 1
+    draw_all(pad, probs, status, flash, taught)
+
+print("bye")
+`,
 };
 
 /* ---- shared: run a source string into a host element ---- */
@@ -6096,7 +6615,7 @@ try{ const _d=nodeAt(["C:","Users","User","Desktop"]), _w=_d&&_d.children&&_d.ch
 /* one-time: drop the example scripts into Documents\Python on installs that
    predate Python support (defaultFS only covers brand-new installs) */
 try{
-  if(!localStorage.getItem("wc_pysamples")){
+  if(!localStorage.getItem("wc_pysamples3")){
     const _docs=nodeAt([...HOME_PATH,"Documents"]);
     if(_docs&&_docs.children){
       if(!_docs.children["Python"]) _docs.children["Python"]={folder:true,children:{}};
@@ -6106,7 +6625,7 @@ try{
       });
       saveFS();
     }
-    localStorage.setItem("wc_pysamples","1");
+    localStorage.setItem("wc_pysamples3","1");
   }
 }catch(e){}
 
