@@ -5078,8 +5078,13 @@ function makePyStage(host, opts){
     cwrap.style.display="flex";
     wrap.classList.add("has-canvas");
   };
-  S.beginFrame=()=>{ S.pressed.clear(); S.clicked=false; };
-  S.endFrame=()=>{};
+  /* Edge-triggered input (a fresh click, a just-pressed key) has to survive from
+     the event until the loop reads it. flip() does endFrame → wait-for-frame →
+     beginFrame, so clearing on beginFrame would wipe any click that landed during
+     the wait before g.click()/g.pressed() ever saw it. Clear on endFrame instead:
+     the flag is read during the loop body, then cleared as the frame is presented. */
+  S.beginFrame=()=>{};
+  S.endFrame=()=>{ S.pressed.clear(); S.clicked=false; };
 
   /* ---- console ---- */
   S.write=(t)=>{ con.appendChild(document.createTextNode(String(t))); con.scrollTop=con.scrollHeight; };
