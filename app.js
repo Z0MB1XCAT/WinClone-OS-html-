@@ -5370,7 +5370,7 @@ function makeWcgameModule(stage,fn,io){
     for(const nt of notes){
       const pair=pyList(nt);
       const freq=N(pair[0]), dur=pair.length>1?N(pair[1]):0.12;
-      setTimeout(()=>{ try{ stage.tone(freq,dur,wave); }catch(e){} }, Math.round(t*1000));
+      setTimeout(()=>{ if(!stage.alive()) return; try{ stage.tone(freq,dur,wave); }catch(e){} }, Math.round(t*1000));
       t+=dur+gap;
     }
     return null;
