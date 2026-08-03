@@ -63,8 +63,58 @@ Deno.serve(async (req: Request) => {
     return handleSearch(url);
   }
 
+  if (req.method === "GET" && url.pathname === "/debug-youtube") {
+    return handleDebugYoutube();
+  }
+
   return new Response("Not found", { status: 404 });
 });
+
+// Throwaway diagnostic route, not used by Edgy or anything else - just
+// fetches a real YouTube video page server-side and reports exactly what
+// came back, to settle whether a server-side fetch from this host even gets
+// past YouTube's bot detection before spending any effort on the much
+// harder problem of rewriting a proxied page's assets/API calls so it'd
+// actually function once embedded. Visit /debug-youtube directly in a
+// browser (not through WinClone) to see the JSON report. Safe to delete
+// this route once you've seen the answer.
+async function handleDebugYoutube(): Promise<Response> {
+  const target = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  let report: Record<string, unknown>;
+  try {
+    const res = await fetch(target, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await res.text();
+    const lower = text.toLowerCase();
+    report = {
+      target,
+      status: res.status,
+      ok: res.ok,
+      contentLength: text.length,
+      xFrameOptions: res.headers.get("x-frame-options"),
+      contentSecurityPolicy: res.headers.get("content-security-policy"),
+      // signs the response is a bot-check/consent page rather than the real page
+      looksLikeBotCheck: lower.includes("captcha") || lower.includes("unusual traffic") ||
+        lower.includes("recaptcha") || lower.includes("consent.google.com") ||
+        lower.includes("before you continue"),
+      // ytInitialData is the JSON blob real YouTube pages embed to hydrate
+      // the page client-side - its presence means this is a genuine page
+      looksLikeRealPage: lower.includes("ytinitialdata") || lower.includes("rick astley"),
+      firstChars: text.slice(0, 1500),
+    };
+  } catch (err) {
+    report = { target, error: String(err) };
+  }
+  return new Response(JSON.stringify(report, null, 2), {
+    headers: { "content-type": "application/json" },
+  });
+}
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
 type LangSearchPage = { name?: string; url?: string; displayUrl?: string; snippet?: string };
