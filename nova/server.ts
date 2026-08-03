@@ -3,35 +3,28 @@
 // This is deliberately not part of WinClone itself. It's a standalone site:
 // this one file serves the chat page, a `/api/chat` endpoint that proxies to
 // OpenRouter (so your OpenRouter key lives only on the server and never
-// reaches the browser), and a `/search` endpoint that queries a public
-// SearXNG instance's JSON API and renders the results as a plain page of
-// this server's own, so Macrohard Edgy can show it in an iframe.
+// reaches the browser), and a `/search` endpoint that calls the LangSearch
+// Web Search API and renders the results as a plain page of this server's
+// own, so Macrohard Edgy can show it in an iframe.
 //
-// An earlier version of `/search` scraped DuckDuckGo's HTML results page
-// server-side instead. That doesn't work: DuckDuckGo (like most search
-// engines) fingerprints and CAPTCHA-walls traffic from cloud/datacenter IPs
-// to stop scraping, which is exactly what a Deno Deploy server looks like to
-// them. Solving that CAPTCHA in your own browser doesn't help either — it's
-// tied to your browser's session with duckduckgo.com, not to this server's
-// separate, cookie-less requests.
+// Two earlier versions of `/search` tried to avoid needing any API key at
+// all: first scraping DuckDuckGo's HTML results page server-side, then
+// querying public SearXNG instances. Both failed the same way: search
+// engines and public metasearch instances fingerprint and block/rate-limit
+// traffic from cloud/datacenter IPs (exactly what a Deno Deploy server looks
+// like to them) to stop scraping and abuse, which every request this server
+// makes runs straight into. A real, authenticated API sidesteps that
+// entirely — the rate limit is tied to the API key, not the shared,
+// already-suspicious reputation of Deno Deploy's IP ranges.
 //
-// SearXNG sidesteps that without needing an API key or account anywhere:
-// it's an open-source metasearch engine, and plenty of volunteers run free
-// public instances of it with a JSON output mode meant to be queried
-// programmatically. The real tradeoff is reliability, not signup friction —
-// a public instance is someone else's free server. It can go down, get
-// rate-limited, or have its admin disable JSON output at any time, with no
-// notice and nothing you can do about it except switch instances.
-//
-// Because any single instance is a single point of failure, /search tries a
-// short list of instances in order (DEFAULT_SEARX_INSTANCES below) and uses
-// the first one that returns usable JSON, instead of giving up the moment
-// one of them is down. No env vars are required to get started. If none of
-// them work for you, or you'd rather pin one specific instance, set the
-// SEARX_INSTANCE environment variable to its URL (this replaces the list
-// entirely rather than adding to it) — browse https://searx.space (sort by
-// "JSON" support) for current options, pick one that lists JSON as enabled,
-// and redeploy, no code changes needed.
+// Needs one environment variable set on Deno Deploy:
+//   LANGSEARCH_API_KEY - from https://langsearch.com/dashboard (API Key
+//     Management). At the time this was wired up, LangSearch's web search
+//     tier was advertised as free with no request cap, no fair-use clause,
+//     and no credit card required - but pricing terms can change without
+//     this file being updated, so if search starts failing with a message
+//     about quota or billing, that's the first thing to check on their
+//     dashboard.
 //
 // Point WinClone's built-in Browser app at the deployed URL (see README.md)
 // to "install" it as a bookmark/shortcut.
@@ -73,87 +66,67 @@ Deno.serve(async (req: Request) => {
   return new Response("Not found", { status: 404 });
 });
 
-// A handful of historically long-running public instances, tried in order.
-// This list will go stale over time — instances shut down, get overloaded,
-// or change their settings — so if every one of these is failing for you,
-// that's expected eventually, not a bug: replace it with current options
-// from https://searx.space (or set SEARX_INSTANCE, see the file header).
-const DEFAULT_SEARX_INSTANCES = ["https://searx.be", "https://priv.au", "https://baresearch.org"];
-const SEARX_INSTANCES = (() => {
-  const override = Deno.env.get("SEARX_INSTANCE");
-  if (!override) return DEFAULT_SEARX_INSTANCES;
-  // accept a bare host too ("searx.example.com"), not just a full URL,
-  // since that's a very easy thing to paste without noticing it's missing
-  const withScheme = /^https?:\/\//i.test(override) ? override : `https://${override}`;
-  const normalized = withScheme.replace(/\/$/, "");
-  // tried first, but still falls through to the built-in list rather than
-  // being the only instance tried - a single instance rate-limiting or
-  // going down shouldn't mean giving up entirely when there are others to
-  // try, override or not
-  return [normalized, ...DEFAULT_SEARX_INSTANCES.filter((u) => u !== normalized)];
-})();
-
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
-type SearxResult = { title?: string; url?: string; content?: string };
-type SearxAttempt = { ok: true; items: SearchItem[] } | { ok: false; reason: string };
+type LangSearchPage = { name?: string; url?: string; displayUrl?: string; snippet?: string };
+type LangSearchResponse = {
+  code: number;
+  msg?: string | null;
+  data?: { webPages?: { value?: LangSearchPage[] } };
+};
 
-// Tries each configured SearXNG instance in turn and renders the results
-// from the first one that returns usable JSON, as a page of this server's
-// own, so it can be shown in an iframe with no framing restriction attached.
-// No API key or account needed anywhere, but see the file header: this
-// depends on someone else's free server staying up and keeping JSON output
-// enabled, which is never guaranteed for any single instance — hence trying
-// more than one before giving up.
+// Calls the LangSearch Web Search API (a real, authenticated API, not a
+// scrape or a shared public proxy) and renders the results as a page of
+// this server's own, so it can be shown in an iframe with no framing
+// restriction attached.
 async function handleSearch(url: URL): Promise<Response> {
   const q = (url.searchParams.get("q") ?? "").trim();
   if (!q) {
     return htmlResponse(searchShell("", "<p>Type something to search for.</p>"));
   }
 
-  const failures: string[] = [];
-  for (const instance of SEARX_INSTANCES) {
-    const attempt = await trySearxInstance(instance, q);
-    if (attempt.ok) return htmlResponse(renderResults(q, attempt.items));
-    failures.push(`${instance} — ${attempt.reason}`);
+  const apiKey = Deno.env.get("LANGSEARCH_API_KEY");
+  if (!apiKey) {
+    return htmlResponse(
+      searchShell(
+        q,
+        "<p>Search isn't configured yet. Set the <code>LANGSEARCH_API_KEY</code> environment variable on " +
+          "this app (see the comment at the top of server.ts for where to get one).</p>",
+      ),
+      500,
+    );
   }
 
-  return htmlResponse(searchShell(q, searxTrouble(failures)), 502);
-}
-
-async function trySearxInstance(instance: string, q: string): Promise<SearxAttempt> {
-  const apiUrl = `${instance}/search?q=${encodeURIComponent(q)}&format=json`;
-  let text: string;
+  let data: LangSearchResponse;
   try {
-    const upstream = await fetch(apiUrl, {
+    const upstream = await fetch("https://api.langsearch.com/v1/web-search", {
+      method: "POST",
       headers: {
-        // SearXNG instances vary in how they treat a plain server-side
-        // fetch; an ordinary browser user agent behaves best across them.
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        "Accept": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
       },
-      signal: AbortSignal.timeout(6000),
+      body: JSON.stringify({ query: q, freshness: "noLimit", summary: false, count: 10 }),
+      signal: AbortSignal.timeout(10000),
     });
-    text = await upstream.text();
-    if (!upstream.ok) return { ok: false, reason: `HTTP ${upstream.status}` };
+    data = await upstream.json();
+    if (!upstream.ok || data.code !== 200) {
+      const msg = data?.msg || `HTTP ${upstream.status}`;
+      return htmlResponse(searchShell(q, `<p>LangSearch API error: ${escapeHtml(msg)}</p>`), 502);
+    }
   } catch (err) {
-    return { ok: false, reason: `unreachable (${String(err)})` };
+    return htmlResponse(
+      searchShell(q, `<p>Could not reach the search API: ${escapeHtml(String(err))}</p>`),
+      502,
+    );
   }
 
-  let data: { results?: SearxResult[] };
-  try {
-    data = JSON.parse(text);
-  } catch {
-    return { ok: false, reason: "didn't return JSON (no JSON output enabled, or showing a CAPTCHA)" };
-  }
-
-  const items: SearchItem[] = (data.results ?? []).filter((r) => r.url).map((r) => ({
-    title: r.title || r.url!,
-    link: r.url!,
-    snippet: r.content,
-    displayLink: hostOf(r.url!),
+  const pages = data.data?.webPages?.value ?? [];
+  const items: SearchItem[] = pages.filter((p) => p.url).map((p) => ({
+    title: p.name || p.url!,
+    link: p.url!,
+    snippet: p.snippet,
+    displayLink: p.displayUrl || hostOf(p.url!),
   }));
-  return { ok: true, items };
+  return htmlResponse(renderResults(q, items));
 }
 
 function hostOf(u: string): string {
@@ -162,15 +135,6 @@ function hostOf(u: string): string {
   } catch {
     return u;
   }
-}
-
-function searxTrouble(failures: string[]): string {
-  const list = failures.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join("");
-  return `<p>None of the public search instances this app tries responded with usable results:</p>
-    <ul>${list}</ul>
-    <p>Public SearXNG instances are free, volunteer-run servers, so this can happen to several at once. Browse
-    <a href="https://searx.space" target="_blank" rel="noopener">searx.space</a> for one with JSON output enabled,
-    set the <code>SEARX_INSTANCE</code> environment variable to its URL, and redeploy.</p>`;
 }
 
 // Reports result-link clicks and the re-search form up to the parent window
