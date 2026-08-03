@@ -336,6 +336,7 @@
       if(!t || t.id!==activeId) return;
       urlInput.value = t.displayUrl || "";
       updateStar(t); updateNavButtons(t); updateZoomLabel(t);
+      notifySidebarOfPage(t);
     }
 
     /* ---------- tabs ---------- */
@@ -571,8 +572,23 @@
       const frame = sbBody.querySelector(".edgy-sb-frame"), load = sbBody.querySelector(".edgy-sb-load");
       let done=false;
       const timer = setTimeout(()=>{ if(!done){ done=true; showSidebarFallback(); } }, 12000);
-      frame.addEventListener("load", ()=>{ if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1; });
+      frame.addEventListener("load", ()=>{
+        if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
+        notifySidebarOfPage(active());
+      });
       frame.src = AI_SIDEBAR_URL;
+    }
+    /* tells the assistant what page is currently showing, so it can answer
+       "what does this page say" - style questions. The assistant itself
+       decides whether/when to actually fetch and use that URL (see its own
+       opt-in toggle); this just keeps it informed of what's on screen. */
+    function notifySidebarOfPage(t){
+      if(!sidebarLoaded || !aiOrigin) return;
+      const frame = sbBody.querySelector(".edgy-sb-frame");
+      if(!frame || !frame.contentWindow) return;
+      try{
+        frame.contentWindow.postMessage({source:"macrohard-edgy", type:"page", url:(t&&t.displayUrl)||null, title:(t&&t.title)||null}, aiOrigin);
+      }catch(e){}
     }
     function showSidebarFallback(){
       sbBody.innerHTML = `<div class="edgy-sb-fallback">

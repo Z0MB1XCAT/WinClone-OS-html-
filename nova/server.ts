@@ -126,7 +126,98 @@ async function handleSearch(url: URL): Promise<Response> {
     snippet: p.snippet,
     displayLink: p.displayUrl || hostOf(p.url!),
   }));
+
+  // LangSearch's index isn't scoped to any region, so a plain English query
+  // can come back with results in whatever language happened to rank -
+  // Chinese SEO pages included. There's no language/region parameter in
+  // their API to ask for directly, so this detects the query's language
+  // itself and stably reorders results to put matches first, rather than
+  // dropping the rest outright (a query with genuinely few same-language
+  // results still shows something, just ranked lower).
+  //
+  // Short, single-keyword queries ("Fortnite") carry too little text for the
+  // stopword heuristic to name a language confidently, and that's exactly
+  // the shape of query where the odd non-English results were reported in
+  // the first place - so an undetermined query defaults to "en" rather than
+  // skipping prioritization entirely, which would otherwise silently do
+  // nothing for precisely the case this was meant to fix.
+  const queryLang = detectLang(q) ?? "en";
+  items.sort((a, b) => {
+    const aMatch = detectLang(`${a.title} ${a.snippet ?? ""}`) === queryLang ? 0 : 1;
+    const bMatch = detectLang(`${b.title} ${b.snippet ?? ""}`) === queryLang ? 0 : 1;
+    return aMatch - bMatch;
+  });
+
   return htmlResponse(renderResults(q, items));
+}
+
+// A small, dependency-free language guess: exact script detection for
+// non-Latin scripts (unambiguous from the Unicode ranges alone), and a
+// stopword-overlap heuristic for the Latin-script languages LangSearch
+// results turn up most often. Deliberately not using a real NLP language-ID
+// library here - this project has already been bitten twice by depending on
+// third-party services/behavior that couldn't be verified ahead of
+// deployment, and a wrong import failing to resolve would take down the
+// whole server (chat included), not just search. This is less linguistically
+// rigorous, but it's fully self-contained and testable.
+// Japanese text mixes kanji (which overlaps the Chinese range below) with
+// hiragana/katakana (unique to Japanese), so hiragana/katakana is checked
+// first: if there's meaningful kana present it's Japanese even though the
+// same text also has plenty of characters in the Chinese range.
+const SCRIPT_RANGES: [string, RegExp][] = [
+  ["ja", /[぀-ヿ]/gu],
+  ["zh", /[一-鿿]/gu],
+  ["ko", /[가-힣]/gu],
+  ["ru", /[Ѐ-ӿ]/gu],
+  ["ar", /[؀-ۿ]/gu],
+];
+const STOPWORDS: Record<string, string[]> = {
+  en: ["the", "is", "are", "what", "how", "where", "when", "why", "who", "which", "and", "or", "with", "for", "of",
+    "in", "on", "to", "a", "an", "this", "that", "best", "near", "vs", "your", "you", "can", "do", "does"],
+  es: ["el", "la", "los", "las", "de", "del", "que", "es", "son", "qué", "cómo", "dónde", "cuándo", "por", "para",
+    "con", "en", "un", "una", "y", "o", "también", "más", "muy", "cerca", "quién", "cuál"],
+  fr: ["le", "la", "les", "de", "des", "que", "est", "sont", "comment", "où", "quand", "pourquoi", "pour", "avec",
+    "dans", "un", "une", "et", "ou", "aussi", "plus", "très", "qui", "quel"],
+  de: ["der", "die", "das", "und", "ist", "sind", "was", "wie", "wo", "wann", "warum", "für", "mit", "in", "ein",
+    "eine", "auch", "mehr", "sehr", "wer", "welche"],
+  pt: ["o", "a", "os", "as", "de", "do", "da", "que", "é", "são", "como", "onde", "quando", "por", "para", "com",
+    "em", "um", "uma", "e", "ou", "também", "mais", "muito", "quem", "qual"],
+  it: ["il", "lo", "la", "gli", "le", "di", "del", "che", "è", "sono", "come", "dove", "quando", "perché", "per",
+    "con", "in", "un", "una", "e", "o", "anche", "più", "molto", "chi", "quale"],
+};
+const STOPWORD_SETS: Record<string, Set<string>> = Object.fromEntries(
+  Object.entries(STOPWORDS).map(([lang, words]) => [lang, new Set(words)]),
+);
+
+function detectLang(text: string): string | null {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return null;
+  const nonSpace = trimmed.replace(/\s+/g, "");
+  if (!nonSpace) return null;
+
+  for (const [lang, re] of SCRIPT_RANGES) {
+    const hits = (nonSpace.match(re) ?? []).length;
+    if (hits / nonSpace.length > 0.2) return lang;
+  }
+
+  const words = trimmed.toLowerCase().match(/[a-zà-öø-ÿ]+/g) ?? [];
+  if (!words.length) return null;
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const lang of Object.keys(STOPWORD_SETS)) {
+    const set = STOPWORD_SETS[lang];
+    let score = 0;
+    for (const w of words) if (set.has(w)) score++;
+    if (score > bestScore) {
+      bestScore = score;
+      best = lang;
+    }
+  }
+  // require at least two stopword hits before committing to a language -
+  // several short, common words ("com", "a", "en", ...) coincidentally
+  // appear in more than one of these lists, so a single match (e.g. "com"
+  // out of a bare URL) isn't enough signal to be worth acting on.
+  return bestScore >= 2 ? best : null;
 }
 
 function hostOf(u: string): string {
@@ -241,7 +332,7 @@ async function handleChat(req: Request): Promise<Response> {
     return json({ error: "Server is missing OPENROUTER_API_KEY." }, 500);
   }
 
-  let body: { messages?: { role: string; content: string }[] };
+  let body: { messages?: { role: string; content: string }[]; pageUrl?: string };
   try {
     body = await req.json();
   } catch {
@@ -255,6 +346,20 @@ async function handleChat(req: Request): Promise<Response> {
     return json({ error: "No messages provided." }, 400);
   }
 
+  const systemMessages = [{ role: "system", content: SYSTEM_PROMPT }];
+  if (typeof body.pageUrl === "string" && body.pageUrl) {
+    const pageText = await fetchPageText(body.pageUrl);
+    if (pageText) {
+      systemMessages.push({
+        role: "system",
+        content: `The user is currently viewing this web page: ${body.pageUrl}\n\n` +
+          `Its visible text content follows (a plain-text extraction, so some ` +
+          `navigation or boilerplate text may be mixed in):\n\n${pageText}\n\n` +
+          `If the user asks about "this page" or similar, answer using the content above.`,
+      });
+    }
+  }
+
   let upstream: Response;
   try {
     upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -265,7 +370,7 @@ async function handleChat(req: Request): Promise<Response> {
       },
       body: JSON.stringify({
         model: MODEL,
-        messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+        messages: [...systemMessages, ...messages],
       }),
     });
   } catch (err) {
@@ -290,6 +395,65 @@ function json(obj: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+const PAGE_TEXT_MAX_CHARS = 8000;
+
+// Fetches a page's raw HTML server-side (same trick as /search: a server
+// fetch isn't a "frame", so nothing about this needs the target's
+// permission) and strips it down to plain text, so the assistant can answer
+// questions about "this page". This gets the HTML as originally served, not
+// what a browser would render after running its JavaScript, so heavily
+// JS-driven pages (a lot of modern web apps) will come back mostly empty -
+// works well for ordinary content pages (articles, docs, Wikipedia), not for
+// single-page apps that build their content client-side. Failures here are
+// deliberately silent (return null): a page that can't be read just means
+// the assistant answers without that context, not a broken chat reply.
+async function fetchPageText(pageUrl: string): Promise<string | null> {
+  let parsed: URL;
+  try {
+    parsed = new URL(pageUrl);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+
+  try {
+    const res = await fetch(parsed.href, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/html")) return null;
+    const html = await res.text();
+    const text = extractReadableText(html);
+    return text ? text.slice(0, PAGE_TEXT_MAX_CHARS) : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractReadableText(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|h[1-6]|tr)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]*\n+/g, "\n\n")
+    .trim();
 }
 
 function renderPage(): string {
@@ -359,6 +523,15 @@ function renderPage(): string {
     background: var(--bubble-bot);
   }
   .msg.typing { color: var(--muted); font-style: italic; }
+  #pagectx {
+    display: none;
+    padding: 8px 20px;
+    background: var(--panel);
+    border-top: 1px solid #2d2c3c;
+    font-size: 12.5px;
+    color: var(--muted);
+  }
+  #pagectx label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
   form {
     display: flex;
     gap: 10px;
@@ -393,6 +566,9 @@ function renderPage(): string {
 <body>
   <header><span class="dot"></span> ${ASSISTANT_NAME}</header>
   <div id="log"></div>
+  <div id="pagectx">
+    <label><input type="checkbox" id="pagectx-check"> <span id="pagectx-label"></span></label>
+  </div>
   <form id="form">
     <textarea id="input" rows="1" placeholder="Message ${ASSISTANT_NAME}..." autofocus></textarea>
     <button type="submit" id="send">Send</button>
@@ -404,6 +580,34 @@ function renderPage(): string {
   const input = document.getElementById("input");
   const sendBtn = document.getElementById("send");
   const history = [];
+
+  // WinClone's Macrohard Edgy browser reports what page is currently showing
+  // via postMessage whenever it navigates or switches tabs. Not validating
+  // event.origin here since this page can be embedded by any WinClone
+  // deployment at any host, so there's no single expected parent origin to
+  // check against - the worst a forged message can do is misinform the
+  // assistant about what page it thinks is showing, never anything
+  // privileged, so a loose shape check is enough.
+  let currentPage = null;
+  const pagectx = document.getElementById("pagectx");
+  const pagectxCheck = document.getElementById("pagectx-check");
+  const pagectxLabel = document.getElementById("pagectx-label");
+
+  window.addEventListener("message", (e) => {
+    const d = e.data;
+    if (!d || d.source !== "macrohard-edgy" || d.type !== "page") return;
+    if (d.url) {
+      currentPage = { url: d.url, title: d.title || d.url };
+      let host = d.url;
+      try { host = new URL(d.url).hostname; } catch {}
+      pagectxLabel.textContent = "Ask about this page (" + host + ")";
+      pagectx.style.display = "block";
+    } else {
+      currentPage = null;
+      pagectx.style.display = "none";
+      pagectxCheck.checked = false;
+    }
+  });
 
   function addBubble(role, text) {
     const el = document.createElement("div");
@@ -433,10 +637,12 @@ function renderPage(): string {
     const typing = addBubble("bot typing", "${ASSISTANT_NAME} is thinking...");
 
     try {
+      const reqBody = { messages: history };
+      if (pagectxCheck.checked && currentPage) reqBody.pageUrl = currentPage.url;
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify(reqBody),
       });
       const data = await res.json();
       typing.remove();
