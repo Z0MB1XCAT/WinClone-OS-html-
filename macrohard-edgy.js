@@ -632,6 +632,27 @@
       else if(e.key==="0"){ e.preventDefault(); setZoom(0, true); }
     });
 
+    /* the /search proxy's page reports clicked links (and re-searches) up via
+       postMessage instead of navigating on its own, so those stay inside the
+       normal address-bar/history/back-button flow instead of just vanishing
+       into the iframe. Guards on `body` still being attached so a stale
+       listener from a previous, already-closed Edgy window (only one can be
+       open at a time, but the listener would otherwise outlive it) quietly
+       unregisters itself instead of acting on dead state. */
+    let aiOrigin = null;
+    try{ aiOrigin = new URL(AI_SIDEBAR_URL).origin; }catch(e){}
+    window.addEventListener("message", function onMsg(e){
+      if(!document.body.contains(body)){ window.removeEventListener("message", onMsg); return; }
+      if(!aiOrigin || e.origin!==aiOrigin) return;
+      if(!e.data || e.data.source!=="macrohard-edgy-search" || typeof e.data.url!=="string") return;
+      const t = active(); if(!t) return;
+      let dest;
+      try{ dest = new URL(e.data.url); }catch(err){ return; }
+      const q = /(^|\.)duckduckgo\.com$/.test(dest.hostname) ? dest.searchParams.get("q") : null;
+      if(q) navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
+      else navTo(t, {type:"site", u:dest.href});
+    });
+
     renderBookmarksBar();
     applySidebarState();
     newTab();
