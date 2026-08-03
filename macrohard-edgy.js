@@ -36,6 +36,19 @@
   const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
   const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
   const SITE_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/proxy?url=";
+  const FRAME_CHECK_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/frame-check?url=";
+
+  /* asks the backend whether a site's own headers (X-Frame-Options / CSP
+     frame-ancestors) refuse framing, for sites edgeBlocked()'s hardcoded
+     list doesn't know about. Fails open (reports "not blocked") on any
+     error/timeout so a flaky check never gets in the way of the normal
+     direct-load/timeout fallback path that already exists regardless. */
+  function checkFrameable(u){
+    return fetch(FRAME_CHECK_URL+encodeURIComponent(u), {signal: AbortSignal.timeout(5000)})
+      .then(r=>r.ok ? r.json() : {blocked:false})
+      .then(d=>!!(d && d.blocked))
+      .catch(()=>false);
+  }
 
   function install(){
     if(APPS.edgy) return; // don't double-install if this file loads twice
@@ -285,7 +298,7 @@
     function renderBookmarksBar(){
       bmBar.innerHTML = "";
       bookmarks.forEach(b=>{
-        const a = el("a"); a.innerHTML = `<span>${b.icon||"🌐"}</span><span>${esc(b.name)}</span>`;
+        const a = el("a"); a.innerHTML = `<span>${esc(b.icon||"🌐")}</span><span>${esc(b.name)}</span>`;
         a.onclick = ()=>go(active(), b.url);
         bmBar.appendChild(a);
       });
@@ -399,7 +412,8 @@
       const pageEl = el("div","edgy-page");
       pagesEl.appendChild(pageEl);
       const tab = {id, pageEl, stack:[], si:-1, title:incognito?"Private tab":"New tab",
-        icon:incognito?"🕶":"🧭", favicon:null, displayUrl:"", incognito:!!incognito, zoom:defaultZoom};
+        icon:incognito?"🕶":"🧭", favicon:null, displayUrl:"", incognito:!!incognito, zoom:defaultZoom,
+        frameWindow:null, load:null};
       tabs.push(tab);
       switchTab(id);
       go(tab, url);
@@ -455,6 +469,7 @@
     }
 
     function home(t){
+      t.frameWindow = null; t.load = null;
       t.displayUrl = ""; t.title = t.incognito?"Private tab":"New tab"; t.icon = t.incognito?"🕶":"🧭"; t.favicon=null;
       t.pageEl.className = "edgy-page edgy-home"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `
@@ -466,13 +481,14 @@
       search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
       const sc = t.pageEl.querySelector(".edgy-shortcuts");
       bookmarks.forEach(b=>{
-        const a=el("a"); a.innerHTML = `<span class="gl">${b.icon||"🌐"}</span>${esc(b.name)}`;
+        const a=el("a"); a.innerHTML = `<span class="gl">${esc(b.icon||"🌐")}</span>${esc(b.name)}`;
         a.onclick = ()=>go(t, b.url); sc.appendChild(a);
       });
       applyZoom(t); renderTabs(); syncChrome(t);
     }
 
     function historyPage(t){
+      t.frameWindow = null; t.load = null;
       t.displayUrl = ""; t.title = "History"; t.icon = "🕘"; t.favicon = null;
       t.pageEl.className = "edgy-page edgy-history"+(t.id===activeId?" active":"");
       const rows = history.slice().reverse().map((h,i)=>{
@@ -506,18 +522,29 @@
     function loadSite(t, loc){
       const u = loc.u;
       t.displayUrl = u; t.title = loc.label || hostOf(u); t.icon = loc.icon || "🌐";
-      t.favicon = loc.icon ? null : faviconFor(u);
+      t.favicon = (loc.icon || t.incognito) ? null : faviconFor(u);
       if(edgeBlocked(u)){ loadViaProxy(t,loc); return; }
       t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
         <iframe class="edgy-frame" referrerpolicy="no-referrer"
           sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
       const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
-      let done=false;
-      const timer = setTimeout(()=>{ if(!done){ done=true; loadViaProxy(t,loc); } }, 10000);
+      t.frameWindow = frame.contentWindow;
+      const state = t.load = {done:false, timer:null};
+      state.timer = setTimeout(()=>{ if(!state.done){ state.done=true; loadViaProxy(t,loc); } }, 10000);
       frame.addEventListener("load", ()=>{
-        if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
+        if(state.done) return; state.done=true; clearTimeout(state.timer); if(load) load.remove(); frame.style.opacity=1;
         if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+      });
+      /* a site that blocks framing via headers still fires the iframe's own
+         "load" event for the browser's blocked-page placeholder (the same
+         behavior that originally made a DuckDuckGo CAPTCHA wall look like a
+         successful search), so edgeBlocked()'s hardcoded list can't be the
+         only thing catching this. Race a real header check against the
+         direct load: whichever resolves first wins, and a positive block
+         result here pre-empts the eventual "load" firing on the placeholder. */
+      checkFrameable(u).then(blocked=>{
+        if(blocked && !state.done){ state.done=true; clearTimeout(state.timer); loadViaProxy(t,loc); }
       });
       frame.src = u;
       applyZoom(t); renderTabs(); syncChrome(t);
@@ -538,17 +565,39 @@
         <iframe class="edgy-frame" referrerpolicy="no-referrer"
           sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
       const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
-      let done=false;
-      const timer = setTimeout(()=>{ if(!done){ done=true; showRejected(t,loc); } }, 12000);
+      t.frameWindow = frame.contentWindow;
+      const state = t.load = {done:false, timer:null};
+      /* a failure the proxy itself reports (bad host, unreachable target,
+         non-HTML content, too large, ...) is still valid HTML that this
+         iframe "loads" successfully - the message listener below jumps
+         straight to showRejected() the moment the proxy's own error-signal
+         script reports in, so this timeout/load pairing only matters for a
+         proxy response that never comes back at all. */
+      state.timer = setTimeout(()=>{ if(!state.done){ state.done=true; showRejected(t,loc); } }, 12000);
       frame.addEventListener("load", ()=>{
-        if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
-        if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+        if(state.done) return;
+        /* the error-signal script (see /proxy's PROXY_ERROR_SIGNAL) runs
+           synchronously while this document parses, well before this
+           iframe's own "load" fires - but it still has to cross a real
+           cross-origin process boundary via postMessage, and nothing
+           guarantees that IPC lands before "load" does. A short grace
+           window lets a same-tick error signal win that race instead of
+           this handler committing to "success" first and shutting the door
+           on it (state.done, once true, makes the message handler's check
+           a no-op). 250ms is well past any realistic postMessage IPC delay
+           but too brief to be noticeable on a real successful load. */
+        setTimeout(()=>{
+          if(state.done) return;
+          state.done=true; clearTimeout(state.timer); if(load) load.remove(); frame.style.opacity=1;
+          if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+        }, 250);
       });
       frame.src = SITE_PROXY_URL+encodeURIComponent(u);
       applyZoom(t); renderTabs(); syncChrome(t);
     }
     function showRejected(t, loc){
       const u = loc.u;
+      t.frameWindow = null;
       t.pageEl.className = "edgy-page"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-reject">
         <div class="em">🚧</div>
@@ -688,15 +737,48 @@
        the iframe. Guards on `body` still being attached so a stale
        listener from a previous, already-closed Edgy window (only one can be
        open at a time, but the listener would otherwise outlive it) quietly
-       unregisters itself instead of acting on dead state. */
+       unregisters itself instead of acting on dead state.
+
+       Matching e.source to the specific tab whose iframe it actually is
+       (rather than just trusting e.origin and applying the message to
+       whichever tab happens to be active) matters for two reasons: without
+       it, a message that arrives from a backgrounded tab's still-loaded
+       iframe would hijack navigation on whatever tab the user has since
+       switched to (a real mixup, not just a theoretical one); and since
+       /proxy serves arbitrary third-party HTML with allow-scripts and
+       allow-same-origin at this app's own origin, any nested iframe a
+       malicious proxied page embeds pointed back at that same /proxy path
+       would also satisfy an origin-only check. Requiring e.source to be
+       the exact contentWindow Edgy itself created for that tab's current
+       load rules that out - a nested iframe's postMessage source is its
+       own window, never the outer tab's. */
     let aiOrigin = null, proxyOrigin = null, proxyPath = null;
     try{ aiOrigin = new URL(AI_SIDEBAR_URL).origin; }catch(e){}
     try{ const p=new URL(SEARCH_PROXY_URL); proxyOrigin=p.origin; proxyPath=p.pathname; }catch(e){}
     window.addEventListener("message", function onMsg(e){
       if(!document.body.contains(body)){ window.removeEventListener("message", onMsg); return; }
       if(!aiOrigin || e.origin!==aiOrigin) return;
-      if(!e.data || typeof e.data.url!=="string") return;
-      const t = active(); if(!t) return;
+      if(!e.data || typeof e.data.source!=="string") return;
+      const t = tabs.find(tb=>tb.frameWindow && tb.frameWindow===e.source);
+      if(!t) return;
+
+      if(e.data.source==="macrohard-edgy-proxy-error"){
+        /* the proxy's own failure pages (bad host, unreachable target, non-
+           HTML content, too large, ...) still load successfully as far as
+           the iframe is concerned - this is /proxy telling Edgy directly
+           that despite that, the load should count as a failure: skip the
+           history write and show the real rejection screen right away
+           instead of waiting out load's own 12s timeout or leaving the raw
+           error text on screen. */
+        if(t.load && !t.load.done){
+          t.load.done = true;
+          if(t.load.timer) clearTimeout(t.load.timer);
+          showRejected(t, t.stack[t.si]);
+        }
+        return;
+      }
+
+      if(typeof e.data.url!=="string") return;
       let dest;
       try{ dest = new URL(e.data.url); }catch(err){ return; }
 
