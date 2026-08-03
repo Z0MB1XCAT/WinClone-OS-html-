@@ -3,9 +3,9 @@
 // This is deliberately not part of WinClone itself. It's a standalone site:
 // this one file serves the chat page, a `/api/chat` endpoint that proxies to
 // OpenRouter (so your OpenRouter key lives only on the server and never
-// reaches the browser), and a `/search` endpoint that calls the Google
-// Custom Search JSON API and renders the results as a plain page of this
-// server's own, so Macrohard Edgy can show it in an iframe.
+// reaches the browser), and a `/search` endpoint that queries a public
+// SearXNG instance's JSON API and renders the results as a plain page of
+// this server's own, so Macrohard Edgy can show it in an iframe.
 //
 // An earlier version of `/search` scraped DuckDuckGo's HTML results page
 // server-side instead. That doesn't work: DuckDuckGo (like most search
@@ -13,17 +13,22 @@
 // to stop scraping, which is exactly what a Deno Deploy server looks like to
 // them. Solving that CAPTCHA in your own browser doesn't help either — it's
 // tied to your browser's session with duckduckgo.com, not to this server's
-// separate, cookie-less requests. A real search API, called with a key
-// instead of impersonating a browser, sidesteps that entirely.
+// separate, cookie-less requests.
 //
-// Needs two environment variables set on Deno Deploy:
-//   GOOGLE_API_KEY - a key with the "Custom Search API" enabled, from
-//     https://console.cloud.google.com/apis/credentials (free tier: 100
-//     searches/day)
-//   GOOGLE_CSE_ID  - a Programmable Search Engine ID from
-//     https://programmablesearchengine.google.com/ , with "Search the
-//     entire web" turned on in its settings (otherwise it only searches
-//     whatever specific sites you added)
+// SearXNG sidesteps that without needing an API key or account anywhere:
+// it's an open-source metasearch engine, and plenty of volunteers run free
+// public instances of it with a JSON output mode meant to be queried
+// programmatically. The real tradeoff is reliability, not signup friction —
+// a public instance is someone else's free server. It can go down, get
+// rate-limited, or have its admin disable JSON output at any time, with no
+// notice and nothing you can do about it except switch instances.
+//
+// No env vars are required to get started (SEARX_INSTANCE defaults to a
+// long-running public instance below), but if search stops working, that's
+// almost certainly why. Fix it by setting the SEARX_INSTANCE environment
+// variable to a different instance's URL: browse
+// https://searx.space (sort by "JSON" support) for current options, pick one
+// that lists JSON as enabled, and redeploy — no code changes needed.
 //
 // Point WinClone's built-in Browser app at the deployed URL (see README.md)
 // to "install" it as a bookmark/shortcut.
@@ -65,50 +70,78 @@ Deno.serve(async (req: Request) => {
   return new Response("Not found", { status: 404 });
 });
 
-type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
+// A long-running, well-known public instance. Override with the
+// SEARX_INSTANCE env var if this one ever goes down or turns off JSON
+// output — see the file header for how to find a replacement.
+const SEARX_INSTANCE = (Deno.env.get("SEARX_INSTANCE") ?? "https://searx.be").replace(/\/$/, "");
 
-// Calls the Google Custom Search JSON API (a real, documented API, not a
-// scrape) and renders the results as a page of this server's own, so it can
-// be shown in an iframe with no framing restriction attached.
+type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
+type SearxResult = { title?: string; url?: string; content?: string };
+
+// Queries a public SearXNG instance's JSON API and renders the results as a
+// page of this server's own, so it can be shown in an iframe with no
+// framing restriction attached. No API key or account needed, but see the
+// file header: this depends on someone else's free server staying up and
+// keeping JSON output enabled, which is not guaranteed.
 async function handleSearch(url: URL): Promise<Response> {
   const q = (url.searchParams.get("q") ?? "").trim();
   if (!q) {
     return htmlResponse(searchShell("", "<p>Type something to search for.</p>"));
   }
 
-  const apiKey = Deno.env.get("GOOGLE_API_KEY");
-  const cx = Deno.env.get("GOOGLE_CSE_ID");
-  if (!apiKey || !cx) {
-    return htmlResponse(
-      searchShell(
-        q,
-        "<p>Search isn't configured yet. Set the <code>GOOGLE_API_KEY</code> and " +
-          "<code>GOOGLE_CSE_ID</code> environment variables on this app (see the " +
-          "comment at the top of server.ts for where to get them).</p>",
-      ),
-      500,
-    );
-  }
-
-  const apiUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(apiKey)}` +
-    `&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(q)}`;
-
-  let data: { items?: SearchItem[]; error?: { message?: string } };
+  const apiUrl = `${SEARX_INSTANCE}/search?q=${encodeURIComponent(q)}&format=json`;
+  let text: string;
   try {
-    const upstream = await fetch(apiUrl);
-    data = await upstream.json();
+    const upstream = await fetch(apiUrl, {
+      headers: {
+        // SearXNG instances vary in how they treat a plain server-side
+        // fetch; an ordinary browser user agent behaves best across them.
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept": "application/json",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    text = await upstream.text();
     if (!upstream.ok) {
-      const msg = data?.error?.message ?? `HTTP ${upstream.status}`;
-      return htmlResponse(searchShell(q, `<p>Search API error: ${escapeHtml(msg)}</p>`), 502);
+      return htmlResponse(searchShell(q, searxTrouble(`returned HTTP ${upstream.status}`)), 502);
     }
   } catch (err) {
+    return htmlResponse(searchShell(q, searxTrouble(`could not be reached: ${escapeHtml(String(err))}`)), 502);
+  }
+
+  let data: { results?: SearxResult[] };
+  try {
+    data = JSON.parse(text);
+  } catch {
     return htmlResponse(
-      searchShell(q, `<p>Could not reach the search API: ${escapeHtml(String(err))}</p>`),
+      searchShell(q, searxTrouble("didn't return JSON (it may not have JSON output enabled, or may be showing a CAPTCHA)")),
       502,
     );
   }
 
-  return htmlResponse(renderResults(q, data.items ?? []));
+  const items: SearchItem[] = (data.results ?? []).filter((r) => r.url).map((r) => ({
+    title: r.title || r.url!,
+    link: r.url!,
+    snippet: r.content,
+    displayLink: hostOf(r.url!),
+  }));
+  return htmlResponse(renderResults(q, items));
+}
+
+function hostOf(u: string): string {
+  try {
+    return new URL(u).hostname;
+  } catch {
+    return u;
+  }
+}
+
+function searxTrouble(reason: string): string {
+  return `<p>The public search instance (<code>${escapeHtml(SEARX_INSTANCE)}</code>) ${reason}.</p>
+    <p>Public SearXNG instances are free, volunteer-run servers, so this can happen. Browse
+    <a href="https://searx.space" target="_blank" rel="noopener">searx.space</a> for one with JSON output enabled,
+    set the <code>SEARX_INSTANCE</code> environment variable to its URL, and redeploy.</p>`;
 }
 
 // Reports result-link clicks and the re-search form up to the parent window
