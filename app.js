@@ -18,11 +18,10 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.10.0";
+const WC_VERSION = "1.10.1";
 const WC_CHANGELOG = {
-  "1.10.0": [
-    "🧭 Macrohard Edgy is now the default browser — pinned to the taskbar and Start, and first on the desktop. It shows real, live search results and real pages right inside the window, plus light/dark mode, page zoom, real history, incognito tabs and a built-in AI sidebar.",
-    "🌐 Microsoft Edge hasn't gone anywhere — still installed, still pinned, right next to Edgy, for whenever you want the simulated classic.",
+  "1.10.1": [
+    "🧭 Macrohard Edgy is now the default browser.",
   ],
   "1.9.0": [
     "👤 WinClone Accounts. Make an account with an email or your Google login, and your PCs stop living in one browser — sign in from any computer and they're there.",
