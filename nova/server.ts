@@ -46,13 +46,64 @@ const SYSTEM_PROMPT =
 
 const MAX_HISTORY_MESSAGES = 20;
 
-Deno.serve(async (req: Request) => {
+// None of these routes need auth (they can't, since Edgy just points an
+// iframe/fetch at them directly), and the URL itself is public - it's right
+// there in macrohard-edgy.js's source. Without some limit, anyone who finds
+// it - not just WinClone's own friend group - could run up the OpenRouter/
+// LangSearch quota or just hammer the server for free compute. This can't
+// key off Origin/Referer: Edgy's iframes are deliberately loaded with
+// referrerpolicy="no-referrer" (so the sites being viewed don't learn they're
+// being framed via this proxy), which means legitimate requests also arrive
+// with no Referer - there'd be nothing to tell them apart from an outsider's
+// request. A simple per-IP rate limit is coarser but doesn't depend on
+// headers a legitimate request won't send. It's in-memory only (resets on
+// redeploy/restart and isn't shared across Deno Deploy regions/isolates),
+// which is a real limitation, but it's a real floor with zero extra
+// infrastructure, which matches the scale of this project.
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX = 30;
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+const RATE_LIMITED_PATHS = new Set(["/api/chat", "/search", "/proxy", "/frame-check"]);
+
+function clientIp(req: Request, info: unknown): string {
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) return fwd.split(",")[0].trim();
+  const remoteAddr = (info as { remoteAddr?: { hostname?: string } } | undefined)?.remoteAddr;
+  return remoteAddr?.hostname ?? "unknown";
+}
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const b = rateBuckets.get(ip);
+  if (!b || now > b.resetAt) {
+    rateBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  b.count++;
+  return b.count > RATE_LIMIT_MAX;
+}
+// /proxy and /search render their too-many-requests message in the shape
+// each route's caller already expects (an HTML page Edgy frames, with the
+// same error-signal script /proxy's other failures use so Edgy's fallback UI
+// shows immediately instead of waiting out its own timeout); everything else
+// gets the plain JSON error shape the rest of the API uses.
+function rateLimitedResponse(pathname: string): Response {
+  const msg = "Too many requests - slow down and try again in a minute.";
+  if (pathname === "/proxy") return proxyErrorResponse(`<p>${msg}</p>`, 429);
+  if (pathname === "/search") return htmlResponse(searchShell("", `<p>${msg}</p>`), 429);
+  return json({ error: msg }, 429);
+}
+
+Deno.serve(async (req: Request, info: unknown) => {
   const url = new URL(req.url);
 
   if (req.method === "GET" && url.pathname === "/") {
     return new Response(renderPage(), {
       headers: { "content-type": "text/html; charset=utf-8" },
     });
+  }
+
+  if (RATE_LIMITED_PATHS.has(url.pathname) && isRateLimited(clientIp(req, info))) {
+    return rateLimitedResponse(url.pathname);
   }
 
   if (req.method === "POST" && url.pathname === "/api/chat") {
@@ -65,6 +116,10 @@ Deno.serve(async (req: Request) => {
 
   if (req.method === "GET" && url.pathname === "/proxy") {
     return handleProxy(url);
+  }
+
+  if (req.method === "GET" && url.pathname === "/frame-check") {
+    return handleFrameCheck(url);
   }
 
   return new Response("Not found", { status: 404 });
@@ -121,21 +176,40 @@ function isBlockedProxyHost(hostname: string): boolean {
 // every call. Real pages are nowhere near this size; this only stops abuse.
 const MAX_PROXY_BYTES = 5_000_000;
 
+// Every early-return failure below is still a "successfully loaded" document
+// as far as the iframe's own load event is concerned - it's valid HTML, it
+// just says something went wrong. Left alone, Edgy would show that raw text
+// inline and (worse) record it in history as a visited page, only ever
+// reaching its own polished "won't load here" screen on the separate 12s
+// timeout path. This script tells Edgy immediately, the same way the click
+// bridge reports navigation, so a failure here is treated as one right away
+// instead of silently looking like a successful, if ugly, page load. Kept
+// out of the *success* path deliberately: a real page that itself returns a
+// 404/500 is still real content the user might want to see, not a proxy
+// failure.
+const PROXY_ERROR_SIGNAL = `<script>try{ window.parent.postMessage({source:"macrohard-edgy-proxy-error"}, "*"); }catch(e){}</script>`;
+function proxyErrorResponse(bodyHtml: string, status: number): Response {
+  return htmlResponse(
+    `<!doctype html><html><head><meta charset="utf-8">${PROXY_ERROR_SIGNAL}</head><body>${bodyHtml}</body></html>`,
+    status,
+  );
+}
+
 async function handleProxy(reqUrl: URL): Promise<Response> {
   const target = reqUrl.searchParams.get("url") ?? "";
-  if (!target) return htmlResponse("<p>Missing url parameter.</p>", 400);
+  if (!target) return proxyErrorResponse("<p>Missing url parameter.</p>", 400);
 
   let parsed: URL;
   try {
     parsed = new URL(target);
   } catch {
-    return htmlResponse("<p>Invalid URL.</p>", 400);
+    return proxyErrorResponse("<p>Invalid URL.</p>", 400);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return htmlResponse("<p>Only http/https URLs can be proxied.</p>", 400);
+    return proxyErrorResponse("<p>Only http/https URLs can be proxied.</p>", 400);
   }
   if (isBlockedProxyHost(parsed.hostname)) {
-    return htmlResponse("<p>That address can't be proxied.</p>", 400);
+    return proxyErrorResponse("<p>That address can't be proxied.</p>", 400);
   }
 
   try {
@@ -152,25 +226,78 @@ async function handleProxy(reqUrl: URL): Promise<Response> {
     });
     const contentType = res.headers.get("content-type") ?? "";
     if (!contentType.includes("text/html")) {
-      return htmlResponse(
+      return proxyErrorResponse(
         `<p>That URL isn't a web page (content-type: ${escapeHtml(contentType || "unknown")}).</p>`,
         415,
       );
     }
     const lenHeader = res.headers.get("content-length");
     if (lenHeader && Number(lenHeader) > MAX_PROXY_BYTES) {
-      return htmlResponse("<p>That page is too large to proxy.</p>", 413);
+      return proxyErrorResponse("<p>That page is too large to proxy.</p>", 413);
     }
     const html = await res.text();
     if (html.length > MAX_PROXY_BYTES) {
-      return htmlResponse("<p>That page is too large to proxy.</p>", 413);
+      return proxyErrorResponse("<p>That page is too large to proxy.</p>", 413);
     }
     return htmlResponse(injectProxyBridge(html, parsed.href), res.status);
   } catch (err) {
-    return htmlResponse(
+    return proxyErrorResponse(
       `<p>Could not reach ${escapeHtml(parsed.href)}: ${escapeHtml(String(err))}</p>`,
       502,
     );
+  }
+}
+
+// Lightweight companion to /proxy: instead of fetching the whole page, this
+// just checks whether the target says it refuses to be framed at all, so
+// Edgy can skip straight to the proxy fallback for sites that block framing
+// but aren't in app.js's hardcoded edgeBlocked() list. Called via fetch()
+// from Edgy's own JS (not framed), so - unlike every other route here - it
+// genuinely needs a CORS header to be readable cross-origin.
+async function handleFrameCheck(reqUrl: URL): Promise<Response> {
+  const target = reqUrl.searchParams.get("url") ?? "";
+  const cors = { "content-type": "application/json", "access-control-allow-origin": "*" };
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return new Response(JSON.stringify({ blocked: false }), { headers: cors });
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:" || isBlockedProxyHost(parsed.hostname)) {
+    return new Response(JSON.stringify({ blocked: false }), { headers: cors });
+  }
+  try {
+    let res = await fetch(parsed.href, {
+      method: "HEAD",
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+    // some servers don't implement HEAD sensibly (405, or headers that don't
+    // match what GET would send); a plain GET is the fallback truth source
+    if (!res.ok && res.status !== 304) {
+      res = await fetch(parsed.href, {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+    const xfo = (res.headers.get("x-frame-options") ?? "").toLowerCase();
+    const csp = res.headers.get("content-security-policy") ?? "";
+    // frame-ancestors is the CSP directive that governs framing; any value
+    // present almost certainly excludes this app's own (unlisted) origin,
+    // since a site has no way to know this specific Deno Deploy domain ahead
+    // of time to allow-list it.
+    const blocked = xfo === "deny" || xfo === "sameorigin" || /frame-ancestors/i.test(csp);
+    return new Response(JSON.stringify({ blocked }), { headers: cors });
+  } catch {
+    // couldn't even check - fail open and let the normal direct-load/timeout
+    // path make the call, same as before this route existed
+    return new Response(JSON.stringify({ blocked: false }), { headers: cors });
   }
 }
 
