@@ -10,14 +10,13 @@
  *
  * Unlike the built-in "Microsoft Edge" (which fakes its search results),
  * typing a search on Macrohard Edgy's home page or address bar shows real,
- * live DuckDuckGo results right inside the window. Search-results pages
- * universally refuse to let another site frame them directly, so instead of
- * embedding DuckDuckGo itself, this points the iframe at a small proxy on
- * the user's own AI backend: that server fetches DuckDuckGo's HTML on the
- * browser's behalf and hands it back from its own domain, which sets no
- * such restriction. Typed URLs and bookmarks load the same way, straight in
- * a sandboxed iframe, the technique the built-in Edge uses for real sites
- * like Wikipedia. Sites that refuse to be framed (Google, YouTube,
+ * live web results right inside the window. This points the iframe at a
+ * small proxy on the user's own AI backend: that server calls a real search
+ * API and hands the results back from its own domain, which sets no
+ * framing restriction (an actual search-engine results page would refuse to
+ * be framed directly). Typed URLs and bookmarks load the same way, straight
+ * in a sandboxed iframe, the technique the built-in Edge uses for real
+ * sites like Wikipedia. Sites that refuse to be framed (Google, YouTube,
  * Instagram, ...) get a graceful "won't load here" screen instead.
  *
  * Also has: light/dark mode, page zoom, real history, incognito tabs, a tab
@@ -29,8 +28,8 @@
 
   /* the user's own AI chat app (its own site, its own backend/API key).
      This plugin frames its chat page as the AI sidebar, and also uses its
-     /search route (a small DuckDuckGo proxy) so search results can be shown
-     in an iframe instead of blocked outright. */
+     /search route (a real search API, proxied so results can be framed)
+     for search results instead of getting blocked outright. */
   const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
   const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
 
@@ -209,10 +208,10 @@
   function saveSidebarState(s){ try{ localStorage.setItem(EDGY_SIDEBAR_KEY, JSON.stringify(s)); }catch(e){} }
 
   /* frame-blocked-site detection is reused straight from app.js: edgeBlocked()
-     and EDGE_BLOCKED already list the giants (Google, YouTube, DuckDuckGo's
-     own main site, ...) that refuse to be framed. DuckDuckGo's search results
-     never go through an iframe here (they open in a real new tab instead, see
-     go() below), so there is no need to special-case it out of that list. */
+     and EDGE_BLOCKED already list the giants (Google, YouTube, Facebook, ...)
+     that refuse to be framed. Search results never hit that list at all,
+     since they're framed from the user's own proxy domain, not a real search
+     engine's, so there's nothing there for edgeBlocked() to catch. */
   function hostOf(u){ try{ return new URL(u).hostname||u; }catch(e){ return u; } }
   function faviconFor(u){ const h=hostOf(u); return h ? `https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(h)}` : null; }
 
@@ -238,7 +237,7 @@
             <span class="edgy-zoomlabel">100%</span>
             <button data-zin title="Zoom in">+</button>
           </div>
-          <div class="edgy-addr"><span class="edgy-lock">🔒</span><input class="edgy-url" spellcheck="false" placeholder="Search DuckDuckGo or enter a web address"></div>
+          <div class="edgy-addr"><span class="edgy-lock">🔒</span><input class="edgy-url" spellcheck="false" placeholder="Search the web or enter a web address"></div>
           <button class="edgy-star" title="Bookmark this page">☆</button>
           <button class="edgy-nav" data-theme title="Toggle dark mode">🌙</button>
           <button class="edgy-nav ai" title="Assistant">✨</button>
@@ -431,10 +430,10 @@
       if(low==="history"){ navTo(t,{type:"history"}); return; }
       const looksUrl = /^https?:\/\//.test(q) || (/^[^\s]+\.[a-z]{2,}(\/|$|\?|#)/i.test(q) && !/\s/.test(q));
       if(!looksUrl){
-        /* real, live DuckDuckGo results, fetched by the user's own AI backend
-           and framed from its domain instead of DuckDuckGo's own (see the
-           file header for why), so this loads right inside the window rather
-           than kicking out to a real browser tab. */
+        /* real, live search results, fetched by the user's own AI backend and
+           framed from its own domain (see the file header for why), so this
+           loads right inside the window rather than kicking out to a real
+           browser tab. */
         navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
         return;
       }
@@ -456,7 +455,7 @@
       t.pageEl.innerHTML = `
         <div class="logo">${t.incognito?"🕶":"🧭"} Macrohard Edgy</div>
         ${t.incognito?'<div class="priv-sub">Private tab. Sites you visit here won’t be added to History.</div>':""}
-        <input class="edgy-search" placeholder="Search DuckDuckGo or enter a web address">
+        <input class="edgy-search" placeholder="Search the web or enter a web address">
         <div class="edgy-shortcuts"></div>`;
       const search = t.pageEl.querySelector(".edgy-search");
       search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
@@ -639,8 +638,9 @@
        listener from a previous, already-closed Edgy window (only one can be
        open at a time, but the listener would otherwise outlive it) quietly
        unregisters itself instead of acting on dead state. */
-    let aiOrigin = null;
+    let aiOrigin = null, proxyOrigin = null, proxyPath = null;
     try{ aiOrigin = new URL(AI_SIDEBAR_URL).origin; }catch(e){}
+    try{ const p=new URL(SEARCH_PROXY_URL); proxyOrigin=p.origin; proxyPath=p.pathname; }catch(e){}
     window.addEventListener("message", function onMsg(e){
       if(!document.body.contains(body)){ window.removeEventListener("message", onMsg); return; }
       if(!aiOrigin || e.origin!==aiOrigin) return;
@@ -648,7 +648,10 @@
       const t = active(); if(!t) return;
       let dest;
       try{ dest = new URL(e.data.url); }catch(err){ return; }
-      const q = /(^|\.)duckduckgo\.com$/.test(dest.hostname) ? dest.searchParams.get("q") : null;
+      /* a re-search submitted from the results page itself lands back on our
+         own /search route; give it the same nice "Search: query" tab title
+         instead of the raw proxy hostname. */
+      const q = (dest.origin===proxyOrigin && dest.pathname===proxyPath) ? dest.searchParams.get("q") : null;
       if(q) navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
       else navTo(t, {type:"site", u:dest.href});
     });

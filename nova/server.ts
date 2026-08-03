@@ -3,12 +3,28 @@
 // This is deliberately not part of WinClone itself. It's a standalone site:
 // this one file serves the chat page, a `/api/chat` endpoint that proxies to
 // OpenRouter (so your OpenRouter key lives only on the server and never
-// reaches the browser), and a `/search` endpoint that proxies DuckDuckGo's
-// results the same way. Real search engines refuse to let other sites frame
-// their results pages, but that restriction only applies to the browser
-// doing the fetching directly; a server fetching on the browser's behalf
-// isn't a "frame" at all, so `/search` fetches DuckDuckGo's HTML here and
-// hands it back from this domain instead, with no such restriction attached.
+// reaches the browser), and a `/search` endpoint that calls the Google
+// Custom Search JSON API and renders the results as a plain page of this
+// server's own, so Macrohard Edgy can show it in an iframe.
+//
+// An earlier version of `/search` scraped DuckDuckGo's HTML results page
+// server-side instead. That doesn't work: DuckDuckGo (like most search
+// engines) fingerprints and CAPTCHA-walls traffic from cloud/datacenter IPs
+// to stop scraping, which is exactly what a Deno Deploy server looks like to
+// them. Solving that CAPTCHA in your own browser doesn't help either — it's
+// tied to your browser's session with duckduckgo.com, not to this server's
+// separate, cookie-less requests. A real search API, called with a key
+// instead of impersonating a browser, sidesteps that entirely.
+//
+// Needs two environment variables set on Deno Deploy:
+//   GOOGLE_API_KEY - a key with the "Custom Search API" enabled, from
+//     https://console.cloud.google.com/apis/credentials (free tier: 100
+//     searches/day)
+//   GOOGLE_CSE_ID  - a Programmable Search Engine ID from
+//     https://programmablesearchengine.google.com/ , with "Search the
+//     entire web" turned on in its settings (otherwise it only searches
+//     whatever specific sites you added)
+//
 // Point WinClone's built-in Browser app at the deployed URL (see README.md)
 // to "install" it as a bookmark/shortcut.
 //
@@ -49,60 +65,56 @@ Deno.serve(async (req: Request) => {
   return new Response("Not found", { status: 404 });
 });
 
-// Fetches DuckDuckGo's plain-HTML results page server-side and hands it back
-// from this domain, so it can be shown in an iframe. Also injects a small
-// script that intercepts clicks and the re-search form and reports the
-// destination to the parent page via postMessage instead of navigating,
-// so WinClone can load it through its own address bar and history instead
-// of the click just disappearing into the iframe (or breaking, if the
-// destination site blocks framing itself and there's no parent-side
-// fallback screen to catch that).
+type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
+
+// Calls the Google Custom Search JSON API (a real, documented API, not a
+// scrape) and renders the results as a page of this server's own, so it can
+// be shown in an iframe with no framing restriction attached.
 async function handleSearch(url: URL): Promise<Response> {
   const q = (url.searchParams.get("q") ?? "").trim();
   if (!q) {
     return htmlResponse(searchShell("", "<p>Type something to search for.</p>"));
   }
 
-  const ddgUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-  let upstream: Response;
+  const apiKey = Deno.env.get("GOOGLE_API_KEY");
+  const cx = Deno.env.get("GOOGLE_CSE_ID");
+  if (!apiKey || !cx) {
+    return htmlResponse(
+      searchShell(
+        q,
+        "<p>Search isn't configured yet. Set the <code>GOOGLE_API_KEY</code> and " +
+          "<code>GOOGLE_CSE_ID</code> environment variables on this app (see the " +
+          "comment at the top of server.ts for where to get them).</p>",
+      ),
+      500,
+    );
+  }
+
+  const apiUrl = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(apiKey)}` +
+    `&cx=${encodeURIComponent(cx)}&q=${encodeURIComponent(q)}`;
+
+  let data: { items?: SearchItem[]; error?: { message?: string } };
   try {
-    upstream = await fetch(ddgUrl, {
-      headers: {
-        // DuckDuckGo's HTML endpoint behaves better with an ordinary
-        // browser user agent than with Deno's default fetch one.
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      },
-    });
+    const upstream = await fetch(apiUrl);
+    data = await upstream.json();
+    if (!upstream.ok) {
+      const msg = data?.error?.message ?? `HTTP ${upstream.status}`;
+      return htmlResponse(searchShell(q, `<p>Search API error: ${escapeHtml(msg)}</p>`), 502);
+    }
   } catch (err) {
     return htmlResponse(
-      searchShell(q, `<p>Could not reach DuckDuckGo: ${escapeHtml(String(err))}</p>`),
+      searchShell(q, `<p>Could not reach the search API: ${escapeHtml(String(err))}</p>`),
       502,
     );
   }
 
-  if (!upstream.ok) {
-    return htmlResponse(
-      searchShell(q, `<p>DuckDuckGo returned an error (${upstream.status}). Try again in a moment.</p>`),
-      502,
-    );
-  }
-
-  const html = await upstream.text();
-  return htmlResponse(injectClickBridge(html, ddgUrl));
+  return htmlResponse(renderResults(q, data.items ?? []));
 }
 
-// Reports link clicks and form submissions up to the parent window instead
-// of letting the iframe navigate on its own. Runs in this page's own origin
-// (this Deno domain), not DuckDuckGo's, so it can freely postMessage out;
-// it can't reach anything in the parent WinClone page either way, since
-// postMessage only carries plain data, never live access.
-//
-// Reads a.href / f.action (the browser-resolved absolute URLs) rather than
-// the raw href/action attributes, so the <base> tag below (which points
-// resolution back at DuckDuckGo's real page instead of this proxy's own
-// URL) is honored for relative links, pagination and DuckDuckGo's own
-// re-search form.
+// Reports result-link clicks and the re-search form up to the parent window
+// instead of letting the iframe navigate on its own, so WinClone can load
+// the destination through its own address bar, history and back button
+// instead of the click just disappearing into the iframe.
 const CLICK_BRIDGE = `<script>(function(){
   function send(url){
     try{ window.parent.postMessage({source:"macrohard-edgy-search",url:url},"*"); }catch(e){}
@@ -125,15 +137,47 @@ const CLICK_BRIDGE = `<script>(function(){
   },true);
 })();</script>`;
 
-function injectClickBridge(html: string, baseUrl: string): string {
-  const tag = `<base href="${escapeHtmlAttr(baseUrl)}">` + CLICK_BRIDGE;
-  return /<head[^>]*>/i.test(html)
-    ? html.replace(/<head([^>]*)>/i, `<head$1>${tag}`)
-    : tag + html;
-}
+const RESULTS_CSS = `
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:#fff; color:#202124; }
+  .searchbar { display:flex; gap:8px; padding:16px 20px; border-bottom:1px solid #eee; }
+  .searchbar input { flex:1; height:36px; border-radius:18px; border:1px solid #dadce0;
+    padding:0 16px; font-size:14px; outline:none; }
+  .searchbar button { height:36px; border-radius:18px; border:0; background:#5b21b6;
+    color:#fff; padding:0 18px; font-weight:600; cursor:pointer; }
+  .results { padding:10px 20px 30px; max-width:640px; }
+  .result { margin:0 0 22px; }
+  .r-title { font-size:18px; color:#1a0dab; text-decoration:none; }
+  .r-title:hover { text-decoration:underline; }
+  .r-link { font-size:13px; color:#006621; margin-top:2px; }
+  .r-snip { font-size:13.5px; color:#4d5156; line-height:1.5; margin-top:4px; }
+`;
 
-function escapeHtmlAttr(s: string): string {
-  return s.replace(/[&"<>]/g, (c) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" }[c]!));
+function renderResults(q: string, items: SearchItem[]): string {
+  const rows = items.map((it) => `
+    <div class="result">
+      <a href="${escapeHtml(it.link)}" class="r-title">${escapeHtml(it.title)}</a>
+      <div class="r-link">${escapeHtml(it.displayLink ?? it.link)}</div>
+      ${it.snippet ? `<div class="r-snip">${escapeHtml(it.snippet)}</div>` : ""}
+    </div>`).join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(q)} - Search</title>
+<style>${RESULTS_CSS}</style>
+${CLICK_BRIDGE}
+</head>
+<body>
+  <form class="searchbar" action="/search" method="get">
+    <input type="text" name="q" value="${escapeHtml(q)}" autocomplete="off">
+    <button type="submit">Search</button>
+  </form>
+  <div class="results">${rows || "<p>No results found.</p>"}</div>
+</body>
+</html>`;
 }
 
 function searchShell(q: string, bodyHtml: string): string {
