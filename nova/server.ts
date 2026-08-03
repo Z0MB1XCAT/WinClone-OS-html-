@@ -23,12 +23,15 @@
 // rate-limited, or have its admin disable JSON output at any time, with no
 // notice and nothing you can do about it except switch instances.
 //
-// No env vars are required to get started (SEARX_INSTANCE defaults to a
-// long-running public instance below), but if search stops working, that's
-// almost certainly why. Fix it by setting the SEARX_INSTANCE environment
-// variable to a different instance's URL: browse
-// https://searx.space (sort by "JSON" support) for current options, pick one
-// that lists JSON as enabled, and redeploy — no code changes needed.
+// Because any single instance is a single point of failure, /search tries a
+// short list of instances in order (DEFAULT_SEARX_INSTANCES below) and uses
+// the first one that returns usable JSON, instead of giving up the moment
+// one of them is down. No env vars are required to get started. If none of
+// them work for you, or you'd rather pin one specific instance, set the
+// SEARX_INSTANCE environment variable to its URL (this replaces the list
+// entirely rather than adding to it) — browse https://searx.space (sort by
+// "JSON" support) for current options, pick one that lists JSON as enabled,
+// and redeploy, no code changes needed.
 //
 // Point WinClone's built-in Browser app at the deployed URL (see README.md)
 // to "install" it as a bookmark/shortcut.
@@ -70,26 +73,46 @@ Deno.serve(async (req: Request) => {
   return new Response("Not found", { status: 404 });
 });
 
-// A long-running, well-known public instance. Override with the
-// SEARX_INSTANCE env var if this one ever goes down or turns off JSON
-// output — see the file header for how to find a replacement.
-const SEARX_INSTANCE = (Deno.env.get("SEARX_INSTANCE") ?? "https://searx.be").replace(/\/$/, "");
+// A handful of historically long-running public instances, tried in order.
+// This list will go stale over time — instances shut down, get overloaded,
+// or change their settings — so if every one of these is failing for you,
+// that's expected eventually, not a bug: replace it with current options
+// from https://searx.space (or set SEARX_INSTANCE, see the file header).
+const DEFAULT_SEARX_INSTANCES = ["https://searx.be", "https://priv.au", "https://baresearch.org"];
+const SEARX_INSTANCES = (() => {
+  const override = Deno.env.get("SEARX_INSTANCE");
+  return override ? [override.replace(/\/$/, "")] : DEFAULT_SEARX_INSTANCES;
+})();
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
 type SearxResult = { title?: string; url?: string; content?: string };
+type SearxAttempt = { ok: true; items: SearchItem[] } | { ok: false; reason: string };
 
-// Queries a public SearXNG instance's JSON API and renders the results as a
-// page of this server's own, so it can be shown in an iframe with no
-// framing restriction attached. No API key or account needed, but see the
-// file header: this depends on someone else's free server staying up and
-// keeping JSON output enabled, which is not guaranteed.
+// Tries each configured SearXNG instance in turn and renders the results
+// from the first one that returns usable JSON, as a page of this server's
+// own, so it can be shown in an iframe with no framing restriction attached.
+// No API key or account needed anywhere, but see the file header: this
+// depends on someone else's free server staying up and keeping JSON output
+// enabled, which is never guaranteed for any single instance — hence trying
+// more than one before giving up.
 async function handleSearch(url: URL): Promise<Response> {
   const q = (url.searchParams.get("q") ?? "").trim();
   if (!q) {
     return htmlResponse(searchShell("", "<p>Type something to search for.</p>"));
   }
 
-  const apiUrl = `${SEARX_INSTANCE}/search?q=${encodeURIComponent(q)}&format=json`;
+  const failures: string[] = [];
+  for (const instance of SEARX_INSTANCES) {
+    const attempt = await trySearxInstance(instance, q);
+    if (attempt.ok) return htmlResponse(renderResults(q, attempt.items));
+    failures.push(`${instance} — ${attempt.reason}`);
+  }
+
+  return htmlResponse(searchShell(q, searxTrouble(failures)), 502);
+}
+
+async function trySearxInstance(instance: string, q: string): Promise<SearxAttempt> {
+  const apiUrl = `${instance}/search?q=${encodeURIComponent(q)}&format=json`;
   let text: string;
   try {
     const upstream = await fetch(apiUrl, {
@@ -100,24 +123,19 @@ async function handleSearch(url: URL): Promise<Response> {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "Accept": "application/json",
       },
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(6000),
     });
     text = await upstream.text();
-    if (!upstream.ok) {
-      return htmlResponse(searchShell(q, searxTrouble(`returned HTTP ${upstream.status}`)), 502);
-    }
+    if (!upstream.ok) return { ok: false, reason: `HTTP ${upstream.status}` };
   } catch (err) {
-    return htmlResponse(searchShell(q, searxTrouble(`could not be reached: ${escapeHtml(String(err))}`)), 502);
+    return { ok: false, reason: `unreachable (${String(err)})` };
   }
 
   let data: { results?: SearxResult[] };
   try {
     data = JSON.parse(text);
   } catch {
-    return htmlResponse(
-      searchShell(q, searxTrouble("didn't return JSON (it may not have JSON output enabled, or may be showing a CAPTCHA)")),
-      502,
-    );
+    return { ok: false, reason: "didn't return JSON (no JSON output enabled, or showing a CAPTCHA)" };
   }
 
   const items: SearchItem[] = (data.results ?? []).filter((r) => r.url).map((r) => ({
@@ -126,7 +144,7 @@ async function handleSearch(url: URL): Promise<Response> {
     snippet: r.content,
     displayLink: hostOf(r.url!),
   }));
-  return htmlResponse(renderResults(q, items));
+  return { ok: true, items };
 }
 
 function hostOf(u: string): string {
@@ -137,9 +155,11 @@ function hostOf(u: string): string {
   }
 }
 
-function searxTrouble(reason: string): string {
-  return `<p>The public search instance (<code>${escapeHtml(SEARX_INSTANCE)}</code>) ${reason}.</p>
-    <p>Public SearXNG instances are free, volunteer-run servers, so this can happen. Browse
+function searxTrouble(failures: string[]): string {
+  const list = failures.map((f) => `<li><code>${escapeHtml(f)}</code></li>`).join("");
+  return `<p>None of the public search instances this app tries responded with usable results:</p>
+    <ul>${list}</ul>
+    <p>Public SearXNG instances are free, volunteer-run servers, so this can happen to several at once. Browse
     <a href="https://searx.space" target="_blank" rel="noopener">searx.space</a> for one with JSON output enabled,
     set the <code>SEARX_INSTANCE</code> environment variable to its URL, and redeploy.</p>`;
 }
