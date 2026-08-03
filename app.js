@@ -18,8 +18,13 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.7.1";
+const WC_VERSION = "1.8.0";
 const WC_CHANGELOG = {
+  "1.8.0": [
+    "🎵 Real music. Import an .mp3 (or .wav/.ogg/.m4a) from your computer with File Explorer ▸ right-click ▸ Import files…, and Media Player actually plays it — real waveform, real seek bar, real volume.",
+    "🐍 Python can play it too: winclone.open_app(\"C:/Users/User/Music/song.mp3\") opens the track and starts it.",
+    "🗄️ Songs are far too big for the 5 MB WinClone normally lives in, so they're kept in the browser's larger store and the file system only holds a pointer. Settings ▸ Storage shows how much music you're carrying.",
+  ],
   "1.7.1": [
     "💾 Settings ▸ Storage — a real look at the browser storage WinClone lives in: how much of the ~5 MB is used, what's using it (your files, restore points, the Recycle Bin, a wallpaper, cached system files), and one-click buttons to clear the parts that are safe to clear.",
     "🔄 winclone.reboot() — a Python script can restart the whole PC and keep running through it. Everything closes, the boot splash spins, the lock screen comes back, and when you sign in the script is still going, with all its variables. Rebooting no longer saves you.",
@@ -7624,6 +7629,9 @@ function pyHelpDialog(){
     <code>missing_ok=True</code> to shrug when it's already gone<br>
     <code>winclone.open_app(x)</code> (or <code>winclone.open</code>) — an app id opens the app,
     anything else opens that file or folder with whatever handles it<br>
+    <code>winclone.open_app("C:/Users/User/Music/song.mp3")</code> — opens a track in Media
+    Player and <b>really plays it</b>, if you imported it from your computer
+    (File Explorer ▸ right-click ▸ <i>Import files…</i>)<br>
     <code>winclone.show_py_window(False)</code> — hide the window this script runs in,
     Stop button and all; <code>show_py_window(True)</code> brings it back. The script
     keeps running the whole time<br>
@@ -8583,8 +8591,80 @@ function importImages(targetPath,done){
 
 /* ============================ IMPORT / EXPORT ============================ */
 /* Bridge between the user's real computer and WinClone's virtual filesystem. */
+/* ======================= BIG FILES (music) =======================
+   localStorage is about 5 MB and already holds the entire file system, so a
+   song can't live there — one three-minute MP3 is bigger than the whole quota.
+   Audio goes into IndexedDB instead: hundreds of megabytes, same browser, and
+   still nothing ever leaves this machine. The file system keeps only a pointer
+   (item.audio = the key in here, item.bytes = its size), which costs about
+   forty characters however long the track is.
+
+   Nothing hooks file deletion: wcdbGC() runs at start-up and after emptying
+   the bin, and drops any blob the file system and Recycle Bin no longer
+   mention. One sweep is simpler than catching every delete path, and a blob
+   nobody points at is unreachable anyway. */
+const WCDB_NAME="winclone-files", WCDB_STORE="blobs", WCDB_MAX=30*1024*1024;
+let _wcdbP=null;
+function wcdb(){
+  if(_wcdbP) return _wcdbP;
+  _wcdbP=new Promise((res,rej)=>{
+    const rq=indexedDB.open(WCDB_NAME,1);
+    rq.onupgradeneeded=()=>{ const db=rq.result; if(!db.objectStoreNames.contains(WCDB_STORE)) db.createObjectStore(WCDB_STORE); };
+    rq.onsuccess=()=>res(rq.result);
+    rq.onerror=()=>rej(rq.error);
+  });
+  return _wcdbP;
+}
+function wcdbTx(mode,run){
+  return wcdb().then(db=>new Promise((res,rej)=>{
+    const tx=db.transaction(WCDB_STORE,mode), rq=run(tx.objectStore(WCDB_STORE));
+    tx.oncomplete=()=>res(rq?rq.result:undefined);
+    tx.onerror=()=>rej(tx.error);
+    tx.onabort=()=>rej(tx.error);
+  }));
+}
+function wcdbPut(key,blob){ return wcdbTx("readwrite",st=>st.put(blob,key)); }
+function wcdbGet(key){ return wcdbTx("readonly",st=>st.get(key)); }
+function wcdbClear(){ return wcdbTx("readwrite",st=>st.clear()); }
+function wcdbKey(){ return "a"+Date.now().toString(36)+Math.floor(Math.random()*1679616).toString(36); }
+/* every audio key the file system or the Recycle Bin still refers to */
+function wcdbLiveKeys(){
+  const live=new Set();
+  (function walk(node){
+    Object.keys(node.children||{}).forEach(k=>{
+      const it=node.children[k];
+      if(it.audio) live.add(it.audio);
+      if(it.children) walk(it);
+    });
+  })({children:VFS});
+  (RECYCLE||[]).forEach(r=>{
+    if(r.item&&r.item.audio) live.add(r.item.audio);
+    if(r.item&&r.item.children) (function walk(n){ Object.keys(n.children||{}).forEach(k=>{ const it=n.children[k]; if(it.audio) live.add(it.audio); if(it.children) walk(it); }); })(r.item);
+  });
+  return live;
+}
+function wcdbGC(){
+  return wcdb().then(db=>new Promise(res=>{
+    const live=wcdbLiveKeys(), tx=db.transaction(WCDB_STORE,"readwrite"), st=tx.objectStore(WCDB_STORE);
+    const rq=st.openCursor(); let dropped=0;
+    rq.onsuccess=()=>{ const c=rq.result; if(!c){ return; } if(!live.has(c.key)){ c.delete(); dropped++; } c.continue(); };
+    tx.oncomplete=()=>res(dropped);
+    tx.onerror=()=>res(0);
+  })).catch(()=>0);
+}
+function wcdbUsage(){
+  return wcdb().then(db=>new Promise(res=>{
+    const tx=db.transaction(WCDB_STORE,"readonly"), st=tx.objectStore(WCDB_STORE);
+    const rq=st.openCursor(); let total=0, n=0;
+    rq.onsuccess=()=>{ const c=rq.result; if(!c) return; total+=(c.value&&c.value.size)||0; n++; c.continue(); };
+    tx.oncomplete=()=>res({bytes:total,count:n});
+    tx.onerror=()=>res({bytes:0,count:0});
+  })).catch(()=>({bytes:0,count:0}));
+}
+
+const IE_AUDIO_EXTS=["mp3","wav","ogg","m4a","aac","flac"];
 const IE_TEXT_EXTS=["txt","html","htm","rtf","csv","ini","md","json","log","bat","py","js","css","xml","yml","yaml","cfg","conf"];
-const IE_ACCEPT=".txt,.html,.htm,.docx,.wcdocs,.rtf,.csv,.ini,.md,.json,.log,.bat,.py,.js,.css,.xml,.yml,.yaml,.cfg,.conf,.bmp,.zip,.rar";
+const IE_ACCEPT=".txt,.html,.htm,.docx,.wcdocs,.rtf,.csv,.ini,.md,.json,.log,.bat,.py,.js,.css,.xml,.yml,.yaml,.cfg,.conf,.bmp,.zip,.rar,.mp3,.wav,.ogg,.m4a,.aac,.flac";
 
 /* --- byte / base64 helpers --- */
 function ieB64(bytes){ let s="",CH=0x8000; for(let i=0;i<bytes.length;i+=CH) s+=String.fromCharCode.apply(null,bytes.subarray(i,i+CH)); return btoa(s); }
@@ -8695,6 +8775,12 @@ async function ieImportOne(dest,file){
     catch(e){ item={icon:"📘",doc:true,html:"<p>[Imported Word document — its text couldn't be read.]</p>",content:""}; }
   }
   else if(ext==="bmp"){ item={icon:"🖼️",img:await ieFileDataURL(file)}; }
+  else if(IE_AUDIO_EXTS.includes(ext)){
+    if(file.size>WCDB_MAX) throw new Error("that track is too big — "+rpSizeLabel(file.size)+", the limit is "+rpSizeLabel(WCDB_MAX));
+    const key=wcdbKey();
+    await wcdbPut(key,file);                 // the sound itself goes to IndexedDB…
+    item={icon:"🎵",audio:key,bytes:file.size,mime:file.type||"audio/mpeg"};   // …the file system just points at it
+  }
   else if(ext==="zip"||ext==="rar"){
     const bytes=new Uint8Array(await file.arrayBuffer());
     item={icon:"🗜️",archive:true,raw:ieB64(bytes),mime:file.type||(ext==="zip"?"application/zip":"application/x-rar-compressed"),children:{}};
@@ -8721,6 +8807,14 @@ function ieFileBytes(name,item){
   return enc.encode(item.content||"");
 }
 function exportFile(path,name,item){
+  if(item.audio){                        // the sound lives in IndexedDB, so this one is async
+    wcdbGet(item.audio).then(blob=>{
+      if(!blob){ winDialog({icon:"⚠️",title:"Export failed",msg:"Couldn't read <b>"+esc(name)+"</b> back."}); return; }
+      ieDownload(blob,name);
+      malInfo("📤","Exported","Saved "+name+" to your computer");
+    }).catch(()=>winDialog({icon:"⚠️",title:"Export failed",msg:"Couldn't export <b>"+esc(name)+"</b>."}));
+    return;
+  }
   try{
     const ext=extOf(name); let blob, out=name;
     if(item.folder && !item.archive){
@@ -8901,6 +8995,12 @@ function storagePageHTML(){
       <div class="sz">${rpSizeLabel(g.bytes)}</div>
     </div>`;
   const onHttp=/^https?:$/.test(location.protocol);
+  /* IndexedDB can only be read asynchronously, so the music line is filled in
+     a moment after the page is on screen. */
+  try{ wcdbUsage().then(u=>{
+    const e=document.querySelector("[data-idb]");
+    if(e) e.textContent=u.count?`${rpSizeLabel(u.bytes)} across ${u.count} track${u.count===1?"":"s"}`:"nothing imported yet";
+  }); }catch(e){}
   const cacheBytes=STG_CACHE_KEYS.reduce((n,k)=>n+lsBytes(k),0);
   const foreignRows=s.foreignKeys.slice(0,6).map(([k,b])=>
     `<div class="stg-row small"><div class="n"><b>${esc(k)}</b></div><div class="sz">${rpSizeLabel(b)}</div></div>`).join("");
@@ -8924,6 +9024,12 @@ function storagePageHTML(){
         <div class="sz">${rpSizeLabel(s.foreign)}</div>
       </div>
       ${foreignRows?`<div class="stg-sub">${foreignRows}</div>`:""}
+    </div>
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:8px">
+      <div class="l"><span class="gl">🎵</span><div class="t"><b>Imported music</b>
+        <small>Kept outside the 5 MB, in the browser's larger store — <b data-idb>reading…</b></small></div></div>
+      <div class="stg-note">Songs are far too big for the space above, so they're kept separately.
+        Deleting a track from Music frees its space the next time WinClone starts.</div>
     </div>
     <div class="st-card" style="flex-direction:column;align-items:stretch;gap:12px">
       <div class="l"><span class="gl">🧹</span><div class="t"><b>Free up space</b><small>Nothing here touches your password or your settings</small></div></div>
@@ -9084,7 +9190,7 @@ function buildSettings(body){
       if(what==="bin"){
         winDialog({icon:"🗑️",title:"Empty Recycle Bin",
           msg:`Permanently delete ${RECYCLE.length} item(s)? System files deleted here are <b>gone for good</b> (until a BIOS factory reset).`,
-          buttons:[{label:"Empty it",action:()=>{ RECYCLE.length=0; saveRecycle(); applySystemHealth(); show("storage"); }},{label:"Cancel",primary:true}]});
+          buttons:[{label:"Empty it",action:()=>{ RECYCLE.length=0; saveRecycle(); applySystemHealth(); try{ wcdbGC(); }catch(e){} show("storage"); }},{label:"Cancel",primary:true}]});
       }
     });
   }
@@ -9438,14 +9544,43 @@ function buildMedia(body,win){
         timeEl=body.querySelector(".mp-time");
   const scenes=["🌅","🏙️","🚗","💥","🕵️","❤️","🌇","🎬"];
   let cur=null, t=0, dur=1, playing=false, emojiEl=null;
+  /* An imported track is a real <audio> element fed from IndexedDB; everything
+     else is the pretend player it always was, counting seconds at a made-up
+     duration. `real` says which one is driving the clock. */
+  let audioEl=null, audioURL=null, real=false;
+  const vol=body.querySelector("[data-vol]");
+  function dropAudio(){
+    if(audioEl){ try{ audioEl.pause(); }catch(e){} audioEl.src=""; audioEl=null; }
+    if(audioURL){ try{ URL.revokeObjectURL(audioURL); }catch(e){} audioURL=null; }
+    real=false;
+  }
+  function applyVol(){
+    if(audioEl) audioEl.volume=Math.max(0,Math.min(1,(+vol.value/100)*(typeof masterVol==="number"?masterVol/100:1)));
+  }
   const fmt=s=>Math.floor(s/60)+":"+String(Math.floor(s%60)).padStart(2,"0");
   function load(pn){
+    dropAudio();
     cur=pn; t=0; playing=true; pp.textContent="⏸";
     const node=nodeAt(pn.path);
     const item=(node&&node.children)?node.children[pn.name]:null;
     const art=artFor(pn.name,item||{});
-    const isAudio=/\.(mp3|wav)$/i.test(pn.name);
+    const isAudio=/\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(pn.name);
     dur=isAudio?222:135;
+    if(item&&item.audio){
+      real=true; dur=0;
+      wcdbGet(item.audio).then(blob=>{
+        if(!blob||cur!==pn||!body.isConnected) return;
+        audioURL=URL.createObjectURL(blob);
+        audioEl=new Audio(audioURL);
+        applyVol();
+        audioEl.onloadedmetadata=()=>{ dur=audioEl.duration||0; upd(); };
+        audioEl.onended=()=>{ playing=false; pp.textContent="↺"; upd(); };
+        audioEl.play().catch(()=>{ playing=false; pp.textContent="▶"; upd(); });
+      }).catch(()=>{
+        real=false; dur=222;
+        winDialog({icon:"⚠️",title:pn.name,msg:"That track couldn't be read back. Try importing it again."});
+      });
+    }
     win.querySelector(".tt").textContent=pn.name+" — Media Player";
     if(isAudio){
       stage.style.background="radial-gradient(60% 60% at 50% 40%,#20304a,#0c1420)";
@@ -9471,19 +9606,36 @@ function buildMedia(body,win){
     root.classList.toggle("paused",!playing);
   }
   const iv=setInterval(()=>{
-    if(!body.isConnected){ clearInterval(iv); return; }
-    if(!playing||!cur) return;
+    if(!body.isConnected){ clearInterval(iv); dropAudio(); return; }
+    if(!cur) return;
+    if(real){
+      if(!audioEl) return;
+      t=audioEl.currentTime; playing=!audioEl.paused; upd(); return;
+    }
+    if(!playing) return;
     t+=0.25;
     if(t>=dur){ t=dur; playing=false; pp.textContent="↺"; }
     upd();
   },250);
   pp.onclick=()=>{
     if(!cur) return;
+    if(real&&audioEl){
+      if(audioEl.ended){ audioEl.currentTime=0; audioEl.play(); }
+      else if(audioEl.paused) audioEl.play(); else audioEl.pause();
+      playing=!audioEl.paused; pp.textContent=playing?"⏸":"▶"; upd(); return;
+    }
     if(t>=dur){ t=0; playing=true; }
     else playing=!playing;
     pp.textContent=playing?"⏸":"▶"; upd();
   };
-  seek.oninput=()=>{ if(!cur) return; t=dur*(+seek.value/100); if(!playing&&t<dur) pp.textContent="▶"; upd(); };
+  seek.oninput=()=>{
+    if(!cur) return;
+    t=dur*(+seek.value/100);
+    if(real&&audioEl&&isFinite(dur)&&dur>0) audioEl.currentTime=t;
+    if(!playing&&t<dur) pp.textContent="▶";
+    upd();
+  };
+  vol.oninput=applyVol;
   MP.loader=load;
   if(MP_PENDING){ load(MP_PENDING); MP_PENDING=null; }
 }
@@ -10119,6 +10271,7 @@ function rScreen(s){
         p=100; clearInterval(iv);
         setTimeout(()=>{
           Object.keys(localStorage).filter(k=>k.startsWith("wc_")).forEach(k=>localStorage.removeItem(k));
+          try{ wcdbClear(); }catch(e){}                 // imported music goes too
           location.reload();
         },800);
       }
@@ -10531,6 +10684,7 @@ $("#bios-reset").onclick = ()=>{
   $("#sd-text").textContent="Reinstalling WinClone…";
   setTimeout(()=>{
     Object.keys(localStorage).filter(k=>k.startsWith("wc_")).forEach(k=>localStorage.removeItem(k));
+    try{ wcdbClear(); }catch(e){}                       // imported music goes too
     location.reload();
   },2200);
 };
@@ -10614,3 +10768,5 @@ if(savedWall) applyWallpaper(savedWall);
 lgReset();   // shows the sign-in box, or the forced first-run setup if no password exists
 /* boot splash: spin the dots for a moment, then reveal the lock screen */
 setTimeout(()=>{ const b=$("#boot"); if(b) b.classList.add("hide"); }, 2300);
+/* free the audio of any track that was deleted last session (see wcdbGC) */
+setTimeout(()=>{ try{ wcdbGC(); }catch(e){} }, 4000);
