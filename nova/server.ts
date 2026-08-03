@@ -67,6 +67,18 @@ Deno.serve(async (req: Request) => {
     return handleDebugYoutube();
   }
 
+  if (req.method === "GET" && url.pathname === "/proxy-youtube") {
+    return handleProxyYoutube();
+  }
+
+  if (req.method === "GET" && url.pathname === "/proxy-youtube-test") {
+    return htmlResponse(
+      `<!doctype html><html><head><title>proxy-youtube test</title>` +
+        `<style>body{margin:0}iframe{width:100%;height:100vh;border:0}</style></head>` +
+        `<body><iframe src="/proxy-youtube"></iframe></body></html>`,
+    );
+  }
+
   return new Response("Not found", { status: 404 });
 });
 
@@ -114,6 +126,38 @@ async function handleDebugYoutube(): Promise<Response> {
   return new Response(JSON.stringify(report, null, 2), {
     headers: { "content-type": "application/json" },
   });
+}
+
+// Experiment, step one: fetch the same YouTube page server-side and hand
+// its HTML back completely unmodified, from this domain, deliberately not
+// forwarding YouTube's own X-Frame-Options/CSP headers (the same
+// no-headers-of-theirs approach /search already uses successfully). This
+// answers "does anything render at all when framed" before spending any
+// effort on the much bigger job of rewriting the page's own asset/API
+// references so it would actually function once embedded - almost
+// certainly it won't (relative/absolute URLs on the page still point at
+// youtube.com, and video playback specifically pulls from Google's CDN via
+// signed, session-bound URLs unlikely to survive being served from a
+// different origin), but let's see what actually happens rather than
+// assume. Visit /proxy-youtube-test to see it inside an iframe, which is
+// the scenario that actually matters (a plain top-level visit to
+// /proxy-youtube proves less, since framing is the whole question).
+async function handleProxyYoutube(): Promise<Response> {
+  const target = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  try {
+    const res = await fetch(target, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    const html = await res.text();
+    return htmlResponse(html, res.status);
+  } catch (err) {
+    return htmlResponse(`<p>Could not reach YouTube: ${escapeHtml(String(err))}</p>`, 502);
+  }
 }
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
