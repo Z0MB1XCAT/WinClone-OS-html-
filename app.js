@@ -8663,6 +8663,12 @@ function wcdbUsage(){
 }
 
 const IE_AUDIO_EXTS=["mp3","wav","ogg","m4a","aac","flac"];
+const ZIP_KEEP_RAW=1024*1024;             // biggest archive we keep a byte-for-byte copy of
+/* a zip entry carries no MIME type, so name it from the extension - <audio>
+   won't decode a blob typed application/octet-stream */
+function ieAudioMime(ext){
+  return {mp3:"audio/mpeg",wav:"audio/wav",ogg:"audio/ogg",m4a:"audio/mp4",aac:"audio/aac",flac:"audio/flac"}[ext]||"audio/mpeg";
+}
 const IE_TEXT_EXTS=["txt","html","htm","rtf","csv","ini","md","json","log","bat","py","js","css","xml","yml","yaml","cfg","conf"];
 const IE_ACCEPT=".txt,.html,.htm,.docx,.wcdocs,.rtf,.csv,.ini,.md,.json,.log,.bat,.py,.js,.css,.xml,.yml,.yaml,.cfg,.conf,.bmp,.zip,.rar,.mp3,.wav,.ogg,.m4a,.aac,.flac";
 
@@ -8783,14 +8789,33 @@ async function ieImportOne(dest,file){
   }
   else if(ext==="zip"||ext==="rar"){
     const bytes=new Uint8Array(await file.arrayBuffer());
-    item={icon:"🗜️",archive:true,raw:ieB64(bytes),mime:file.type||(ext==="zip"?"application/zip":"application/x-rar-compressed"),children:{}};
+    item={icon:"🗜️",archive:true,mime:file.type||(ext==="zip"?"application/zip":"application/x-rar-compressed"),children:{}};
+    /* The archive keeps a base64 copy of itself so it can be exported byte for
+       byte — but base64 is a third bigger again, and it all lands in the 5 MB.
+       Past ZIP_KEEP_RAW we drop that copy and rebuild the zip from its contents
+       if it's ever exported: a big archive that imports beats a small one that
+       fits. */
+    if(bytes.length<=ZIP_KEEP_RAW) item.raw=ieB64(bytes);
+    else item.rebuilt=true;
     if(ext==="zip"){ try{
       const map=await ieReadZip(bytes), kids={};
-      Object.keys(map).forEach(k=>{ const bn=uniqueName({children:kids},k.split("/").pop()||"file"), e2=extOf(bn);
-        kids[bn]= IE_TEXT_EXTS.includes(e2) ? {icon:glyphFor(bn,{}),content:new TextDecoder().decode(map[k])}
-                : /^(png|jpe?g|gif|bmp|webp)$/.test(e2) ? {icon:"🖼️",img:"data:image/"+(e2==="jpg"?"jpeg":e2)+";base64,"+ieB64(map[k])}
-                : {icon:glyphFor(bn,{}),raw:ieB64(map[k]),mime:"application/octet-stream"};
-      });
+      for(const k of Object.keys(map)){
+        const bn=uniqueName({children:kids},k.split("/").pop()||"file"), e2=extOf(bn);
+        if(IE_TEXT_EXTS.includes(e2)) kids[bn]={icon:glyphFor(bn,{}),content:new TextDecoder().decode(map[k])};
+        else if(/^(png|jpe?g|gif|bmp|webp)$/.test(e2)) kids[bn]={icon:"🖼️",img:"data:image/"+(e2==="jpg"?"jpeg":e2)+";base64,"+ieB64(map[k])};
+        else if(IE_AUDIO_EXTS.includes(e2)){
+          /* a song out of a zip is still a song: same IndexedDB treatment as a
+             direct import, otherwise it lands in the file system as base64 and
+             is both unplayable and far too big */
+          const blob=new Blob([map[k]],{type:ieAudioMime(e2)});
+          if(blob.size<=WCDB_MAX){
+            const key=wcdbKey();
+            await wcdbPut(key,blob);
+            kids[bn]={icon:"🎵",audio:key,bytes:blob.size,mime:blob.type};
+          } else kids[bn]={icon:"🎵",content:"["+bn+" was "+rpSizeLabel(blob.size)+" — too big to keep]"};
+        }
+        else kids[bn]={icon:glyphFor(bn,{}),raw:ieB64(map[k]),mime:"application/octet-stream"};
+      }
       item.children=kids;
     }catch(e){} }
   }
