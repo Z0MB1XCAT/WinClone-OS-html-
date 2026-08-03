@@ -9,15 +9,16 @@
  * all for free.
  *
  * Unlike the built-in "Microsoft Edge" (which fakes its search results),
- * typing a search on Macrohard Edgy's home page or address bar opens a real,
- * live DuckDuckGo results page. It opens in a genuine new browser tab rather
- * than an embedded frame, because search-engine results pages universally
- * refuse to be framed by another site (a security header they set on their
- * own servers, not something a front end can talk them out of). Typed URLs
- * and bookmarks still load in a sandboxed iframe right inside the window,
- * the same technique the built-in Edge uses for real sites like Wikipedia.
- * Sites that refuse to be framed (Google, YouTube, Instagram, ...) get a
- * graceful "won't load here" screen with a link to open the real page.
+ * typing a search on Macrohard Edgy's home page or address bar shows real,
+ * live DuckDuckGo results right inside the window. Search-results pages
+ * universally refuse to let another site frame them directly, so instead of
+ * embedding DuckDuckGo itself, this points the iframe at a small proxy on
+ * the user's own AI backend: that server fetches DuckDuckGo's HTML on the
+ * browser's behalf and hands it back from its own domain, which sets no
+ * such restriction. Typed URLs and bookmarks load the same way, straight in
+ * a sandboxed iframe, the technique the built-in Edge uses for real sites
+ * like Wikipedia. Sites that refuse to be framed (Google, YouTube,
+ * Instagram, ...) get a graceful "won't load here" screen instead.
  *
  * Also has: light/dark mode, page zoom, real history, incognito tabs, a tab
  * overflow menu, drag-to-reorder tabs, live favicons, and a collapsible AI
@@ -27,8 +28,11 @@
   "use strict";
 
   /* the user's own AI chat app (its own site, its own backend/API key).
-     This plugin just frames it; it doesn't call any AI API directly. */
+     This plugin frames its chat page as the AI sidebar, and also uses its
+     /search route (a small DuckDuckGo proxy) so search results can be shown
+     in an iframe instead of blocked outright. */
   const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
+  const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
 
   function install(){
     if(APPS.edgy) return; // don't double-install if this file loads twice
@@ -427,12 +431,11 @@
       if(low==="history"){ navTo(t,{type:"history"}); return; }
       const looksUrl = /^https?:\/\//.test(q) || (/^[^\s]+\.[a-z]{2,}(\/|$|\?|#)/i.test(q) && !/\s/.test(q));
       if(!looksUrl){
-        /* real search results pages (DuckDuckGo included) universally refuse
-           to be framed by another site, so this opens the real, live results
-           in a genuine new browser tab instead of a broken embed. */
-        const u = "https://duckduckgo.com/?q="+encodeURIComponent(q);
-        window.open(u, "_blank", "noopener,noreferrer");
-        navTo(t, {type:"searched", q, u});
+        /* real, live DuckDuckGo results, fetched by the user's own AI backend
+           and framed from its domain instead of DuckDuckGo's own (see the
+           file header for why), so this loads right inside the window rather
+           than kicking out to a real browser tab. */
+        navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
         return;
       }
       const u = /^https?:\/\//.test(q) ? q : "https://"+q;
@@ -444,8 +447,7 @@
       const loc = t.stack[t.si];
       if(!loc || loc.type==="home") home(t);
       else if(loc.type==="history") historyPage(t);
-      else if(loc.type==="searched") searchedPage(t, loc);
-      else loadSite(t, loc.u);
+      else loadSite(t, loc);
     }
 
     function home(t){
@@ -454,25 +456,6 @@
       t.pageEl.innerHTML = `
         <div class="logo">${t.incognito?"🕶":"🧭"} Macrohard Edgy</div>
         ${t.incognito?'<div class="priv-sub">Private tab. Sites you visit here won’t be added to History.</div>':""}
-        <input class="edgy-search" placeholder="Search DuckDuckGo or enter a web address">
-        <div class="edgy-shortcuts"></div>`;
-      const search = t.pageEl.querySelector(".edgy-search");
-      search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
-      const sc = t.pageEl.querySelector(".edgy-shortcuts");
-      bookmarks.forEach(b=>{
-        const a=el("a"); a.innerHTML = `<span class="gl">${b.icon||"🌐"}</span>${esc(b.name)}`;
-        a.onclick = ()=>go(t, b.url); sc.appendChild(a);
-      });
-      applyZoom(t); renderTabs(); syncChrome(t);
-    }
-
-    function searchedPage(t, loc){
-      t.displayUrl = ""; t.title = "Search: "+loc.q; t.icon = "🔎"; t.favicon = null;
-      t.pageEl.className = "edgy-page edgy-home"+(t.id===activeId?" active":"");
-      t.pageEl.innerHTML = `
-        <div class="logo">🔎 Search opened in a new tab</div>
-        <div class="priv-sub">DuckDuckGo doesn't allow its results to be shown inside a window, so the real search for &ldquo;${esc(loc.q)}&rdquo; opened in a new browser tab instead.
-          <a class="edgy-openreal" target="_blank" rel="noopener noreferrer" href="${esc(loc.u)}">Didn't open? Click here</a></div>
         <input class="edgy-search" placeholder="Search DuckDuckGo or enter a web address">
         <div class="edgy-shortcuts"></div>`;
       const search = t.pageEl.querySelector(".edgy-search");
@@ -511,16 +494,18 @@
     /* real page in a sandboxed iframe, same locked-down approach the
        built-in Edge uses. Genuinely fetches the live site, but can't reach
        anything of WinClone's. */
-    function loadSite(t, u){
-      t.displayUrl = u; t.title = hostOf(u); t.icon = "🌐"; t.favicon = faviconFor(u);
-      if(edgeBlocked(u)){ showRejected(t,u); return; }
+    function loadSite(t, loc){
+      const u = loc.u;
+      t.displayUrl = u; t.title = loc.label || hostOf(u); t.icon = loc.icon || "🌐";
+      t.favicon = loc.icon ? null : faviconFor(u);
+      if(edgeBlocked(u)){ showRejected(t,loc); return; }
       t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
-      t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(hostOf(u))}…</div>
+      t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
         <iframe class="edgy-frame" referrerpolicy="no-referrer"
           sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
       const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
       let done=false;
-      const timer = setTimeout(()=>{ if(!done){ done=true; showRejected(t,u); } }, 8000);
+      const timer = setTimeout(()=>{ if(!done){ done=true; showRejected(t,loc); } }, 10000);
       frame.addEventListener("load", ()=>{
         if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
         if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
@@ -528,11 +513,12 @@
       frame.src = u;
       applyZoom(t); renderTabs(); syncChrome(t);
     }
-    function showRejected(t, u){
+    function showRejected(t, loc){
+      const u = loc.u;
       t.pageEl.className = "edgy-page"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-reject">
         <div class="em">🚧</div>
-        <b>${esc(hostOf(u))} won't load here</b>
+        <b>${esc(loc.label||hostOf(u))} won't load here</b>
         <div class="rj-sub">This site tells browsers not to show it inside another page, a real security rule it sets itself, so it wouldn't load in Microsoft Edge here either.</div>
         <div class="rj-btns">
           <button class="edgy-btn pri" data-retry>Try again</button>
@@ -540,7 +526,7 @@
         </div>
         <a class="edgy-openreal" data-real target="_blank" rel="noopener noreferrer" href="${esc(u)}">Open the real page in a new browser tab ↗</a>
       </div>`;
-      t.pageEl.querySelector("[data-retry]").onclick = ()=>loadSite(t,u);
+      t.pageEl.querySelector("[data-retry]").onclick = ()=>loadSite(t,loc);
       t.pageEl.querySelector("[data-home]").onclick = ()=>go(t,"home");
       applyZoom(t); renderTabs(); syncChrome(t);
     }
