@@ -1,4 +1,4 @@
-/*!
+﻿/*!
  * WinClone — a FAN-MADE CONCEPT: a desktop-OS tribute that lives in a browser tab.
  *
  * Copyright (c) 2026 thisisuhhplanetring. All rights reserved.
@@ -18,8 +18,13 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.7.0";
+const WC_VERSION = "1.7.1";
 const WC_CHANGELOG = {
+  "1.7.1": [
+    "💾 Settings ▸ Storage — a real look at the browser storage WinClone lives in: how much of the ~5 MB is used, what's using it (your files, restore points, the Recycle Bin, a wallpaper, cached system files), and one-click buttons to clear the parts that are safe to clear.",
+    "🔄 winclone.reboot() — a Python script can restart the whole PC and keep running through it. Everything closes, the boot splash spins, the lock screen comes back, and when you sign in the script is still going, with all its variables. Rebooting no longer saves you.",
+    "🐍 The new example scripts (platformer.py, world3d.py, engine.py) now reach installs that already existed, instead of only brand-new ones.",
+  ],
   "1.7.0": [
     "🎮 wcgame got a real engine upgrade: rotation and scaling (g.push/pop/translate/rotate/scale), real sprites loaded straight out of your Pictures (g.image, g.draw_image), sprite-sheet animation (g.sheet, g.anim), frame-rate-independent movement (g.dt, g.fps), collision helpers, particles, tweening/easing and richer sound (g.tone, g.play).",
     "🧱 Tilemaps and a real platformer physics helper - g.tilemap() builds a level from text art, g.move_aabb() walks and lands a box on solid tiles for you, gravity and all.",
@@ -5978,6 +5983,36 @@ function makeWincloneModule(io,fn){
     }
     return show;
   });
+
+  /* winclone.reboot() — restart the PC without ending the script.
+     Everything shuts down, the boot splash spins, the lock screen comes back
+     and the user has to sign in again — but this script is never stopped, so
+     its variables are all still there and it carries on at the next line once
+     the desktop is back. Its own window is hidden for the duration and put
+     back afterwards (unless the script hid it itself with show_py_window).
+     Pass wait=False to keep running through the reboot instead of pausing
+     for it. This is a WinClone reboot, not a browser reload — refreshing the
+     page really does end everything. */
+  d.reboot=fn("reboot",function*(a,kw){
+    const wait=(kw&&kw.wait!=null)?pyTruth(kw.wait):(a.length?pyTruth(a[0]):true);
+    const rec=state.wins[io.appId];
+    const wasHidden=!!(rec&&rec.hidden);
+    let landed=false;
+    softReboot({keep:io.appId}).then(ok=>{ landed=ok!==false; });
+    if(!wait) return true;
+    let guard=0;
+    while(!landed && guard++<600) yield {sleep:100};        // shutdown ▸ splash ▸ lock screen
+    while(!$("#login").classList.contains("hide")) yield {sleep:200};   // …and the sign-in
+    yield {sleep:800};
+    if(rec&&rec.el&&!wasHidden){
+      rec.hidden=false;
+      rec.el.style.display="";
+      rec.el.style.zIndex=++state.z;
+      state.focused=io.appId;
+      updateTaskItems();
+    }
+    return true;
+  },true);
   return d;
 }
 
@@ -7591,7 +7626,14 @@ function pyHelpDialog(){
     anything else opens that file or folder with whatever handles it<br>
     <code>winclone.show_py_window(False)</code> — hide the window this script runs in,
     Stop button and all; <code>show_py_window(True)</code> brings it back. The script
-    keeps running the whole time<br><br>
+    keeps running the whole time<br>
+    <code>winclone.reboot()</code> — restarts the PC <b>without ending your script</b>:
+    every window closes, the boot splash spins, the lock screen comes back, and once you
+    sign in your script carries on at the next line with all its variables still set.
+    Add <code>wait=False</code> to keep running through the reboot instead of pausing
+    for it<br>
+    <span style="color:#9a9a9a">That's a WinClone restart, not a browser one — reloading
+    the page really does end everything.</span><br><br>
 
     <b>Taking over the screen — <code>import winclone</code></b><br>
     <code>winclone.effect("melt")</code> — starts a screen effect. It runs over the
@@ -7686,7 +7728,7 @@ try{ const _d=nodeAt(["C:","Users","User","Desktop"]), _w=_d&&_d.children&&_d.ch
 /* one-time: drop the example scripts into Documents\Python on installs that
    predate Python support (defaultFS only covers brand-new installs) */
 try{
-  if(!localStorage.getItem("wc_pysamples3")){
+  if(!localStorage.getItem("wc_pysamples4")){
     const _docs=nodeAt([...HOME_PATH,"Documents"]);
     if(_docs&&_docs.children){
       if(!_docs.children["Python"]) _docs.children["Python"]={folder:true,children:{}};
@@ -7696,7 +7738,7 @@ try{
       });
       saveFS();
     }
-    localStorage.setItem("wc_pysamples3","1");
+    localStorage.setItem("wc_pysamples4","1");
   }
 }catch(e){}
 
@@ -10212,6 +10254,53 @@ function doRestart(){
   stopAllEffectsUI();
   const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
   setTimeout(()=>location.reload(),1600);
+}
+
+/* ---- SOFT REBOOT ----
+   Start ▸ Power ▸ Restart calls location.reload(), which throws the entire JS
+   world away — every running Python script with it. A *soft* reboot walks the
+   machine through the same three screens (shutting down ▸ boot splash ▸ lock
+   screen) without reloading the page, so anything still alive in memory is
+   still alive on the other side. That's what winclone.reboot() uses: the
+   script that asked for the reboot keeps its variables and carries on at the
+   next line once you've signed back in.
+
+   `keep` is an app id whose window survives — hidden, not closed, so its
+   record stays in state.wins and the interpreter's stage.alive() stays true.
+   The file system isn't re-read: saveFS() already writes on every change, so
+   what's in memory and what's in localStorage are the same thing. */
+let REBOOTING=false;
+function softReboot(opts){
+  const keep=(opts&&opts.keep)||null;
+  return new Promise(resolve=>{
+    if(REBOOTING){ resolve(false); return; }
+    REBOOTING=true;
+    stopAllEffectsUI();
+    clearTimeout(ssTimer); if(ssActive) ssStop();
+    closeFlyouts();
+    Object.keys(state.wins).forEach(id=>{
+      if(id===keep){
+        const rec=state.wins[id];
+        rec.hidden=true; rec.vd=0;
+        if(rec.el){ rec.el.style.display="none"; rec.el.classList.remove("vd-off"); }
+      } else closeWin(id);
+    });
+    VD.list=[{name:"Desktop 1"}]; VD.cur=0;      // a fresh boot has one desktop
+    updateTaskItems();
+    const sd=$("#shutdown"), bt=$("#boot");
+    sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
+    setTimeout(()=>{
+      if(bt) bt.classList.remove("hide");        // spinning dots, same as a cold start
+      sd.style.display="none";
+      $("#login").classList.remove("hide");
+      lgReset();
+      setTimeout(()=>{
+        if(bt) bt.classList.add("hide");         // splash lifts, lock screen underneath
+        REBOOTING=false;
+        resolve(true);
+      },2300);
+    },1600);
+  });
 }
 function runUpdateScreen(done){
   $("#login").classList.add("hide");
