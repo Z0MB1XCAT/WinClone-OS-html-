@@ -85,7 +85,12 @@ const SEARX_INSTANCES = (() => {
   // accept a bare host too ("searx.example.com"), not just a full URL,
   // since that's a very easy thing to paste without noticing it's missing
   const withScheme = /^https?:\/\//i.test(override) ? override : `https://${override}`;
-  return [withScheme.replace(/\/$/, "")];
+  const normalized = withScheme.replace(/\/$/, "");
+  // tried first, but still falls through to the built-in list rather than
+  // being the only instance tried - a single instance rate-limiting or
+  // going down shouldn't mean giving up entirely when there are others to
+  // try, override or not
+  return [normalized, ...DEFAULT_SEARX_INSTANCES.filter((u) => u !== normalized)];
 })();
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
