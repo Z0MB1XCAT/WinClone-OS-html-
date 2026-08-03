@@ -81,7 +81,11 @@ Deno.serve(async (req: Request) => {
 const DEFAULT_SEARX_INSTANCES = ["https://searx.be", "https://priv.au", "https://baresearch.org"];
 const SEARX_INSTANCES = (() => {
   const override = Deno.env.get("SEARX_INSTANCE");
-  return override ? [override.replace(/\/$/, "")] : DEFAULT_SEARX_INSTANCES;
+  if (!override) return DEFAULT_SEARX_INSTANCES;
+  // accept a bare host too ("searx.example.com"), not just a full URL,
+  // since that's a very easy thing to paste without noticing it's missing
+  const withScheme = /^https?:\/\//i.test(override) ? override : `https://${override}`;
+  return [withScheme.replace(/\/$/, "")];
 })();
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
