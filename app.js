@@ -7738,6 +7738,93 @@ function pickWallpaperPhoto(){
     loadScaledDataURL(f,1920,url=>{ if(url) setWallpaper(`center/cover no-repeat url('${url}')`); else winDialog({icon:"⚠️",title:"Background",msg:"Couldn't load that image."}); }); };
   inp.click();
 }
+/* ============================== STORAGE ==============================
+   Everything WinClone saves lives in this browser's localStorage, which is
+   roughly 5 MB per origin — and that pool is shared with every other page on
+   the same origin (on file:// that means every local page on the machine, so
+   other projects show up here too). Strings are stored as UTF-16, so one
+   character costs 2 bytes: the honest size of an entry is
+   (key.length + value.length) * 2, which is what everything below counts. */
+const WC_QUOTA=5*1024*1024;
+function lsBytes(k){ try{ const v=localStorage.getItem(k); return v==null?0:(v.length+k.length)*2; }catch(e){ return 0; } }
+const STORAGE_GROUPS=[
+  {label:"Your files",          color:"#4cc2ff", keys:["wc_fs"],       note:"Everything in your virtual file system"},
+  {label:"Restore points",      color:"#2fb8a0", keys:[RP_KEY],        note:"Each snapshot holds a full copy of your files"},
+  {label:"Recycle Bin",         color:"#f7a233", keys:[RC_KEY],        note:"Deleted files still taking up room"},
+  {label:"Wallpaper",           color:"#c58af9", keys:["wc_wall"],     note:"A photo you picked as the background"},
+  {label:"Cached system files", color:"#8a8a8a", keys:["wc_sys_js","wc_sys_css","wc_sys_html"],
+                                                                       note:"A copy of app.js and styles.css, used to boot when WinClone runs from a website"},
+];
+const STG_CACHE_KEYS=["wc_sys_js","wc_sys_css","wc_sys_html"];
+function wcStorageScan(){
+  const claimed=new Set(), groups=[];
+  STORAGE_GROUPS.forEach(g=>{
+    let b=0;
+    g.keys.forEach(k=>{ if(localStorage.getItem(k)!=null){ b+=lsBytes(k); claimed.add(k); } });
+    groups.push({label:g.label,color:g.color,note:g.note,bytes:b});
+  });
+  let other=0, foreign=0; const foreignKeys=[];
+  Object.keys(localStorage).forEach(k=>{
+    if(claimed.has(k)) return;
+    const b=lsBytes(k);
+    if(/^wc_/.test(k)) other+=b;
+    else { foreign+=b; foreignKeys.push([k,b]); }
+  });
+  groups.push({label:"Settings and everything else",color:"#6f7e8c",bytes:other,
+    note:"Your password, theme, accent, icon positions, notifications"});
+  foreignKeys.sort((a,b)=>b[1]-a[1]);
+  const mine=groups.reduce((s,g)=>s+g.bytes,0);
+  return {groups,foreign,foreignKeys,mine,total:mine+foreign,quota:WC_QUOTA};
+}
+function storagePageHTML(){
+  const s=wcStorageScan();
+  const pct=Math.min(100,s.total/s.quota*100);
+  const tone=pct>=85?"#e05c5c":pct>=60?"#f7a233":"#5cd68a";
+  const seg=(bytes,color,label)=>bytes<=0?"":
+    `<div class="stg-seg" style="width:${(bytes/s.quota*100).toFixed(3)}%;background:${color}" title="${esc(label)} — ${rpSizeLabel(bytes)}"></div>`;
+  const row=(g)=>`<div class="stg-row${g.bytes?"":" dim"}">
+      <span class="stg-dot" style="background:${g.color}"></span>
+      <div class="n"><b>${esc(g.label)}</b><small>${esc(g.note)}</small></div>
+      <div class="sz">${rpSizeLabel(g.bytes)}</div>
+    </div>`;
+  const onHttp=/^https?:$/.test(location.protocol);
+  const cacheBytes=STG_CACHE_KEYS.reduce((n,k)=>n+lsBytes(k),0);
+  const foreignRows=s.foreignKeys.slice(0,6).map(([k,b])=>
+    `<div class="stg-row small"><div class="n"><b>${esc(k)}</b></div><div class="sz">${rpSizeLabel(b)}</div></div>`).join("");
+  return `<h2>Storage</h2>
+    ${pct>=85?`<div class="st-card" style="border-color:#e05c5c"><div class="l"><span class="gl">⚠️</span><div class="t"><b style="color:#e05c5c">Nearly full</b><small>New files may stop saving. Clear some space below.</small></div></div></div>`:""}
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:10px">
+      <div class="l"><span class="gl">💾</span><div class="t"><b>Browser storage</b>
+        <small><b style="color:${tone}">${rpSizeLabel(s.total)}</b> of about ${rpSizeLabel(s.quota)} used — ${pct.toFixed(0)}%</small></div></div>
+      <div class="stg-bar">
+        ${s.groups.map(g=>seg(g.bytes,g.color,g.label)).join("")}
+        ${seg(s.foreign,"#3f3f46","Other pages in this browser")}
+      </div>
+      <div class="stg-note">This is the browser's own limit, not a setting — no site can ask for more.
+        Text costs almost nothing; <b>pictures are what fill it up</b>, because they're stored as text.</div>
+    </div>
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:0">
+      ${s.groups.map(row).join("")}
+      <div class="stg-row${s.foreign?"":" dim"}">
+        <span class="stg-dot" style="background:#3f3f46"></span>
+        <div class="n"><b>Other pages in this browser</b><small>${onHttp?"Other sites you've opened from this address":"Every other local page on this machine shares the same space"}</small></div>
+        <div class="sz">${rpSizeLabel(s.foreign)}</div>
+      </div>
+      ${foreignRows?`<div class="stg-sub">${foreignRows}</div>`:""}
+    </div>
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:12px">
+      <div class="l"><span class="gl">🧹</span><div class="t"><b>Free up space</b><small>Nothing here touches your password or your settings</small></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="st-btn" data-stg="cache"${cacheBytes?"":" disabled"}>Clear cached system files (${rpSizeLabel(cacheBytes)})</button>
+        <button class="st-btn" data-stg="bin"${RECYCLE.length?"":" disabled"}>Empty Recycle Bin (${RECYCLE.length})</button>
+        <button class="st-btn" data-stg="rp">Manage restore points…</button>
+        <button class="st-btn" data-stg="refresh">Refresh</button>
+      </div>
+      <div class="stg-note">${onHttp
+        ? "Clearing the cached system files makes WinClone download itself again next time it starts, so do it while you're online."
+        : "You're running WinClone straight from a file, so the cached system files aren't used at all here — they're safe to clear."}</div>
+    </div>`;
+}
 function buildSettings(body){
   const curAccent=(localStorage.getItem("wc_accent")||"|").split("|")[0]||"#4cc2ff";
   const curWall=localStorage.getItem("wc_wall")||"";
@@ -7748,7 +7835,7 @@ function buildSettings(body){
   const pages = {
     system:`<h2>System</h2>
       <div class="st-card"><div class="l"><span class="gl">🎨</span><div class="t"><b>Dark mode</b><small>Change the desktop color scheme</small></div></div><div class="toggle ${isDark()?'on':''}" data-t="theme"></div></div>
-      <div class="st-card"><div class="l"><span class="gl">💾</span><div class="t"><b>Storage</b><small>Local Disk (C:) — 214 GB of 512 GB used</small></div></div></div>
+      <div class="st-card link" data-go="storage"><div class="l"><span class="gl">💾</span><div class="t"><b>Storage</b><small>Local Disk (C:) — 214 GB of 512 GB used</small></div></div><span class="st-chev">›</span></div>
       <div class="st-card"><div class="l"><span class="gl">🔔</span><div class="t"><b>Notifications</b><small>Notify me from apps and the system</small></div></div><div class="toggle on"></div></div>
       <div class="st-card"><div class="l"><span class="gl">🔋</span><div class="t"><b>Power &amp; battery</b><small>Balanced — screen off after 10 min</small></div></div></div>`,
     personal:`<h2>Personalization</h2>
@@ -7824,15 +7911,17 @@ function buildSettings(body){
     net:`<h2>Network & internet</h2>
       <div class="st-card"><div class="l"><span class="gl">📶</span><div class="t"><b>Wi-Fi — HOME-5G</b><small>Connected, secured</small></div></div><div class="toggle on"></div></div>
       <div class="st-card"><div class="l"><span class="gl">✈️</span><div class="t"><b>Airplane mode</b><small>Stop wireless communication</small></div></div><div class="toggle"></div></div>`,
+    storage:storagePageHTML,          // a function: the numbers have to be read fresh every time
   };
-  const NAV=[["system","🖥️","System"],["personal","🎨","Personalization"],["accounts","👤","Accounts"],["bt","🔵","Bluetooth &amp; devices"],["net","🌐","Network &amp; internet"],["about","ℹ️","About"]];
+  const pageHTML=p=>typeof pages[p]==="function"?pages[p]():pages[p];
+  const NAV=[["system","🖥️","System"],["storage","💾","Storage"],["personal","🎨","Personalization"],["accounts","👤","Accounts"],["bt","🔵","Bluetooth &amp; devices"],["net","🌐","Network &amp; internet"],["about","ℹ️","About"]];
   const start=(SETTINGS_PENDING&&pages[SETTINGS_PENDING])?SETTINGS_PENDING:"system"; SETTINGS_PENDING=null;
   body.innerHTML=`<div class="settings">
     <div class="st-side">
       <div class="st-user"><div class="avatar" data-avatar>${esc(userInitial())}</div><div><b style="font-size:13px" data-uname>${esc(getUser())}</b><br><small style="color:#9a9a9a;font-size:11px" data-umail>${esc(userEmail())}</small></div></div>
       ${NAV.map(([p,ic,lbl])=>`<div class="st-nav${p===start?' act':''}" style="position:relative" data-p="${p}"><span class="gl">${ic}</span> ${lbl}</div>`).join("")}
     </div>
-    <div class="st-main">${pages[start]}</div>
+    <div class="st-main">${pageHTML(start)}</div>
   </div>`;
   const main=body.querySelector(".st-main");
   function refreshUser(){
@@ -7860,12 +7949,38 @@ function buildSettings(body){
       winDialog({icon:"👤",title:"Accounts",msg:`Hi, <b>${esc(getUser())}</b> 👋 &nbsp;Your name has been updated.`});
     };
     const ui=main.querySelector("[data-uinput]"); if(ui) ui.addEventListener("keydown",e=>{ if(e.key==="Enter"){ const b=main.querySelector("[data-usave]"); if(b) b.click(); } });
+    main.querySelectorAll("[data-go]").forEach(c=>c.onclick=()=>show(c.dataset.go));
+    main.querySelectorAll("[data-stg]").forEach(b=>b.onclick=()=>{
+      const what=b.dataset.stg;
+      if(what==="refresh"){ show("storage"); return; }
+      if(what==="rp"){ openApp("restore"); return; }
+      if(what==="cache"){
+        const freed=STG_CACHE_KEYS.reduce((n,k)=>n+lsBytes(k),0);
+        winDialog({icon:"🧹",title:"Clear cached system files",
+          msg:`Delete the cached copy of WinClone's own code (<b>${rpSizeLabel(freed)}</b>)?<br><br>`+
+              (/^https?:$/.test(location.protocol)
+                ? "WinClone will download itself again the next time it starts, so stay online. Your files, settings and password are not touched."
+                : "You're running from a file, so this copy is never used — it's dead weight. Your files, settings and password are not touched."),
+          buttons:[{label:"Clear it",action:()=>{
+            try{ STG_CACHE_KEYS.forEach(k=>localStorage.removeItem(k)); }catch(e){}
+            show("storage");
+            showToast({icon:"🧹",title:"Storage",body:`Freed ${rpSizeLabel(freed)}.`});
+          }},{label:"Cancel",primary:true}]});
+        return;
+      }
+      if(what==="bin"){
+        winDialog({icon:"🗑️",title:"Empty Recycle Bin",
+          msg:`Permanently delete ${RECYCLE.length} item(s)? System files deleted here are <b>gone for good</b> (until a BIOS factory reset).`,
+          buttons:[{label:"Empty it",action:()=>{ RECYCLE.length=0; saveRecycle(); applySystemHealth(); show("storage"); }},{label:"Cancel",primary:true}]});
+      }
+    });
+  }
+  function show(p){
+    body.querySelectorAll(".st-nav").forEach(x=>x.classList.toggle("act",x.dataset.p===p));
+    main.innerHTML=pageHTML(p); main.scrollTop=0; wire();
   }
   wire();
-  body.querySelectorAll(".st-nav").forEach(n=>n.onclick=()=>{
-    body.querySelectorAll(".st-nav").forEach(x=>x.classList.remove("act")); n.classList.add("act");
-    main.innerHTML=pages[n.dataset.p]; wire();
-  });
+  body.querySelectorAll(".st-nav").forEach(n=>n.onclick=()=>show(n.dataset.p));
 }
 function setTheme(dark){
   const d=$("#desktop");
