@@ -8831,26 +8831,45 @@ function ieFileBytes(name,item){
   if(item.doc) return enc.encode(wcdocsSerialize(item));
   return enc.encode(item.content||"");
 }
-function exportFile(path,name,item){
-  if(item.audio){                        // the sound lives in IndexedDB, so this one is async
-    wcdbGet(item.audio).then(blob=>{
-      if(!blob){ winDialog({icon:"⚠️",title:"Export failed",msg:"Couldn't read <b>"+esc(name)+"</b> back."}); return; }
-      ieDownload(blob,name);
-      malInfo("📤","Exported","Saved "+name+" to your computer");
-    }).catch(()=>winDialog({icon:"⚠️",title:"Export failed",msg:"Couldn't export <b>"+esc(name)+"</b>."}));
-    return;
+/* The bytes of one file, for packing into a zip. Audio is the odd one out: it
+   isn't in the item at all, it's a key into IndexedDB, and reading it back is
+   asynchronous — which is why every zip-building path below has to await. Get
+   this wrong and the song packs as zero bytes: a zip that opens fine and holds
+   a silent, "corrupted" track. */
+async function ieFileBytesAsync(name,item){
+  if(item.audio){
+    const blob=await wcdbGet(item.audio);
+    if(!blob) throw new Error("the audio for "+name+" is missing");
+    return new Uint8Array(await blob.arrayBuffer());
   }
+  return ieFileBytes(name,item);
+}
+async function exportFile(path,name,item){
   try{
     const ext=extOf(name); let blob, out=name;
     if(item.folder && !item.archive){
-      const files=[]; (function walk(node,pre){ Object.keys(node.children||{}).forEach(k=>{ const it=node.children[k]; if(it.folder&&!it.archive) walk(it,pre+k+"/"); else files.push({name:pre+k,bytes:ieFileBytes(k,it)}); }); })(item,"");
-      blob=ieBuildZip(files); out=name+".zip";
+      const files=[]; (function walk(node,pre){ Object.keys(node.children||{}).forEach(k=>{ const it=node.children[k]; if(it.folder&&!it.archive) walk(it,pre+k+"/"); else files.push({name:pre+k,item:it}); }); })(item,"");
+      const packed=[];
+      for(const f of files) packed.push({name:f.name,bytes:await ieFileBytesAsync(f.name,f.item)});
+      blob=ieBuildZip(packed); out=name+".zip";
+    }
+    else if(item.audio){                   // a track on its own: hand back the original file
+      const b=await wcdbGet(item.audio);
+      if(!b) throw new Error("audio missing");
+      blob=b;
     }
     else if(ext==="wcdocs") blob=new Blob([wcdocsSerialize(item)],{type:"application/octet-stream"});
     else if(ext==="docx") blob=ieDocToDocx((item.content||"").split(/\r?\n/));
     else if(item.raw) blob=new Blob([ieUnB64(item.raw)],{type:item.mime||"application/octet-stream"});
     else if(item.img){ const u=(item.img.match(/data:[^)'"]+/)||[item.img])[0]; blob=new Blob([ieDataURLBytes(u)],{type:(u.match(/data:([^;]+)/)||[])[1]||"image/png"}); if(!/\.[a-z0-9]+$/i.test(out)) out+=".png"; }
-    else if(item.archive){ const files=[]; Object.keys(item.children||{}).forEach(k=>{ const it=item.children[k]; if(!it.folder) files.push({name:k,bytes:ieFileBytes(k,it)}); }); blob=ieBuildZip(files); if(!/\.(zip|rar)$/i.test(out)) out+=".zip"; }
+    else if(item.archive){
+      const packed=[];
+      for(const k of Object.keys(item.children||{})){
+        const it=item.children[k];
+        if(!it.folder) packed.push({name:k,bytes:await ieFileBytesAsync(k,it)});
+      }
+      blob=ieBuildZip(packed); if(!/\.(zip|rar)$/i.test(out)) out+=".zip";
+    }
     else blob=new Blob([item.content||""],{type:"text/plain"});
     ieDownload(blob,out);
     malInfo("📤","Exported","Saved "+out+" to your computer");
