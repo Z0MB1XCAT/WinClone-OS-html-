@@ -18,6 +18,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WinClone</title>
+<!-- Supabase client — powers WinClone Accounts. If this fails to load (offline,
+     or opened from file://), app.js notices and falls back to a single local PC. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
 /* ===== WinClone bootstrap / installer =====
    On http(s) (e.g. GitHub Pages) WinClone runs an *installed* copy of its own code
@@ -32,7 +35,7 @@
    menus). So bump HTML_BUILD whenever the markup below changes structurally — an
    installed copy stamped with a different build is discarded and re-downloaded
    automatically instead of being booted. */
-var HTML_BUILD = "1.5.0-win10";
+var HTML_BUILD = "1.6.0-win10";
 (function(){
   var http = /^https?:$/.test(location.protocol);
   var stale = localStorage.getItem("wc_sys_html") !== HTML_BUILD;
@@ -170,8 +173,57 @@ var HTML_BUILD = "1.5.0-win10";
   <div class="bt-ring"><i></i><i></i><i></i><i></i><i></i><i></i></div>
 </div>
 
-<!-- LOGIN -->
-<div id="login">
+<!-- WINCLONE ACCOUNT (sign in / register) — shown before the PC picker -->
+<div id="account">
+  <div class="ac-card">
+    <svg class="ac-logo" viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="#4aa3ff" d="M0 1 L7 1 L9 4.5 L7 8 L9 11.5 L7 15 L0 15 Z"/>
+      <path fill="#4aa3ff" d="M9 1 L16 1 L16 15 L9 15 L11 11.5 L9 8 L11 4.5 Z"/>
+    </svg>
+    <div class="ac-title" id="ac-title">Sign in to WinClone</div>
+    <div class="ac-sub" id="ac-sub">Your PCs follow you to any computer you sign in from.</div>
+
+    <button class="ac-google" id="ac-google">
+      <svg viewBox="0 0 18 18" aria-hidden="true">
+        <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/>
+        <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
+        <path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 0 1 0-3.44V4.95H.96a9 9 0 0 0 0 8.1l3.01-2.33z"/>
+        <path fill="#EA4335" d="M9 3.58c1.32 0 2.5.46 3.44 1.35l2.58-2.58C13.46.9 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/>
+      </svg>
+      <span>Continue with Google</span>
+    </button>
+
+    <div class="ac-or"><i></i><span>or</span><i></i></div>
+
+    <input id="ac-email" type="email" placeholder="Email" autocomplete="username" spellcheck="false">
+    <input id="ac-pass" type="password" placeholder="Password" autocomplete="current-password">
+    <div class="ac-err" id="ac-err"></div>
+    <button class="ac-go" id="ac-go">Sign in</button>
+    <button class="lg-link" id="ac-swap">Don't have an account? Create one</button>
+    <div class="ac-offline" id="ac-offline"></div>
+  </div>
+  <div class="lg-credit">WinClone — a fanmade concept by thisisuhhplanetring · © 2026 · Not affiliated with Microsoft</div>
+</div>
+
+<!-- PC PICKER — the saved desktops on this account (max 3) -->
+<div id="pcs">
+  <div class="pc-wrap">
+    <div class="pc-head">
+      <div class="pc-title">Choose a PC</div>
+      <div class="pc-sub">Each one keeps its own files, wallpaper and password.</div>
+    </div>
+    <div class="pc-grid" id="pc-grid"></div>
+    <div class="pc-foot">
+      <span id="pc-who"></span>
+      <button class="lg-link" id="pc-signout">Sign out</button>
+    </div>
+  </div>
+  <div class="lg-credit">WinClone — a fanmade concept by thisisuhhplanetring · © 2026 · Not affiliated with Microsoft</div>
+</div>
+
+<!-- LOGIN — starts hidden: the account screen and PC picker come first, and
+     whoever decides a PC is in play (acBoot, or the offline fallback) reveals it. -->
+<div id="login" class="hide">
   <div class="clock-big" id="lg-time">12:00</div>
   <div class="date-big" id="lg-date">Wednesday, July 8</div>
   <div class="lg-user">
