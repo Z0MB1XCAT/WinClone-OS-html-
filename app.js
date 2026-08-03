@@ -8147,7 +8147,11 @@ function winDialog(o){
   const W=d.offsetWidth,H=d.offsetHeight;
   d.style.left=(o.x!=null?Math.min(o.x,innerWidth-W-10):Math.max(10,(innerWidth-W)/2+(Math.random()*60-30)))+"px";
   d.style.top =(o.y!=null?Math.min(o.y,innerHeight-H-10):Math.max(10,(innerHeight-H)/2+(Math.random()*40-20)))+"px";
-  d.style.zIndex=60000+(++state.z);
+  /* Normal dialogs live above the windows (60000). `top` lifts one above the
+     full-screen overlays — account screen and PC picker sit at 99998 — while
+     staying under BSOD (200000) and BIOS (200001) so the escape hatches always
+     stay clickable. Without it a dialog opened from the picker is invisible. */
+  d.style.zIndex=(o.top?199000:60000)+(++state.z);
   return d;
 }
 
@@ -10879,7 +10883,7 @@ async function pcCreate(name){
     pcEnter(data, true);                 // fresh PC: nothing to restore, just boot it
   }catch(e){
     const msg=String((e&&e.message)||"");
-    winDialog({icon:"⚠️",title:"WinClone Account",
+    winDialog({icon:"⚠️",title:"WinClone Account",top:true,
       msg: msg.includes("PC_LIMIT")
         ? `You can have ${PC_MAX} PCs on one account. Delete one to make room.`
         : "Couldn't create that PC. Check your connection and try again."});
@@ -10898,7 +10902,7 @@ function pcRename(pc){
   });
 }
 function pcDelete(pc){
-  winDialog({icon:"🗑",title:"Delete this PC?",
+  winDialog({icon:"🗑",title:"Delete this PC?",top:true,
     msg:`<b>${esc(pc.name)}</b> and everything on it — files, wallpaper, settings — will be gone for good.<br>
          <small style="color:#9a9a9a">This can't be undone.</small>`,
     buttons:[
@@ -10953,7 +10957,7 @@ function pcOfferImport(){
       if(error) throw error;
       pcEnter(row2, true);               // already in localStorage — don't re-download it
     }catch(e){
-      winDialog({icon:"⚠️",title:"WinClone Account",msg:"Couldn't save that desktop. Check your connection and try again."});
+      winDialog({icon:"⚠️",title:"WinClone Account",top:true,msg:"Couldn't save that desktop. Check your connection and try again."});
       pcRefresh();
     }
   };
