@@ -1,4 +1,4 @@
-/*!
+﻿/*!
  * WinClone — a FAN-MADE CONCEPT: a desktop-OS tribute that lives in a browser tab.
  *
  * Copyright (c) 2026 thisisuhhplanetring. All rights reserved.
@@ -18,8 +18,13 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.7.0";
+const WC_VERSION = "1.7.1";
 const WC_CHANGELOG = {
+  "1.7.1": [
+    "💾 Settings ▸ Storage — a real look at the browser storage WinClone lives in: how much of the ~5 MB is used, what's using it (your files, restore points, the Recycle Bin, a wallpaper, cached system files), and one-click buttons to clear the parts that are safe to clear.",
+    "🔄 winclone.reboot() — a Python script can restart the whole PC and keep running through it. Everything closes, the boot splash spins, the lock screen comes back, and when you sign in the script is still going, with all its variables. Rebooting no longer saves you.",
+    "🐍 The new example scripts (platformer.py, world3d.py, engine.py) now reach installs that already existed, instead of only brand-new ones.",
+  ],
   "1.7.0": [
     "🎮 wcgame got a real engine upgrade: rotation and scaling (g.push/pop/translate/rotate/scale), real sprites loaded straight out of your Pictures (g.image, g.draw_image), sprite-sheet animation (g.sheet, g.anim), frame-rate-independent movement (g.dt, g.fps), collision helpers, particles, tweening/easing and richer sound (g.tone, g.play).",
     "🧱 Tilemaps and a real platformer physics helper - g.tilemap() builds a level from text art, g.move_aabb() walks and lands a box on solid tiles for you, gravity and all.",
@@ -5978,6 +5983,36 @@ function makeWincloneModule(io,fn){
     }
     return show;
   });
+
+  /* winclone.reboot() — restart the PC without ending the script.
+     Everything shuts down, the boot splash spins, the lock screen comes back
+     and the user has to sign in again — but this script is never stopped, so
+     its variables are all still there and it carries on at the next line once
+     the desktop is back. Its own window is hidden for the duration and put
+     back afterwards (unless the script hid it itself with show_py_window).
+     Pass wait=False to keep running through the reboot instead of pausing
+     for it. This is a WinClone reboot, not a browser reload — refreshing the
+     page really does end everything. */
+  d.reboot=fn("reboot",function*(a,kw){
+    const wait=(kw&&kw.wait!=null)?pyTruth(kw.wait):(a.length?pyTruth(a[0]):true);
+    const rec=state.wins[io.appId];
+    const wasHidden=!!(rec&&rec.hidden);
+    let landed=false;
+    softReboot({keep:io.appId}).then(ok=>{ landed=ok!==false; });
+    if(!wait) return true;
+    let guard=0;
+    while(!landed && guard++<600) yield {sleep:100};        // shutdown ▸ splash ▸ lock screen
+    while(!$("#login").classList.contains("hide")) yield {sleep:200};   // …and the sign-in
+    yield {sleep:800};
+    if(rec&&rec.el&&!wasHidden){
+      rec.hidden=false;
+      rec.el.style.display="";
+      rec.el.style.zIndex=++state.z;
+      state.focused=io.appId;
+      updateTaskItems();
+    }
+    return true;
+  },true);
   return d;
 }
 
@@ -7591,7 +7626,14 @@ function pyHelpDialog(){
     anything else opens that file or folder with whatever handles it<br>
     <code>winclone.show_py_window(False)</code> — hide the window this script runs in,
     Stop button and all; <code>show_py_window(True)</code> brings it back. The script
-    keeps running the whole time<br><br>
+    keeps running the whole time<br>
+    <code>winclone.reboot()</code> — restarts the PC <b>without ending your script</b>:
+    every window closes, the boot splash spins, the lock screen comes back, and once you
+    sign in your script carries on at the next line with all its variables still set.
+    Add <code>wait=False</code> to keep running through the reboot instead of pausing
+    for it<br>
+    <span style="color:#9a9a9a">That's a WinClone restart, not a browser one — reloading
+    the page really does end everything.</span><br><br>
 
     <b>Taking over the screen — <code>import winclone</code></b><br>
     <code>winclone.effect("melt")</code> — starts a screen effect. It runs over the
@@ -7686,7 +7728,7 @@ try{ const _d=nodeAt(["C:","Users","User","Desktop"]), _w=_d&&_d.children&&_d.ch
 /* one-time: drop the example scripts into Documents\Python on installs that
    predate Python support (defaultFS only covers brand-new installs) */
 try{
-  if(!localStorage.getItem("wc_pysamples3")){
+  if(!localStorage.getItem("wc_pysamples4")){
     const _docs=nodeAt([...HOME_PATH,"Documents"]);
     if(_docs&&_docs.children){
       if(!_docs.children["Python"]) _docs.children["Python"]={folder:true,children:{}};
@@ -7696,7 +7738,7 @@ try{
       });
       saveFS();
     }
-    localStorage.setItem("wc_pysamples3","1");
+    localStorage.setItem("wc_pysamples4","1");
   }
 }catch(e){}
 
@@ -8809,6 +8851,93 @@ function pickWallpaperPhoto(){
     loadScaledDataURL(f,1920,url=>{ if(url) setWallpaper(`center/cover no-repeat url('${url}')`); else winDialog({icon:"⚠️",title:"Background",msg:"Couldn't load that image."}); }); };
   inp.click();
 }
+/* ============================== STORAGE ==============================
+   Everything WinClone saves lives in this browser's localStorage, which is
+   roughly 5 MB per origin — and that pool is shared with every other page on
+   the same origin (on file:// that means every local page on the machine, so
+   other projects show up here too). Strings are stored as UTF-16, so one
+   character costs 2 bytes: the honest size of an entry is
+   (key.length + value.length) * 2, which is what everything below counts. */
+const WC_QUOTA=5*1024*1024;
+function lsBytes(k){ try{ const v=localStorage.getItem(k); return v==null?0:(v.length+k.length)*2; }catch(e){ return 0; } }
+const STORAGE_GROUPS=[
+  {label:"Your files",          color:"#4cc2ff", keys:["wc_fs"],       note:"Everything in your virtual file system"},
+  {label:"Restore points",      color:"#2fb8a0", keys:[RP_KEY],        note:"Each snapshot holds a full copy of your files"},
+  {label:"Recycle Bin",         color:"#f7a233", keys:[RC_KEY],        note:"Deleted files still taking up room"},
+  {label:"Wallpaper",           color:"#c58af9", keys:["wc_wall"],     note:"A photo you picked as the background"},
+  {label:"Cached system files", color:"#8a8a8a", keys:["wc_sys_js","wc_sys_css","wc_sys_html"],
+                                                                       note:"A copy of app.js and styles.css, used to boot when WinClone runs from a website"},
+];
+const STG_CACHE_KEYS=["wc_sys_js","wc_sys_css","wc_sys_html"];
+function wcStorageScan(){
+  const claimed=new Set(), groups=[];
+  STORAGE_GROUPS.forEach(g=>{
+    let b=0;
+    g.keys.forEach(k=>{ if(localStorage.getItem(k)!=null){ b+=lsBytes(k); claimed.add(k); } });
+    groups.push({label:g.label,color:g.color,note:g.note,bytes:b});
+  });
+  let other=0, foreign=0; const foreignKeys=[];
+  Object.keys(localStorage).forEach(k=>{
+    if(claimed.has(k)) return;
+    const b=lsBytes(k);
+    if(/^wc_/.test(k)) other+=b;
+    else { foreign+=b; foreignKeys.push([k,b]); }
+  });
+  groups.push({label:"Settings and everything else",color:"#6f7e8c",bytes:other,
+    note:"Your password, theme, accent, icon positions, notifications"});
+  foreignKeys.sort((a,b)=>b[1]-a[1]);
+  const mine=groups.reduce((s,g)=>s+g.bytes,0);
+  return {groups,foreign,foreignKeys,mine,total:mine+foreign,quota:WC_QUOTA};
+}
+function storagePageHTML(){
+  const s=wcStorageScan();
+  const pct=Math.min(100,s.total/s.quota*100);
+  const tone=pct>=85?"#e05c5c":pct>=60?"#f7a233":"#5cd68a";
+  const seg=(bytes,color,label)=>bytes<=0?"":
+    `<div class="stg-seg" style="width:${(bytes/s.quota*100).toFixed(3)}%;background:${color}" title="${esc(label)} — ${rpSizeLabel(bytes)}"></div>`;
+  const row=(g)=>`<div class="stg-row${g.bytes?"":" dim"}">
+      <span class="stg-dot" style="background:${g.color}"></span>
+      <div class="n"><b>${esc(g.label)}</b><small>${esc(g.note)}</small></div>
+      <div class="sz">${rpSizeLabel(g.bytes)}</div>
+    </div>`;
+  const onHttp=/^https?:$/.test(location.protocol);
+  const cacheBytes=STG_CACHE_KEYS.reduce((n,k)=>n+lsBytes(k),0);
+  const foreignRows=s.foreignKeys.slice(0,6).map(([k,b])=>
+    `<div class="stg-row small"><div class="n"><b>${esc(k)}</b></div><div class="sz">${rpSizeLabel(b)}</div></div>`).join("");
+  return `<h2>Storage</h2>
+    ${pct>=85?`<div class="st-card" style="border-color:#e05c5c"><div class="l"><span class="gl">⚠️</span><div class="t"><b style="color:#e05c5c">Nearly full</b><small>New files may stop saving. Clear some space below.</small></div></div></div>`:""}
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:10px">
+      <div class="l"><span class="gl">💾</span><div class="t"><b>Browser storage</b>
+        <small><b style="color:${tone}">${rpSizeLabel(s.total)}</b> of about ${rpSizeLabel(s.quota)} used — ${pct.toFixed(0)}%</small></div></div>
+      <div class="stg-bar">
+        ${s.groups.map(g=>seg(g.bytes,g.color,g.label)).join("")}
+        ${seg(s.foreign,"#3f3f46","Other pages in this browser")}
+      </div>
+      <div class="stg-note">This is the browser's own limit, not a setting — no site can ask for more.
+        Text costs almost nothing; <b>pictures are what fill it up</b>, because they're stored as text.</div>
+    </div>
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:0">
+      ${s.groups.map(row).join("")}
+      <div class="stg-row${s.foreign?"":" dim"}">
+        <span class="stg-dot" style="background:#3f3f46"></span>
+        <div class="n"><b>Other pages in this browser</b><small>${onHttp?"Other sites you've opened from this address":"Every other local page on this machine shares the same space"}</small></div>
+        <div class="sz">${rpSizeLabel(s.foreign)}</div>
+      </div>
+      ${foreignRows?`<div class="stg-sub">${foreignRows}</div>`:""}
+    </div>
+    <div class="st-card" style="flex-direction:column;align-items:stretch;gap:12px">
+      <div class="l"><span class="gl">🧹</span><div class="t"><b>Free up space</b><small>Nothing here touches your password or your settings</small></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="st-btn" data-stg="cache"${cacheBytes?"":" disabled"}>Clear cached system files (${rpSizeLabel(cacheBytes)})</button>
+        <button class="st-btn" data-stg="bin"${RECYCLE.length?"":" disabled"}>Empty Recycle Bin (${RECYCLE.length})</button>
+        <button class="st-btn" data-stg="rp">Manage restore points…</button>
+        <button class="st-btn" data-stg="refresh">Refresh</button>
+      </div>
+      <div class="stg-note">${onHttp
+        ? "Clearing the cached system files makes WinClone download itself again next time it starts, so do it while you're online."
+        : "You're running WinClone straight from a file, so the cached system files aren't used at all here — they're safe to clear."}</div>
+    </div>`;
+}
 function buildSettings(body){
   const curAccent=(localStorage.getItem("wc_accent")||"|").split("|")[0]||"#4cc2ff";
   const curWall=localStorage.getItem("wc_wall")||"";
@@ -8819,7 +8948,7 @@ function buildSettings(body){
   const pages = {
     system:`<h2>System</h2>
       <div class="st-card"><div class="l"><span class="gl">🎨</span><div class="t"><b>Dark mode</b><small>Change the desktop color scheme</small></div></div><div class="toggle ${isDark()?'on':''}" data-t="theme"></div></div>
-      <div class="st-card"><div class="l"><span class="gl">💾</span><div class="t"><b>Storage</b><small>Local Disk (C:) — 214 GB of 512 GB used</small></div></div></div>
+      <div class="st-card link" data-go="storage"><div class="l"><span class="gl">💾</span><div class="t"><b>Storage</b><small>Local Disk (C:) — 214 GB of 512 GB used</small></div></div><span class="st-chev">›</span></div>
       <div class="st-card"><div class="l"><span class="gl">🔔</span><div class="t"><b>Notifications</b><small>Notify me from apps and the system</small></div></div><div class="toggle on"></div></div>
       <div class="st-card"><div class="l"><span class="gl">🔋</span><div class="t"><b>Power &amp; battery</b><small>Balanced — screen off after 10 min</small></div></div></div>`,
     personal:`<h2>Personalization</h2>
@@ -8895,15 +9024,17 @@ function buildSettings(body){
     net:`<h2>Network & internet</h2>
       <div class="st-card"><div class="l"><span class="gl">📶</span><div class="t"><b>Wi-Fi — HOME-5G</b><small>Connected, secured</small></div></div><div class="toggle on"></div></div>
       <div class="st-card"><div class="l"><span class="gl">✈️</span><div class="t"><b>Airplane mode</b><small>Stop wireless communication</small></div></div><div class="toggle"></div></div>`,
+    storage:storagePageHTML,          // a function: the numbers have to be read fresh every time
   };
-  const NAV=[["system","🖥️","System"],["personal","🎨","Personalization"],["accounts","👤","Accounts"],["bt","🔵","Bluetooth &amp; devices"],["net","🌐","Network &amp; internet"],["about","ℹ️","About"]];
+  const pageHTML=p=>typeof pages[p]==="function"?pages[p]():pages[p];
+  const NAV=[["system","🖥️","System"],["storage","💾","Storage"],["personal","🎨","Personalization"],["accounts","👤","Accounts"],["bt","🔵","Bluetooth &amp; devices"],["net","🌐","Network &amp; internet"],["about","ℹ️","About"]];
   const start=(SETTINGS_PENDING&&pages[SETTINGS_PENDING])?SETTINGS_PENDING:"system"; SETTINGS_PENDING=null;
   body.innerHTML=`<div class="settings">
     <div class="st-side">
       <div class="st-user"><div class="avatar" data-avatar>${esc(userInitial())}</div><div><b style="font-size:13px" data-uname>${esc(getUser())}</b><br><small style="color:#9a9a9a;font-size:11px" data-umail>${esc(userEmail())}</small></div></div>
       ${NAV.map(([p,ic,lbl])=>`<div class="st-nav${p===start?' act':''}" style="position:relative" data-p="${p}"><span class="gl">${ic}</span> ${lbl}</div>`).join("")}
     </div>
-    <div class="st-main">${pages[start]}</div>
+    <div class="st-main">${pageHTML(start)}</div>
   </div>`;
   const main=body.querySelector(".st-main");
   function refreshUser(){
@@ -8931,12 +9062,38 @@ function buildSettings(body){
       winDialog({icon:"👤",title:"Accounts",msg:`Hi, <b>${esc(getUser())}</b> 👋 &nbsp;Your name has been updated.`});
     };
     const ui=main.querySelector("[data-uinput]"); if(ui) ui.addEventListener("keydown",e=>{ if(e.key==="Enter"){ const b=main.querySelector("[data-usave]"); if(b) b.click(); } });
+    main.querySelectorAll("[data-go]").forEach(c=>c.onclick=()=>show(c.dataset.go));
+    main.querySelectorAll("[data-stg]").forEach(b=>b.onclick=()=>{
+      const what=b.dataset.stg;
+      if(what==="refresh"){ show("storage"); return; }
+      if(what==="rp"){ openApp("restore"); return; }
+      if(what==="cache"){
+        const freed=STG_CACHE_KEYS.reduce((n,k)=>n+lsBytes(k),0);
+        winDialog({icon:"🧹",title:"Clear cached system files",
+          msg:`Delete the cached copy of WinClone's own code (<b>${rpSizeLabel(freed)}</b>)?<br><br>`+
+              (/^https?:$/.test(location.protocol)
+                ? "WinClone will download itself again the next time it starts, so stay online. Your files, settings and password are not touched."
+                : "You're running from a file, so this copy is never used — it's dead weight. Your files, settings and password are not touched."),
+          buttons:[{label:"Clear it",action:()=>{
+            try{ STG_CACHE_KEYS.forEach(k=>localStorage.removeItem(k)); }catch(e){}
+            show("storage");
+            showToast({icon:"🧹",title:"Storage",body:`Freed ${rpSizeLabel(freed)}.`});
+          }},{label:"Cancel",primary:true}]});
+        return;
+      }
+      if(what==="bin"){
+        winDialog({icon:"🗑️",title:"Empty Recycle Bin",
+          msg:`Permanently delete ${RECYCLE.length} item(s)? System files deleted here are <b>gone for good</b> (until a BIOS factory reset).`,
+          buttons:[{label:"Empty it",action:()=>{ RECYCLE.length=0; saveRecycle(); applySystemHealth(); show("storage"); }},{label:"Cancel",primary:true}]});
+      }
+    });
+  }
+  function show(p){
+    body.querySelectorAll(".st-nav").forEach(x=>x.classList.toggle("act",x.dataset.p===p));
+    main.innerHTML=pageHTML(p); main.scrollTop=0; wire();
   }
   wire();
-  body.querySelectorAll(".st-nav").forEach(n=>n.onclick=()=>{
-    body.querySelectorAll(".st-nav").forEach(x=>x.classList.remove("act")); n.classList.add("act");
-    main.innerHTML=pages[n.dataset.p]; wire();
-  });
+  body.querySelectorAll(".st-nav").forEach(n=>n.onclick=()=>show(n.dataset.p));
 }
 function setTheme(dark){
   const d=$("#desktop");
@@ -10097,6 +10254,53 @@ function doRestart(){
   stopAllEffectsUI();
   const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
   setTimeout(()=>location.reload(),1600);
+}
+
+/* ---- SOFT REBOOT ----
+   Start ▸ Power ▸ Restart calls location.reload(), which throws the entire JS
+   world away — every running Python script with it. A *soft* reboot walks the
+   machine through the same three screens (shutting down ▸ boot splash ▸ lock
+   screen) without reloading the page, so anything still alive in memory is
+   still alive on the other side. That's what winclone.reboot() uses: the
+   script that asked for the reboot keeps its variables and carries on at the
+   next line once you've signed back in.
+
+   `keep` is an app id whose window survives — hidden, not closed, so its
+   record stays in state.wins and the interpreter's stage.alive() stays true.
+   The file system isn't re-read: saveFS() already writes on every change, so
+   what's in memory and what's in localStorage are the same thing. */
+let REBOOTING=false;
+function softReboot(opts){
+  const keep=(opts&&opts.keep)||null;
+  return new Promise(resolve=>{
+    if(REBOOTING){ resolve(false); return; }
+    REBOOTING=true;
+    stopAllEffectsUI();
+    clearTimeout(ssTimer); if(ssActive) ssStop();
+    closeFlyouts();
+    Object.keys(state.wins).forEach(id=>{
+      if(id===keep){
+        const rec=state.wins[id];
+        rec.hidden=true; rec.vd=0;
+        if(rec.el){ rec.el.style.display="none"; rec.el.classList.remove("vd-off"); }
+      } else closeWin(id);
+    });
+    VD.list=[{name:"Desktop 1"}]; VD.cur=0;      // a fresh boot has one desktop
+    updateTaskItems();
+    const sd=$("#shutdown"), bt=$("#boot");
+    sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
+    setTimeout(()=>{
+      if(bt) bt.classList.remove("hide");        // spinning dots, same as a cold start
+      sd.style.display="none";
+      $("#login").classList.remove("hide");
+      lgReset();
+      setTimeout(()=>{
+        if(bt) bt.classList.add("hide");         // splash lifts, lock screen underneath
+        REBOOTING=false;
+        resolve(true);
+      },2300);
+    },1600);
+  });
 }
 function runUpdateScreen(done){
   $("#login").classList.add("hide");
