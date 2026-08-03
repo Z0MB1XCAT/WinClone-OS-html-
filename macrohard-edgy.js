@@ -285,7 +285,7 @@
     function renderBookmarksBar(){
       bmBar.innerHTML = "";
       bookmarks.forEach(b=>{
-        const a = el("a"); a.innerHTML = `<span>${b.icon||"🌐"}</span><span>${esc(b.name)}</span>`;
+        const a = el("a"); a.innerHTML = `<span>${esc(b.icon||"🌐")}</span><span>${esc(b.name)}</span>`;
         a.onclick = ()=>go(active(), b.url);
         bmBar.appendChild(a);
       });
@@ -466,7 +466,7 @@
       search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
       const sc = t.pageEl.querySelector(".edgy-shortcuts");
       bookmarks.forEach(b=>{
-        const a=el("a"); a.innerHTML = `<span class="gl">${b.icon||"🌐"}</span>${esc(b.name)}`;
+        const a=el("a"); a.innerHTML = `<span class="gl">${esc(b.icon||"🌐")}</span>${esc(b.name)}`;
         a.onclick = ()=>go(t, b.url); sc.appendChild(a);
       });
       applyZoom(t); renderTabs(); syncChrome(t);
@@ -506,7 +506,7 @@
     function loadSite(t, loc){
       const u = loc.u;
       t.displayUrl = u; t.title = loc.label || hostOf(u); t.icon = loc.icon || "🌐";
-      t.favicon = loc.icon ? null : faviconFor(u);
+      t.favicon = (loc.icon || t.incognito) ? null : faviconFor(u);
       if(edgeBlocked(u)){ loadViaProxy(t,loc); return; }
       t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>

@@ -63,10 +63,6 @@ Deno.serve(async (req: Request) => {
     return handleSearch(url);
   }
 
-  if (req.method === "GET" && url.pathname === "/debug-youtube") {
-    return handleDebugYoutube();
-  }
-
   if (req.method === "GET" && url.pathname === "/proxy") {
     return handleProxy(url);
   }
@@ -94,6 +90,37 @@ Deno.serve(async (req: Request) => {
 // server-side fetch itself with a bot check, the same way DuckDuckGo and a
 // public SearXNG instance did earlier - that's a per-site coin flip with no
 // general fix, not a bug in this code.
+// This server-side fetch will happily follow wherever `url` points, so
+// without this check /proxy would be a general-purpose SSRF gadget: anyone
+// (this route needs no auth) could ask the server to fetch its own private
+// network, e.g. cloud metadata endpoints (169.254.169.254) or localhost
+// services. Blocking loopback/private/link-local literals is a cheap,
+// worthwhile floor even though it doesn't defend against DNS rebinding
+// (a hostname that resolves to a public IP now and a private one later) -
+// `fetch` doesn't expose the resolved IP ahead of the request to check that.
+function isBlockedProxyHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const a = Number(m[1]), b = Number(m[2]);
+    if (a === 127 || a === 10 || a === 0) return true; // loopback / private / "this network"
+    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata services
+    if (a === 172 && b >= 16 && b <= 31) return true; // private
+    if (a === 192 && b === 168) return true; // private
+    return false;
+  }
+  if (h === "::1" || h === "::") return true; // IPv6 loopback / unspecified
+  if (h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true; // IPv6 link-local / unique-local
+  return false;
+}
+
+// Generous cap on how much of a proxied page this will read into memory -
+// this is an unauthenticated endpoint, so without some ceiling a request for
+// a multi-gigabyte "text/html" response would burn through memory/CPU on
+// every call. Real pages are nowhere near this size; this only stops abuse.
+const MAX_PROXY_BYTES = 5_000_000;
+
 async function handleProxy(reqUrl: URL): Promise<Response> {
   const target = reqUrl.searchParams.get("url") ?? "";
   if (!target) return htmlResponse("<p>Missing url parameter.</p>", 400);
@@ -107,6 +134,9 @@ async function handleProxy(reqUrl: URL): Promise<Response> {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     return htmlResponse("<p>Only http/https URLs can be proxied.</p>", 400);
   }
+  if (isBlockedProxyHost(parsed.hostname)) {
+    return htmlResponse("<p>That address can't be proxied.</p>", 400);
+  }
 
   try {
     const res = await fetch(parsed.href, {
@@ -115,7 +145,7 @@ async function handleProxy(reqUrl: URL): Promise<Response> {
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
         // harmless on non-Google sites; skips Google's EEA/UK consent wall
-        // on ones that check for it, see handleDebugYoutube's comment
+        // on ones that check for it
         "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
       },
       signal: AbortSignal.timeout(12000),
@@ -127,7 +157,14 @@ async function handleProxy(reqUrl: URL): Promise<Response> {
         415,
       );
     }
+    const lenHeader = res.headers.get("content-length");
+    if (lenHeader && Number(lenHeader) > MAX_PROXY_BYTES) {
+      return htmlResponse("<p>That page is too large to proxy.</p>", 413);
+    }
     const html = await res.text();
+    if (html.length > MAX_PROXY_BYTES) {
+      return htmlResponse("<p>That page is too large to proxy.</p>", 413);
+    }
     return htmlResponse(injectProxyBridge(html, parsed.href), res.status);
   } catch (err) {
     return htmlResponse(
@@ -170,59 +207,6 @@ function injectProxyBridge(html: string, baseUrl: string): string {
   return /<head[^>]*>/i.test(html)
     ? html.replace(/<head([^>]*)>/i, `<head$1>${tag}`)
     : tag + html;
-}
-
-// Throwaway diagnostic route, not used by Edgy or anything else - just
-// fetches a real YouTube video page server-side and reports exactly what
-// came back, to settle whether a server-side fetch from this host even gets
-// past YouTube's bot detection before spending any effort on the much
-// harder problem of rewriting a proxied page's assets/API calls so it'd
-// actually function once embedded. Visit /debug-youtube directly in a
-// browser (not through WinClone) to see the JSON report. Safe to delete
-// this route once you've seen the answer.
-async function handleDebugYoutube(): Promise<Response> {
-  const target = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-  let report: Record<string, unknown>;
-  try {
-    const res = await fetch(target, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        // Google's EEA/UK consent wall ("Before you continue to YouTube")
-        // checks for this cookie before deciding to show the interstitial.
-        // A long-used static value here tells it consent was already given,
-        // so it serves the real page directly instead - this is specific to
-        // Google's own consent-cookie scheme, not a general trick that
-        // applies to other sites' walls.
-        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-    const text = await res.text();
-    const lower = text.toLowerCase();
-    report = {
-      target,
-      status: res.status,
-      ok: res.ok,
-      contentLength: text.length,
-      xFrameOptions: res.headers.get("x-frame-options"),
-      contentSecurityPolicy: res.headers.get("content-security-policy"),
-      // signs the response is a bot-check/consent page rather than the real page
-      looksLikeBotCheck: lower.includes("captcha") || lower.includes("unusual traffic") ||
-        lower.includes("recaptcha") || lower.includes("consent.google.com") ||
-        lower.includes("before you continue"),
-      // ytInitialData is the JSON blob real YouTube pages embed to hydrate
-      // the page client-side - its presence means this is a genuine page
-      looksLikeRealPage: lower.includes("ytinitialdata") || lower.includes("rick astley"),
-      firstChars: text.slice(0, 1500),
-    };
-  } catch (err) {
-    report = { target, error: String(err) };
-  }
-  return new Response(JSON.stringify(report, null, 2), {
-    headers: { "content-type": "application/json" },
-  });
 }
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };
@@ -576,6 +560,7 @@ async function fetchPageText(pageUrl: string): Promise<string | null> {
     return null;
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (isBlockedProxyHost(parsed.hostname)) return null;
 
   try {
     const res = await fetch(parsed.href, {
