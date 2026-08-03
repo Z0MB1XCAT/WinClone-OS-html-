@@ -99,6 +99,13 @@ async function handleDebugYoutube(): Promise<Response> {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        // Google's EEA/UK consent wall ("Before you continue to YouTube")
+        // checks for this cookie before deciding to show the interstitial.
+        // A long-used static value here tells it consent was already given,
+        // so it serves the real page directly instead - this is specific to
+        // Google's own consent-cookie scheme, not a general trick that
+        // applies to other sites' walls.
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -150,6 +157,13 @@ async function handleProxyYoutube(): Promise<Response> {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9",
+        // Google's EEA/UK consent wall ("Before you continue to YouTube")
+        // checks for this cookie before deciding to show the interstitial.
+        // A long-used static value here tells it consent was already given,
+        // so it serves the real page directly instead - this is specific to
+        // Google's own consent-cookie scheme, not a general trick that
+        // applies to other sites' walls.
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
       },
       signal: AbortSignal.timeout(10000),
     });
