@@ -1,29 +1,33 @@
 /*!
- * Macrohard Edgy — a third-party browser app for WinClone.
+ * Macrohard Edgy, a third-party browser app for WinClone.
  *
  * This file is a self-contained plugin: it does not modify app.js, styles.css
  * or the WinClone core in any way. It waits for the OS to finish booting,
  * then registers itself into the same APPS registry every built-in app uses
- * (APPS.edge, APPS.explorer, ...), so WinClone treats it like any other app —
- * desktop icon, Start menu entry, taskbar button, window chrome, all for free.
+ * (APPS.edge, APPS.explorer, ...), so WinClone treats it like any other app,
+ * with a desktop icon, Start menu entry, taskbar button and window chrome
+ * all for free.
  *
  * Unlike the built-in "Microsoft Edge" (which fakes its search results),
- * Macrohard Edgy's home page and address bar hit a *real* search engine —
- * DuckDuckGo's plain-HTML results endpoint — in a sandboxed iframe, the same
- * technique the built-in Edge uses for real sites like Wikipedia. Big sites
- * that refuse to be framed (Google, YouTube, Instagram, ...) still refuse
- * here too; that's a security header those sites set on their own servers,
- * not something a front-end can talk them out of.
+ * typing a search on Macrohard Edgy's home page or address bar opens a real,
+ * live DuckDuckGo results page. It opens in a genuine new browser tab rather
+ * than an embedded frame, because search-engine results pages universally
+ * refuse to be framed by another site (a security header they set on their
+ * own servers, not something a front end can talk them out of). Typed URLs
+ * and bookmarks still load in a sandboxed iframe right inside the window,
+ * the same technique the built-in Edge uses for real sites like Wikipedia.
+ * Sites that refuse to be framed (Google, YouTube, Instagram, ...) get a
+ * graceful "won't load here" screen with a link to open the real page.
  *
- * Also has: page zoom, real history, incognito tabs, a tab overflow menu,
- * drag-to-reorder tabs, live favicons, and a collapsible AI sidebar that
- * embeds a separately-hosted chat assistant.
+ * Also has: light/dark mode, page zoom, real history, incognito tabs, a tab
+ * overflow menu, drag-to-reorder tabs, live favicons, and a collapsible AI
+ * sidebar that embeds a separately-hosted chat assistant.
  */
 (function(){
   "use strict";
 
-  /* the user's own AI chat app (its own site, its own backend/API key —
-     this plugin just frames it, it doesn't call any AI API directly) */
+  /* the user's own AI chat app (its own site, its own backend/API key).
+     This plugin just frames it; it doesn't call any AI API directly. */
   const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
 
   function install(){
@@ -51,95 +55,105 @@
   function injectStyles(){
     if(document.getElementById("edgy-styles")) return;
     const css = `
-      .edgy{display:flex;flex-direction:column;height:100%;background:#202124;color:#e8eaed}
-      .edgy-tabbar{display:flex;align-items:flex-end;background:#202124;padding:6px 6px 0;gap:2px;flex:0 0 auto;position:relative}
+      .edgy{display:flex;flex-direction:column;height:100%;
+        --e-tabbar:#dee1e6; --e-tab:#f1f1f1; --e-tab-fg:#3c4043; --e-tab-active:#fff; --e-tab-active-fg:#202124;
+        --e-icon:#444; --e-toolbar:#fff; --e-toolbar-border:#e2e2e2; --e-addr:#f1f3f4; --e-addr-border:#dcdcdc;
+        --e-addr-fg:#222; --e-bm:#fff; --e-bm-border:#eee; --e-bm-fg:#3c4043; --e-page-bg:#fff; --e-page-fg:#202124;
+        --e-muted:#8a8a8a; --e-hover:#f1f3f4; --e-shortcut-bg:#f1f3f4; --e-border:#ddd;
+        background:var(--e-page-bg);color:var(--e-page-fg)}
+      .edgy.dark{
+        --e-tabbar:#18181a; --e-tab:#2c2d31; --e-tab-fg:#c7c8cc; --e-tab-active:#232326; --e-tab-active-fg:#e8eaea;
+        --e-icon:#c7c8cc; --e-toolbar:#232326; --e-toolbar-border:#333438; --e-addr:#2f3034; --e-addr-border:#3d3e42;
+        --e-addr-fg:#e8eaea; --e-bm:#232326; --e-bm-border:#333438; --e-bm-fg:#c7c8cc; --e-page-bg:#1c1d20; --e-page-fg:#e8eaea;
+        --e-muted:#9a9a9a; --e-hover:#2c2d31; --e-shortcut-bg:#2c2d31; --e-border:#3a3b3f}
+      .edgy-tabbar{display:flex;align-items:flex-end;background:var(--e-tabbar);padding:6px 6px 0;gap:2px;flex:0 0 auto;position:relative}
       .edgy-tabs{display:flex;gap:4px;overflow-x:auto;overflow-y:hidden;flex:1;min-width:0;scrollbar-width:thin}
-      .edgy-tab{display:flex;align-items:center;gap:6px;max-width:180px;min-width:110px;background:#35363a;
-        border-radius:8px 8px 0 0;padding:7px 6px 7px 12px;font-size:12px;color:#c7c8cc;cursor:default;
+      .edgy-tab{display:flex;align-items:center;gap:6px;max-width:180px;min-width:110px;background:var(--e-tab);
+        border-radius:8px 8px 0 0;padding:7px 6px 7px 12px;font-size:12px;color:var(--e-tab-fg);cursor:default;
         white-space:nowrap;overflow:hidden;flex:0 0 auto}
-      .edgy-tab.active{background:#fff;color:#202124}
+      .edgy-tab.active{background:var(--e-tab-active);color:var(--e-tab-active-fg)}
       .edgy-tab.priv{background:#2d1b4e;color:#d8c9f5}
       .edgy-tab.priv.active{background:#efe6ff;color:#2d1b4e}
       .edgy-tab .tico{font-size:13px;flex:0 0 auto;width:14px;height:14px;object-fit:contain;display:flex;align-items:center;justify-content:center}
       .edgy-tab img.tico{border-radius:2px}
       .edgy-tab .ttitle{overflow:hidden;text-overflow:ellipsis;flex:1}
       .edgy-tab .tclose{opacity:.55;border-radius:50%;width:18px;height:18px;flex:0 0 auto;display:grid;place-items:center;font-size:12px}
-      .edgy-tab .tclose:hover{background:rgba(0,0,0,.15);opacity:1}
+      .edgy-tab .tclose:hover{background:rgba(127,127,127,.25);opacity:1}
       .edgy-tab[draggable]{cursor:grab}
       .edgy-tabctrls{display:flex;align-items:center;gap:0;flex:0 0 auto;margin-bottom:2px}
-      .edgy-newtab,.edgy-privtab,.edgy-tablist-btn{height:28px;border:0;background:transparent;color:#c7c8cc;font-size:16px;border-radius:6px;flex:0 0 auto;width:28px}
+      .edgy-newtab,.edgy-privtab,.edgy-tablist-btn{height:28px;border:0;background:transparent;color:var(--e-tab-fg);font-size:16px;border-radius:6px;flex:0 0 auto;width:28px}
       .edgy-privtab{font-size:13px}
       .edgy-tablist-btn{font-size:10px}
-      .edgy-newtab:hover,.edgy-privtab:hover,.edgy-tablist-btn:hover{background:rgba(255,255,255,.12)}
-      .edgy-tabmenu{position:absolute;top:36px;right:6px;background:#fff;color:#202124;border-radius:8px;
+      .edgy-newtab:hover,.edgy-privtab:hover,.edgy-tablist-btn:hover{background:rgba(127,127,127,.2)}
+      .edgy-tabmenu{position:absolute;top:36px;right:6px;background:var(--e-toolbar);color:var(--e-page-fg);border-radius:8px;
         box-shadow:0 6px 20px rgba(0,0,0,.28);padding:4px;min-width:190px;max-height:280px;overflow:auto;z-index:60}
       .edgy-tabmenu-row{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:5px;font-size:12.5px;
         white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:default}
-      .edgy-tabmenu-row:hover{background:#f1f3f4}
-      .edgy-toolbar{display:flex;align-items:center;gap:6px;padding:8px 10px;background:#fff;flex:0 0 auto;border-bottom:1px solid #e2e2e2}
-      .edgy-nav{width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:#444;font-size:15px;flex:0 0 auto}
-      .edgy-nav:hover{background:rgba(0,0,0,.08)}
+      .edgy-tabmenu-row:hover{background:var(--e-hover)}
+      .edgy-toolbar{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--e-toolbar);flex:0 0 auto;border-bottom:1px solid var(--e-toolbar-border)}
+      .edgy-nav{width:30px;height:30px;border:0;border-radius:50%;background:transparent;color:var(--e-icon);font-size:15px;flex:0 0 auto}
+      .edgy-nav:hover{background:rgba(127,127,127,.18)}
       .edgy-nav:disabled{opacity:.3}
-      .edgy-nav.ai{color:#5b21b6}
+      .edgy-nav.ai{color:#8355e0}
       .edgy-nav.ai.on{background:linear-gradient(135deg,#5b21b6,#38bdf8);color:#fff}
-      .edgy-zoom{display:flex;align-items:center;gap:0;background:#f1f3f4;border-radius:14px;padding:2px;flex:0 0 auto}
-      .edgy-zoom button{width:22px;height:22px;border:0;background:transparent;border-radius:50%;font-size:13px;color:#333}
-      .edgy-zoom button:hover{background:rgba(0,0,0,.08)}
-      .edgy-zoom span{font-size:10.5px;color:#555;width:34px;text-align:center;cursor:default}
-      .edgy-addr{flex:1;display:flex;align-items:center;gap:6px;height:32px;border-radius:16px;border:1px solid #dcdcdc;background:#f1f3f4;padding:0 12px;min-width:60px}
-      .edgy-addr input{flex:1;border:0;background:transparent;outline:none;font-size:13px;color:#222;min-width:0}
+      .edgy-zoom{display:flex;align-items:center;gap:0;background:var(--e-addr);border-radius:14px;padding:2px;flex:0 0 auto}
+      .edgy-zoom button{width:22px;height:22px;border:0;background:transparent;border-radius:50%;font-size:13px;color:var(--e-page-fg)}
+      .edgy-zoom button:hover{background:rgba(127,127,127,.18)}
+      .edgy-zoom span{font-size:10.5px;color:var(--e-muted);width:34px;text-align:center;cursor:default}
+      .edgy-addr{flex:1;display:flex;align-items:center;gap:6px;height:32px;border-radius:16px;border:1px solid var(--e-addr-border);background:var(--e-addr);padding:0 12px;min-width:60px}
+      .edgy-addr input{flex:1;border:0;background:transparent;outline:none;font-size:13px;color:var(--e-addr-fg);min-width:0}
       .edgy-lock{font-size:11px;opacity:.7;flex:0 0 auto}
       .edgy-star{width:30px;height:30px;border:0;border-radius:50%;background:transparent;font-size:15px;color:#b8860b;flex:0 0 auto}
-      .edgy-star:hover{background:rgba(0,0,0,.08)}
+      .edgy-star:hover{background:rgba(127,127,127,.18)}
       .edgy-star:disabled{opacity:.3}
-      .edgy-bookmarks{display:flex;gap:2px;padding:5px 10px;background:#fff;border-bottom:1px solid #eee;flex:0 0 auto;overflow-x:auto}
-      .edgy-bookmarks a{display:flex;align-items:center;gap:5px;font-size:11.5px;color:#3c4043;padding:4px 8px;border-radius:5px;white-space:nowrap;cursor:default}
-      .edgy-bookmarks a:hover{background:#f1f3f4}
+      .edgy-bookmarks{display:flex;gap:2px;padding:5px 10px;background:var(--e-bm);border-bottom:1px solid var(--e-bm-border);flex:0 0 auto;overflow-x:auto}
+      .edgy-bookmarks a{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--e-bm-fg);padding:4px 8px;border-radius:5px;white-space:nowrap;cursor:default}
+      .edgy-bookmarks a:hover{background:var(--e-hover)}
       .edgy-body{flex:1;display:flex;min-height:0}
-      .edgy-mainpane{flex:1;position:relative;min-width:0;background:#fff}
+      .edgy-mainpane{flex:1;position:relative;min-width:0;background:var(--e-page-bg)}
       .edgy-pages{position:absolute;inset:0}
-      .edgy-page{position:absolute;inset:0;display:none;flex-direction:column;overflow:auto}
+      .edgy-page{position:absolute;inset:0;display:none;flex-direction:column;overflow:auto;color:var(--e-page-fg)}
       .edgy-page.active{display:flex}
       .edgy-home{align-items:center;padding-top:52px}
-      .edgy-home .logo{font-size:38px;font-weight:700;letter-spacing:-1px;margin-bottom:6px;color:#202124;display:flex;align-items:center;gap:10px}
-      .edgy-home .priv-sub{font-size:12px;color:#8a8a8a;margin-bottom:22px;text-align:center;max-width:420px}
-      .edgy-search{width:min(560px,86%);height:48px;border-radius:24px;border:1px solid #dadce0;
-        box-shadow:0 2px 10px rgba(0,0,0,.06);padding:0 20px;font-size:15px;outline:none;color:#222;margin-top:16px}
+      .edgy-home .logo{font-size:38px;font-weight:700;letter-spacing:-1px;margin-bottom:6px;color:var(--e-page-fg);display:flex;align-items:center;gap:10px}
+      .edgy-home .priv-sub{font-size:12px;color:var(--e-muted);margin-bottom:22px;text-align:center;max-width:420px}
+      .edgy-search{width:min(560px,86%);height:48px;border-radius:24px;border:1px solid var(--e-addr-border);
+        box-shadow:0 2px 10px rgba(0,0,0,.06);padding:0 20px;font-size:15px;outline:none;color:var(--e-addr-fg);margin-top:16px;background:var(--e-addr)}
       .edgy-search:focus{box-shadow:0 2px 14px rgba(0,0,0,.14)}
       .edgy-shortcuts{display:flex;gap:16px;margin-top:32px;flex-wrap:wrap;justify-content:center;max-width:640px}
-      .edgy-shortcuts a{display:flex;flex-direction:column;align-items:center;gap:7px;width:76px;color:#333;font-size:11.5px;text-align:center;cursor:default}
-      .edgy-shortcuts a .gl{font-size:26px;width:52px;height:52px;background:#f1f3f4;border-radius:14px;display:grid;place-items:center}
-      .edgy-shortcuts a:hover .gl{background:#e8eaed}
+      .edgy-shortcuts a{display:flex;flex-direction:column;align-items:center;gap:7px;width:76px;color:var(--e-page-fg);font-size:11.5px;text-align:center;cursor:default}
+      .edgy-shortcuts a .gl{font-size:26px;width:52px;height:52px;background:var(--e-shortcut-bg);border-radius:14px;display:grid;place-items:center}
+      .edgy-shortcuts a:hover .gl{background:var(--e-hover)}
       .edgy-site{padding:0!important;align-items:stretch!important}
       .edgy-frame{flex:1;border:0;width:100%;height:100%;background:#fff;opacity:0;transition:opacity .18s}
-      .edgy-load{margin:auto;color:#7a7a7a;font-size:13px;display:flex;align-items:center;gap:10px}
+      .edgy-load{margin:auto;color:var(--e-muted);font-size:13px;display:flex;align-items:center;gap:10px}
       .edgy-load::before{content:"";width:16px;height:16px;border:2px solid #c9ced4;border-top-color:#5b21b6;border-radius:50%;animation:edgyspin .7s linear infinite}
       @keyframes edgyspin{to{transform:rotate(360deg)}}
-      .edgy-reject{margin:auto;text-align:center;color:#555;display:flex;flex-direction:column;align-items:center;gap:12px;padding:30px;max-width:420px}
+      .edgy-reject{margin:auto;text-align:center;color:var(--e-muted);display:flex;flex-direction:column;align-items:center;gap:12px;padding:30px;max-width:420px}
       .edgy-reject .em{font-size:56px}
-      .edgy-reject b{font-size:18px;color:#222}
+      .edgy-reject b{font-size:18px;color:var(--e-page-fg)}
       .edgy-reject .rj-sub{font-size:12.5px;line-height:1.55}
       .edgy-reject .rj-btns{display:flex;gap:10px;margin-top:2px}
-      .edgy-btn{border:1px solid #d3d3d3;background:#fff;border-radius:16px;padding:7px 16px;font-size:12.5px;cursor:default;color:#333}
-      .edgy-btn:hover{background:#f4f4f4}
+      .edgy-btn{border:1px solid var(--e-border);background:var(--e-toolbar);border-radius:16px;padding:7px 16px;font-size:12.5px;cursor:default;color:var(--e-page-fg)}
+      .edgy-btn:hover{background:var(--e-hover)}
       .edgy-btn.pri{background:#5b21b6;border-color:#5b21b6;color:#fff}
       .edgy-btn.pri:hover{background:#4c1d95}
-      .edgy-openreal{font-size:11.5px;color:#5b21b6;text-decoration:underline;cursor:pointer;margin-top:2px}
+      .edgy-openreal{font-size:11.5px;color:#8355e0;text-decoration:underline;cursor:pointer;margin-top:2px}
       .edgy-histwrap{padding:26px 30px;max-width:760px;margin:0 auto;width:100%}
       .edgy-histhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
-      .edgy-histhead b{font-size:19px;color:#202124}
+      .edgy-histhead b{font-size:19px;color:var(--e-page-fg)}
       .edgy-histlist{display:flex;flex-direction:column;gap:2px}
       .edgy-hist-row{display:flex;align-items:center;gap:12px;padding:9px 10px;border-radius:8px;cursor:default}
-      .edgy-hist-row:hover{background:#f1f3f4}
+      .edgy-hist-row:hover{background:var(--e-hover)}
       .edgy-hist-row .hi-ic{width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:14px;flex:0 0 auto}
       .edgy-hist-row .hi-ic img{width:16px;height:16px;object-fit:contain}
       .edgy-hist-row .hi-t{flex:1;min-width:0;display:flex;flex-direction:column}
-      .edgy-hist-row .hi-t b{font-size:12.5px;color:#202124;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
-      .edgy-hist-row .hi-t small{color:#8a8a8a;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .edgy-hist-row .hi-time{font-size:10.5px;color:#9a9a9a;flex:0 0 auto}
-      .edgy-histempty{color:#9a9a9a;font-size:12.5px;padding:20px 0}
-      .edgy-sidebar{width:0;flex:0 0 auto;position:relative;display:flex;flex-direction:column;background:#fff;
-        border-left:0 solid #ddd;overflow:hidden}
+      .edgy-hist-row .hi-t b{font-size:12.5px;color:var(--e-page-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+      .edgy-hist-row .hi-t small{color:var(--e-muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .edgy-hist-row .hi-time{font-size:10.5px;color:var(--e-muted);flex:0 0 auto}
+      .edgy-histempty{color:var(--e-muted);font-size:12.5px;padding:20px 0}
+      .edgy-sidebar{width:0;flex:0 0 auto;position:relative;display:flex;flex-direction:column;background:var(--e-page-bg);
+        border-left:0 solid var(--e-border);overflow:hidden}
       .edgy-sidebar.open{border-left-width:1px}
       .edgy-sb-drag{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:ew-resize;z-index:5}
       .edgy-sb-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;padding:10px 12px;
@@ -148,11 +162,11 @@
       .edgy-sb-close:hover{background:rgba(255,255,255,.3)}
       .edgy-sb-body{flex:1;position:relative;overflow:hidden}
       .edgy-sb-frame{position:absolute;inset:0;width:100%;height:100%;border:0;opacity:0;transition:opacity .18s;background:#fff}
-      .edgy-sb-load{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:#8a8a8a;font-size:12.5px}
+      .edgy-sb-load{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--e-muted);font-size:12.5px}
       .edgy-sb-load::before{content:"";width:14px;height:14px;border:2px solid #ddd;border-top-color:#5b21b6;border-radius:50%;animation:edgyspin .7s linear infinite}
-      .edgy-sb-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:#555}
+      .edgy-sb-fallback{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;color:var(--e-muted)}
       .edgy-sb-fallback .em{font-size:38px}
-      .edgy-sb-fallback b{font-size:14.5px;color:#222}
+      .edgy-sb-fallback b{font-size:14.5px;color:var(--e-page-fg)}
       .edgy-sb-fallback .rj-sub{font-size:12px;line-height:1.5}
     `;
     const st = document.createElement("style");
@@ -162,7 +176,7 @@
   }
 
   /* seed bookmarks from the same curated, already-frame-friendly list the
-     built-in Edge ships with, then let the star button grow it — persisted
+     built-in Edge ships with, then let the star button grow it. Persisted
      separately from Edge's own bookmarks. */
   const EDGY_BM_KEY = "wc_edgy_bookmarks";
   function loadBookmarks(){
@@ -182,6 +196,7 @@
   function saveHistory(list){ try{ localStorage.setItem(EDGY_HIST_KEY, JSON.stringify(list.slice(-300))); }catch(e){} }
 
   const EDGY_ZOOM_KEY = "wc_edgy_zoom";
+  const EDGY_THEME_KEY = "wc_edgy_theme";
   const EDGY_SIDEBAR_KEY = "wc_edgy_sidebar";
   function loadSidebarState(){
     try{ const s=JSON.parse(localStorage.getItem(EDGY_SIDEBAR_KEY)); if(s && typeof s==="object") return s; }catch(e){}
@@ -189,17 +204,11 @@
   }
   function saveSidebarState(s){ try{ localStorage.setItem(EDGY_SIDEBAR_KEY, JSON.stringify(s)); }catch(e){} }
 
-  /* Same known frame-blocking giants the built-in Edge avoids wasting a
-     timeout on — minus duckduckgo.com, since Edgy's search actually uses a
-     duckduckgo.com subdomain that (unlike the main site) allows framing.
-     Computed lazily (not at script load) since EDGE_BLOCKED belongs to
-     app.js and may not exist yet the instant this file starts running. */
-  let edgyBlockedListCache = null;
-  function edgyBlocked(u){
-    if(!edgyBlockedListCache) edgyBlockedListCache = EDGE_BLOCKED.filter(d=>d!=="duckduckgo.com");
-    let h; try{ h=new URL(u).hostname.toLowerCase(); }catch(e){ return false; }
-    return edgyBlockedListCache.some(d=> h===d || h.endsWith("."+d));
-  }
+  /* frame-blocked-site detection is reused straight from app.js: edgeBlocked()
+     and EDGE_BLOCKED already list the giants (Google, YouTube, DuckDuckGo's
+     own main site, ...) that refuse to be framed. DuckDuckGo's search results
+     never go through an iframe here (they open in a real new tab instead, see
+     go() below), so there is no need to special-case it out of that list. */
   function hostOf(u){ try{ return new URL(u).hostname||u; }catch(e){ return u; } }
   function faviconFor(u){ const h=hostOf(u); return h ? `https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(h)}` : null; }
 
@@ -227,6 +236,7 @@
           </div>
           <div class="edgy-addr"><span class="edgy-lock">🔒</span><input class="edgy-url" spellcheck="false" placeholder="Search DuckDuckGo or enter a web address"></div>
           <button class="edgy-star" title="Bookmark this page">☆</button>
+          <button class="edgy-nav" data-theme title="Toggle dark mode">🌙</button>
           <button class="edgy-nav ai" title="Assistant">✨</button>
         </div>
         <div class="edgy-bookmarks"></div>
@@ -240,6 +250,8 @@
         </div>
       </div>`;
 
+    const edgyRoot = body.querySelector(".edgy");
+    const themeBtn = body.querySelector("[data-theme]");
     const tabsEl = body.querySelector(".edgy-tabs");
     const pagesEl = body.querySelector(".edgy-pages");
     const urlInput = body.querySelector(".edgy-url");
@@ -297,6 +309,20 @@
     zoomOutBtn.onclick = ()=>setZoom(-10);
     zoomInBtn.onclick = ()=>setZoom(10);
     zoomLabel.onclick = ()=>setZoom(0, true);
+
+    /* ---------- light / dark mode ---------- */
+    let theme = localStorage.getItem(EDGY_THEME_KEY) === "dark" ? "dark" : "light";
+    function applyTheme(){
+      edgyRoot.classList.toggle("dark", theme==="dark");
+      themeBtn.textContent = theme==="dark" ? "☀️" : "🌙";
+      themeBtn.title = theme==="dark" ? "Switch to light mode" : "Switch to dark mode";
+    }
+    themeBtn.onclick = ()=>{
+      theme = theme==="dark" ? "light" : "dark";
+      try{ localStorage.setItem(EDGY_THEME_KEY, theme); }catch(e){}
+      applyTheme();
+    };
+    applyTheme();
 
     /* ---------- nav buttons / chrome sync ---------- */
     function updateNavButtons(t){
@@ -400,8 +426,16 @@
       if(!q || low==="home"){ navTo(t,{type:"home"}); return; }
       if(low==="history"){ navTo(t,{type:"history"}); return; }
       const looksUrl = /^https?:\/\//.test(q) || (/^[^\s]+\.[a-z]{2,}(\/|$|\?|#)/i.test(q) && !/\s/.test(q));
-      const u = looksUrl ? (/^https?:\/\//.test(q) ? q : "https://"+q)
-                          : "https://html.duckduckgo.com/html/?q="+encodeURIComponent(q);
+      if(!looksUrl){
+        /* real search results pages (DuckDuckGo included) universally refuse
+           to be framed by another site, so this opens the real, live results
+           in a genuine new browser tab instead of a broken embed. */
+        const u = "https://duckduckgo.com/?q="+encodeURIComponent(q);
+        window.open(u, "_blank", "noopener,noreferrer");
+        navTo(t, {type:"searched", q, u});
+        return;
+      }
+      const u = /^https?:\/\//.test(q) ? q : "https://"+q;
       const path=u.split("#")[0].split("?")[0], last=path.split("/").pop()||"";
       if(EDGE_DL_RE.test(last)){ downloadFromWeb(u); return; }
       navTo(t, {type:"site", u});
@@ -410,6 +444,7 @@
       const loc = t.stack[t.si];
       if(!loc || loc.type==="home") home(t);
       else if(loc.type==="history") historyPage(t);
+      else if(loc.type==="searched") searchedPage(t, loc);
       else loadSite(t, loc.u);
     }
 
@@ -418,7 +453,26 @@
       t.pageEl.className = "edgy-page edgy-home"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `
         <div class="logo">${t.incognito?"🕶":"🧭"} Macrohard Edgy</div>
-        ${t.incognito?'<div class="priv-sub">Private tab — sites you visit here won’t be added to History.</div>':""}
+        ${t.incognito?'<div class="priv-sub">Private tab. Sites you visit here won’t be added to History.</div>':""}
+        <input class="edgy-search" placeholder="Search DuckDuckGo or enter a web address">
+        <div class="edgy-shortcuts"></div>`;
+      const search = t.pageEl.querySelector(".edgy-search");
+      search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
+      const sc = t.pageEl.querySelector(".edgy-shortcuts");
+      bookmarks.forEach(b=>{
+        const a=el("a"); a.innerHTML = `<span class="gl">${b.icon||"🌐"}</span>${esc(b.name)}`;
+        a.onclick = ()=>go(t, b.url); sc.appendChild(a);
+      });
+      applyZoom(t); renderTabs(); syncChrome(t);
+    }
+
+    function searchedPage(t, loc){
+      t.displayUrl = ""; t.title = "Search: "+loc.q; t.icon = "🔎"; t.favicon = null;
+      t.pageEl.className = "edgy-page edgy-home"+(t.id===activeId?" active":"");
+      t.pageEl.innerHTML = `
+        <div class="logo">🔎 Search opened in a new tab</div>
+        <div class="priv-sub">DuckDuckGo doesn't allow its results to be shown inside a window, so the real search for &ldquo;${esc(loc.q)}&rdquo; opened in a new browser tab instead.
+          <a class="edgy-openreal" target="_blank" rel="noopener noreferrer" href="${esc(loc.u)}">Didn't open? Click here</a></div>
         <input class="edgy-search" placeholder="Search DuckDuckGo or enter a web address">
         <div class="edgy-shortcuts"></div>`;
       const search = t.pageEl.querySelector(".edgy-search");
@@ -455,11 +509,11 @@
     }
 
     /* real page in a sandboxed iframe, same locked-down approach the
-       built-in Edge uses — genuinely fetches the live site or live search
-       results, but can't reach anything of WinClone's. */
+       built-in Edge uses. Genuinely fetches the live site, but can't reach
+       anything of WinClone's. */
     function loadSite(t, u){
       t.displayUrl = u; t.title = hostOf(u); t.icon = "🌐"; t.favicon = faviconFor(u);
-      if(edgyBlocked(u)){ showRejected(t,u); return; }
+      if(edgeBlocked(u)){ showRejected(t,u); return; }
       t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(hostOf(u))}…</div>
         <iframe class="edgy-frame" referrerpolicy="no-referrer"
@@ -479,7 +533,7 @@
       t.pageEl.innerHTML = `<div class="edgy-reject">
         <div class="em">🚧</div>
         <b>${esc(hostOf(u))} won't load here</b>
-        <div class="rj-sub">This site tells browsers not to show it inside another page (a real security rule it sets itself) — the same reason it wouldn't load in Microsoft Edge here either.</div>
+        <div class="rj-sub">This site tells browsers not to show it inside another page, a real security rule it sets itself, so it wouldn't load in Microsoft Edge here either.</div>
         <div class="rj-btns">
           <button class="edgy-btn pri" data-retry>Try again</button>
           <button class="edgy-btn" data-home>Go home</button>
@@ -492,7 +546,7 @@
     }
 
     /* "download" a web file into the VFS Downloads folder, exactly like the
-       built-in Edge does — never touches the real disk. */
+       built-in Edge does. Never touches the real disk. */
     function downloadFromWeb(u){
       const path=u.split("#")[0].split("?")[0];
       let fname=decodeURIComponent(path.split("/").pop()||"download").replace(/[\\/:*?"<>|]/g,"_")||"download";
@@ -523,8 +577,8 @@
        created once and just hidden/shown after that, so the conversation
        inside it survives opening and closing the panel. Real sites/hosts
        that are asleep or slow to cold-start get a generous timeout before
-       falling back to an "open in a new tab" link — same escape hatch as
-       everywhere else this app frames outside content. */
+       falling back to an "open in a new tab" link, the same escape hatch
+       used everywhere else this app frames outside content. */
     function mountSidebarFrame(){
       sbBody.innerHTML = `<div class="edgy-sb-load">Loading…</div>
         <iframe class="edgy-sb-frame" referrerpolicy="no-referrer"
