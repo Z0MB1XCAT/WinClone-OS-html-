@@ -18,9 +18,9 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.10.1";
+const WC_VERSION = "1.9.1";
 const WC_CHANGELOG = {
-  "1.10.1": [
+  "1.9.1": [
     "🧭 Macrohard Edgy is now the default browser.",
   ],
   "1.9.0": [
