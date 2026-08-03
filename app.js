@@ -18,8 +18,14 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.8.0";
+const WC_VERSION = "1.9.0";
 const WC_CHANGELOG = {
+  "1.9.0": [
+    "👤 WinClone Accounts. Make an account with an email or your Google login, and your PCs stop living in one browser — sign in from any computer and they're there.",
+    "🖥️ Up to three PCs on one account, each with its own name, files, wallpaper, accent colour and lock-screen password. Switch between them from Start ▸ Power ▸ Switch PC.",
+    "☁️ Your PC saves itself to your account as you use it, and again on shut down, restart or sign out.",
+    "🎵 One thing that doesn't travel: imported music. MP3s are far too big to keep in an account, so they stay on the computer you imported them on.",
+  ],
   "1.8.0": [
     "🎵 Real music. Import an .mp3 (or .wav/.ogg/.m4a) from your computer with File Explorer ▸ right-click ▸ Import files…, and Media Player actually plays it — real waveform, real seek bar, real volume.",
     "🐍 Python can play it too: winclone.open_app(\"C:/Users/User/Music/song.mp3\") opens the track and starts it.",
@@ -8141,7 +8147,11 @@ function winDialog(o){
   const W=d.offsetWidth,H=d.offsetHeight;
   d.style.left=(o.x!=null?Math.min(o.x,innerWidth-W-10):Math.max(10,(innerWidth-W)/2+(Math.random()*60-30)))+"px";
   d.style.top =(o.y!=null?Math.min(o.y,innerHeight-H-10):Math.max(10,(innerHeight-H)/2+(Math.random()*40-20)))+"px";
-  d.style.zIndex=60000+(++state.z);
+  /* Normal dialogs live above the windows (60000). `top` lifts one above the
+     full-screen overlays — account screen and PC picker sit at 99998 — while
+     staying under BSOD (200000) and BIOS (200001) so the escape hatches always
+     stay clickable. Without it a dialog opened from the picker is invisible. */
+  d.style.zIndex=(o.top?199000:60000)+(++state.z);
   return d;
 }
 
@@ -10375,6 +10385,7 @@ function applyVolume(v){
 
 function doShutdown(){
   stopAllEffectsUI();
+  pcPush();                                   // save this PC to the account on the way down
   const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Shutting down…";
   setTimeout(()=>{
     // close all windows, show login again
@@ -10441,7 +10452,14 @@ function showPowerMenu(){
   if(UPD.available) items.push({icon:"🔄",label:"Update and restart",action:()=>{ closeFlyouts(); applyUpdate(); }});
   items.push(
     {icon:"🔁",label:"Restart",action:()=>{ closeFlyouts(); doRestart(); }},
-    {icon:"⏻",label:"Shut down",action:()=>{ closeFlyouts(); doShutdown(); }},
+    {icon:"⏻",label:"Shut down",action:()=>{ closeFlyouts(); doShutdown(); }}
+  );
+  if(CUR_PC) items.push(
+    "sep",
+    {icon:"🖥️",label:"Switch PC",action:()=>{ closeFlyouts(); doSwitchPC(); }},
+    {icon:"🚪",label:"Sign out of WinClone",action:()=>{ closeFlyouts(); doAccountSignOut(); }}
+  );
+  items.push(
     "sep",
     {icon:"🔎",label:"Check for updates",action:()=>{ closeFlyouts(); checkForUpdates({notify:true,toastIfNone:true}); }}
   );
@@ -10450,7 +10468,32 @@ function showPowerMenu(){
 function doRestart(){
   stopAllEffectsUI();
   const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
-  setTimeout(()=>location.reload(),1600);
+  /* the reload throws this tab away, so the upload has to finish first */
+  pcPush().finally(()=>setTimeout(()=>location.reload(),900));
+}
+
+/* ---- leaving a PC ----
+   Both of these have to finish uploading before the page goes away, which is
+   why they show the shutdown screen while they wait instead of acting instantly. */
+function doSwitchPC(){
+  stopAllEffectsUI();
+  const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Saving your PC…";
+  pcPush().finally(()=>{
+    try{ localStorage.removeItem("wc_acct_pc"); }catch(e){}
+    setTimeout(()=>location.reload(),700);
+  });
+}
+function doAccountSignOut(){
+  winDialog({icon:"🚪",title:"Sign out of WinClone?",
+    msg:`Your PCs stay saved to <b>${esc((ACCT&&ACCT.email)||"your account")}</b> — sign back in on any computer to pick up where you left off.`,
+    buttons:[
+      {label:"Cancel"},
+      {label:"Sign out", primary:true, action:()=>{
+        stopAllEffectsUI();
+        const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Saving your PC…";
+        acSignOut();
+      }}
+    ]});
 }
 
 /* ---- SOFT REBOOT ----
@@ -10528,6 +10571,450 @@ function showWhatsNew(version, done){
   setTimeout(()=>ov.classList.add("show"),20);   // setTimeout (not rAF) so it reveals even in a background/non-painting tab
   const close=()=>{ ov.classList.remove("show"); setTimeout(()=>ov.remove(),260); if(done) done(); };
   ov.querySelector(".wn-go").onclick=close;
+}
+
+/* ============================ WINCLONE ACCOUNT ============================
+   Two different sign-ins live in this file and they are NOT the same thing:
+
+     • The WinClone Account (this section) is real. Email + password or Google,
+       handled by Supabase, and it decides which saved PCs you get to see.
+     • The lock screen (next section) is a toy. It's per-PC, it's scrambled not
+       hashed, and it's part of what a PC *is* — like a sticker on the case.
+
+   A "PC" is a row in the `pcs` table whose `data` is a snapshot of every wc_*
+   key in localStorage. Switching PCs writes that snapshot back into localStorage
+   and reloads the page, because all the state up top (VFS, RECYCLE, ICONPOS…)
+   hydrates once at script load — a reload is by far the honest way to swap it,
+   and it happens to look exactly like a real machine restarting.
+
+   The anon key below is meant to be public. It only says "I am some member of
+   the public"; the database's row-level security is what stops one account from
+   reading another's. Never put a service_role key here. */
+const WC_SB_URL = "https://unmsauoujzggaictcnnl.supabase.co";
+const WC_SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVubXNhdW91anpnZ2FpY3Rjbm5sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU3NzA5NDksImV4cCI6MjEwMTM0Njk0OX0.24OQlo6JYjJ26SnTfgEmq4jMrJCnj_xHdbPlrmEmF_4";
+
+const PC_MAX = 3;
+/* wc_ keys that are NOT part of a PC: the installed copy of WinClone's own code
+   (that belongs to the browser, not to a desktop) and the pointer to which PC
+   we're currently in. Everything else wc_* travels with the PC. */
+const PC_SKIP = new Set(["wc_sys_js","wc_sys_css","wc_sys_html","wc_acct_pc","wc_acct_seen"]);
+
+let SB = null;                 // supabase client, or null if we couldn't reach it
+let ACCT = null;               // the signed-in user
+let CUR_PC = null;             // { id, name } of the PC we're living in
+let ACCT_OFFLINE = false;      // true once we've given up and gone local-only
+
+function sbInit(){
+  if(SB) return SB;
+  try{
+    if(!window.supabase || !window.supabase.createClient) return null;
+    SB = window.supabase.createClient(WC_SB_URL, WC_SB_KEY, {
+      auth:{ persistSession:true, autoRefreshToken:true, detectSessionInUrl:true }
+    });
+    return SB;
+  }catch(e){ return null; }
+}
+
+/* ---- the snapshot: what a PC actually is ---- */
+function pcSnapshot(){
+  try{ saveFS(); }catch(e){}
+  const data={};
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(k && k.indexOf("wc_")===0 && !PC_SKIP.has(k)) data[k]=localStorage.getItem(k);
+  }
+  return data;
+}
+/* Replace this browser's PC with the given snapshot. Caller reloads afterwards. */
+function pcApply(data){
+  const doomed=[];
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(k && k.indexOf("wc_")===0 && !PC_SKIP.has(k)) doomed.push(k);
+  }
+  doomed.forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
+  Object.keys(data||{}).forEach(k=>{
+    if(PC_SKIP.has(k)) return;
+    try{ localStorage.setItem(k, data[k]); }catch(e){}
+  });
+}
+function pcBytes(d){ try{ return JSON.stringify(d).length; }catch(e){ return 0; } }
+
+/* ---- pushing changes back up ----
+   Rather than hunting down every place that writes to localStorage, we wrap
+   setItem once and let it tell us something changed. A push is debounced 4s so
+   a burst of writes (dragging icons, a script writing files) costs one request,
+   with a 45s ceiling so a long busy session still checkpoints.
+
+   Deliberately NOT done on beforeunload: fetch(keepalive) caps the body at 64KB
+   and a snapshot is far bigger, so a closed tab can lose the last few seconds.
+   Shut down / Restart / Switch PC / Sign out all push and wait, which covers
+   every exit WinClone itself offers. */
+let PC_DIRTY=false, PC_TIMER=null, PC_SINCE=0, PC_PUSHING=false;
+(function hookStorage(){
+  const raw = localStorage.setItem.bind(localStorage);
+  localStorage.setItem = function(k,v){
+    raw(k,v);
+    if(typeof k==="string" && k.indexOf("wc_")===0 && !PC_SKIP.has(k)) pcMarkDirty();
+  };
+})();
+function pcMarkDirty(){
+  if(!CUR_PC || !SB || ACCT_OFFLINE) return;
+  if(!PC_DIRTY){ PC_DIRTY=true; PC_SINCE=Date.now(); }
+  clearTimeout(PC_TIMER);
+  if(Date.now()-PC_SINCE > 45000){ pcPush(); return; }
+  PC_TIMER=setTimeout(()=>pcPush(), 4000);
+}
+async function pcPush(){
+  if(!CUR_PC || !SB || ACCT_OFFLINE || PC_PUSHING) return false;
+  clearTimeout(PC_TIMER);
+  PC_PUSHING=true; PC_DIRTY=false;
+  const data=pcSnapshot();
+  try{
+    const {data:row,error}=await SB.from("pcs").update({data}).eq("id",CUR_PC.id).select("updated_at").single();
+    if(error) throw error;
+    if(row) localStorage.setItem("wc_acct_seen", row.updated_at);
+    return true;
+  }catch(e){
+    PC_DIRTY=true;                       // failed — try again on the next change
+    return false;
+  }finally{ PC_PUSHING=false; }
+}
+/* a hidden tab is the last moment we can reliably run a normal request */
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden" && PC_DIRTY) pcPush(); });
+
+/* ---- account screen ---- */
+let acMode="signin", acBusy=false;
+function acShow(){ $("#pcs").classList.remove("show"); $("#account").classList.add("show"); acPaint(); }
+function acPaint(){
+  const reg = acMode==="register";
+  $("#ac-title").textContent = reg ? "Create a WinClone account" : "Sign in to WinClone";
+  $("#ac-sub").textContent   = reg ? "One account, up to three PCs, on any computer."
+                                   : "Your PCs follow you to any computer you sign in from.";
+  $("#ac-go").textContent    = reg ? "Create account" : "Sign in";
+  $("#ac-swap").textContent  = reg ? "Already have an account? Sign in"
+                                   : "Don't have an account? Create one";
+  $("#ac-pass").setAttribute("autocomplete", reg?"new-password":"current-password");
+  acErr("");
+}
+function acErr(msg){
+  const e=$("#ac-err"); if(!e) return;
+  e.textContent=msg||""; e.classList.toggle("show",!!msg);
+  if(msg) sfx("error");
+}
+function acLock(on){
+  acBusy=on;
+  const b=$("#ac-go"); if(b) b.disabled=on;
+  const g=$("#ac-google"); if(g) g.disabled=on;
+}
+/* Supabase's messages are written for developers; these are written for people. */
+function acFriendly(err){
+  const m=String((err&&err.message)||err||"").toLowerCase();
+  if(m.includes("invalid login"))        return "That email and password don't match an account.";
+  if(m.includes("already registered")||m.includes("already been registered"))
+                                         return "There's already an account with that email. Try signing in.";
+  if(m.includes("password should be"))   return "Passwords need to be at least 6 characters.";
+  if(m.includes("valid email")||m.includes("invalid email"))
+                                         return "That doesn't look like an email address.";
+  if(m.includes("email not confirmed"))  return "This account hasn't been confirmed yet. Check your email.";
+  if(m.includes("rate limit")||m.includes("too many"))
+                                         return "Too many tries. Wait a minute and go again.";
+  if(m.includes("failed to fetch")||m.includes("network"))
+                                         return "Couldn't reach the sign-in server. Check your connection.";
+  return "Something went wrong signing in. Try again in a moment.";
+}
+async function acSubmit(){
+  if(acBusy) return;
+  const email=$("#ac-email").value.trim(), pass=$("#ac-pass").value;
+  if(!email){ acErr("Enter your email."); return; }
+  if(!pass){ acErr("Enter your password."); return; }
+  if(acMode==="register" && pass.length<6){ acErr("Passwords need to be at least 6 characters."); return; }
+  if(!sbInit()){ acErr("Couldn't reach the sign-in server. Check your connection."); return; }
+  acLock(true); acErr("");
+  try{
+    const fn = acMode==="register" ? "signUp" : "signInWithPassword";
+    const {data,error} = await SB.auth[fn]({email,password:pass});
+    if(error) throw error;
+    if(!data.session){                    // email confirmation is still switched on
+      acErr("Check your email to confirm the account, then sign in.");
+      acLock(false); return;
+    }
+    ACCT=data.user;
+    $("#ac-pass").value="";
+    await pcOpen();
+  }catch(e){ acErr(acFriendly(e)); }
+  finally{ acLock(false); }
+}
+async function acGoogle(){
+  if(acBusy) return;
+  if(!sbInit()){ acErr("Couldn't reach the sign-in server. Check your connection."); return; }
+  acLock(true); acErr("");
+  /* signInWithOAuth builds its URL locally and navigates — it never round-trips,
+     so a provider that isn't switched on can't be detected here, and a failed
+     navigation would otherwise leave both buttons disabled forever. If we're
+     still on this page a few seconds later, the redirect didn't take. */
+  const stuck=setTimeout(()=>{
+    acLock(false);
+    acErr("Google sign-in didn't open. It may not be switched on for this site yet — use an email and password instead.");
+  },5000);
+  try{
+    const {error}=await SB.auth.signInWithOAuth({
+      provider:"google",
+      options:{ redirectTo: location.origin + location.pathname }
+    });
+    if(error) throw error;               // on success the browser leaves this page
+  }catch(e){
+    clearTimeout(stuck);
+    acLock(false);
+    acErr(String((e&&e.message)||"").toLowerCase().includes("provider")
+      ? "Google sign-in isn't switched on for this site yet."
+      : acFriendly(e));
+  }
+}
+/* Supabase bounces OAuth failures back here with the reason in the URL fragment
+   (#error=...&error_description=...). Without this the user lands on a blank
+   sign-in screen with no idea what happened. */
+function acUrlError(){
+  const h=(location.hash||"").replace(/^#/,""), q=(location.search||"").replace(/^\?/,"");
+  const p=new URLSearchParams(h||q);
+  const err=p.get("error_description")||p.get("error");
+  if(!err) return false;
+  history.replaceState(null,"",location.origin+location.pathname);
+  const t=String(err).toLowerCase();
+  acErr(t.includes("provider")||t.includes("not enabled")
+    ? "Google sign-in isn't switched on for this site yet. Use an email and password."
+    : decodeURIComponent(err).replace(/\+/g," "));
+  return true;
+}
+async function acSignOut(){
+  await pcPush();
+  try{ await SB.auth.signOut(); }catch(e){}
+  ACCT=null; CUR_PC=null;
+  try{ localStorage.removeItem("wc_acct_pc"); localStorage.removeItem("wc_acct_seen"); }catch(e){}
+  location.reload();
+}
+
+/* ---- PC picker ---- */
+let PC_LIST=[];
+async function pcOpen(){
+  $("#account").classList.remove("show");
+  $("#pcs").classList.add("show");
+  const who=$("#pc-who");
+  if(who) who.textContent = "Signed in as "+((ACCT&&ACCT.email)||"your account");
+  await pcRefresh();
+}
+async function pcRefresh(){
+  const grid=$("#pc-grid");
+  grid.innerHTML=`<div class="pc-empty">Loading your PCs…</div>`;
+  try{
+    const {data,error}=await SB.from("pcs").select("id,name,updated_at,created_at")
+      .order("created_at",{ascending:true});
+    if(error) throw error;
+    PC_LIST=data||[];
+  }catch(e){
+    grid.innerHTML=`<div class="pc-empty">Couldn't load your PCs. Check your connection and reload.</div>`;
+    return;
+  }
+  pcRender();
+  /* Nothing saved yet, but this browser already has a desktop sitting in it —
+     offer to keep it rather than silently starting the user over. */
+  if(!PC_LIST.length && localStorage.getItem("wc_fs")) pcOfferImport();
+}
+function pcWhen(ts){
+  if(!ts) return "Never opened";
+  const d=new Date(ts), diff=(Date.now()-d.getTime())/1000;
+  if(diff<90) return "Last used just now";
+  if(diff<3600) return "Last used "+Math.round(diff/60)+" min ago";
+  if(diff<86400) return "Last used "+Math.round(diff/3600)+"h ago";
+  return "Last used "+d.toLocaleDateString([], {day:"numeric",month:"short"});
+}
+function pcRender(){
+  const grid=$("#pc-grid");
+  grid.innerHTML="";
+  PC_LIST.forEach(pc=>{
+    const c=el("div","pc-card");
+    c.innerHTML=`<div class="pc-acts">
+        <button data-act="rename" title="Rename">✎</button>
+        <button data-act="delete" title="Delete">🗑</button>
+      </div>
+      <div class="pc-mon"><i></i></div>
+      <div class="pc-name">${esc(pc.name)}</div>
+      <div class="pc-when">${esc(pcWhen(pc.updated_at))}</div>`;
+    c.onclick=e=>{
+      const act=e.target.closest("[data-act]");
+      if(act){ e.stopPropagation(); (act.dataset.act==="rename"?pcRename:pcDelete)(pc); return; }
+      pcEnter(pc);
+    };
+    grid.appendChild(c);
+  });
+  if(PC_LIST.length<PC_MAX){
+    const n=el("div","pc-card new");
+    n.innerHTML=`<div class="pc-plus">＋</div><div class="pc-name">New PC</div>
+      <div class="pc-when">${PC_MAX-PC_LIST.length} of ${PC_MAX} slots free</div>`;
+    n.onclick=()=>pcNameCard(n,"",name=>pcCreate(name));
+    grid.appendChild(n);
+  }
+}
+/* Turn a card into a text field — nicer than a browser prompt(), and it keeps
+   the whole flow inside WinClone's own look. */
+function pcNameCard(card, initial, done){
+  const prev=card.innerHTML, wasNew=card.classList.contains("new");
+  card.classList.remove("new");
+  card.innerHTML=`<div class="pc-mon"><i></i></div>
+    <input class="pc-input" maxlength="24" placeholder="PC name" value="${esc(initial||"")}">`;
+  const inp=card.querySelector(".pc-input");
+  Object.assign(inp.style,{width:"100%",height:"30px",marginTop:"8px",border:"1px solid rgba(255,255,255,.5)",
+    background:"rgba(0,0,0,.25)",color:"#fff",font:"inherit",fontSize:"13px",textAlign:"center",outline:"none"});
+  const cancel=()=>{ card.innerHTML=prev; if(wasNew) card.classList.add("new"); pcRender(); };
+  inp.onclick=e=>e.stopPropagation();
+  inp.onkeydown=e=>{
+    e.stopPropagation();
+    if(e.key==="Enter"){ const v=inp.value.trim(); if(!v){ cancel(); return; } card.classList.add("busy"); done(v); }
+    if(e.key==="Escape") cancel();
+  };
+  inp.onblur=()=>setTimeout(()=>{ if(document.body.contains(inp)) cancel(); },120);
+  setTimeout(()=>inp.focus(),30);
+}
+async function pcCreate(name){
+  try{
+    const {data,error}=await SB.from("pcs")
+      .insert({user_id:ACCT.id, name:name.slice(0,24), data:{}}).select("id,name").single();
+    if(error) throw error;
+    pcEnter(data, true);                 // fresh PC: nothing to restore, just boot it
+  }catch(e){
+    const msg=String((e&&e.message)||"");
+    winDialog({icon:"⚠️",title:"WinClone Account",top:true,
+      msg: msg.includes("PC_LIMIT")
+        ? `You can have ${PC_MAX} PCs on one account. Delete one to make room.`
+        : "Couldn't create that PC. Check your connection and try again."});
+    pcRefresh();
+  }
+}
+function pcRename(pc){
+  const card=[...$("#pc-grid").children][PC_LIST.indexOf(pc)];
+  if(!card) return;
+  pcNameCard(card, pc.name, async name=>{
+    try{
+      const {error}=await SB.from("pcs").update({name:name.slice(0,24)}).eq("id",pc.id);
+      if(error) throw error;
+    }catch(e){}
+    pcRefresh();
+  });
+}
+function pcDelete(pc){
+  winDialog({icon:"🗑",title:"Delete this PC?",top:true,
+    msg:`<b>${esc(pc.name)}</b> and everything on it — files, wallpaper, settings — will be gone for good.<br>
+         <small style="color:#9a9a9a">This can't be undone.</small>`,
+    buttons:[
+      {label:"Cancel"},
+      {label:"Delete PC", primary:true, action:async()=>{
+        try{ await SB.from("pcs").delete().eq("id",pc.id); }catch(e){}
+        if(CUR_PC && CUR_PC.id===pc.id){
+          try{ localStorage.removeItem("wc_acct_pc"); }catch(e){}
+          CUR_PC=null;
+        }
+        pcRefresh();
+      }}
+    ]});
+}
+/* Load a PC and restart into it. */
+async function pcEnter(pc, fresh){
+  const grid=$("#pc-grid");
+  grid.innerHTML=`<div class="pc-empty">Starting ${esc(pc.name)}…</div>`;
+  let snap={}, seen=null;
+  if(!fresh){
+    try{
+      const {data,error}=await SB.from("pcs").select("data,updated_at").eq("id",pc.id).single();
+      if(error) throw error;
+      snap=data.data||{}; seen=data.updated_at;
+    }catch(e){
+      grid.innerHTML=`<div class="pc-empty">Couldn't load that PC. Check your connection and try again.</div>`;
+      setTimeout(pcRefresh,2200);
+      return;
+    }
+  }
+  pcApply(snap);
+  try{
+    localStorage.setItem("wc_acct_pc", pc.id);
+    if(seen) localStorage.setItem("wc_acct_seen", seen);
+  }catch(e){}
+  const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Starting "+pc.name+"…";
+  setTimeout(()=>location.reload(),900);
+}
+/* First sign-in on a browser that already had a desktop in it. */
+function pcOfferImport(){
+  const grid=$("#pc-grid");
+  grid.innerHTML=`<div class="pc-empty">There's already a desktop saved in this browser.<br>
+    Keep it as your first PC, or start fresh?</div>`;
+  const row=el("div"); row.style.cssText="display:flex;gap:10px;margin-top:4px";
+  const keep=el("button","lg-btn","Keep it"), fresh=el("button","lg-btn","Start fresh");
+  keep.onclick=async()=>{
+    keep.disabled=fresh.disabled=true;
+    const data=pcSnapshot();
+    try{
+      const {data:row2,error}=await SB.from("pcs")
+        .insert({user_id:ACCT.id, name:(getUser()||"My")+"'s PC", data}).select("id,name").single();
+      if(error) throw error;
+      pcEnter(row2, true);               // already in localStorage — don't re-download it
+    }catch(e){
+      winDialog({icon:"⚠️",title:"WinClone Account",top:true,msg:"Couldn't save that desktop. Check your connection and try again."});
+      pcRefresh();
+    }
+  };
+  fresh.onclick=()=>pcRender();
+  row.appendChild(keep); row.appendChild(fresh);
+  grid.appendChild(row);
+}
+
+/* ---- boot ----
+   Decides which of the three screens the splash lifts on: sign in, pick a PC,
+   or straight to the lock screen of the PC we were already in. */
+function acOffline(why){
+  ACCT_OFFLINE=true;
+  const b=$("#ac-offline");
+  if(b){ b.textContent=why; b.classList.add("show"); }
+  $("#account").classList.add("show");
+  const go=$("#ac-go"), g=$("#ac-google");
+  if(go) go.disabled=true;
+  if(g) g.disabled=true;
+  /* Local-only escape hatch: without it an offline visitor gets a dead screen. */
+  const skip=el("button","lg-link","Use this browser's PC without an account");
+  skip.onclick=()=>{ $("#account").classList.remove("show"); $("#login").classList.remove("hide"); lgReset(); };
+  $(".ac-card").appendChild(skip);
+}
+async function acBoot(){
+  if(!sbInit()){
+    acOffline("Couldn't load the sign-in service. You're offline, or this page was opened straight from a file.");
+    return;
+  }
+  let session=null;
+  try{
+    const {data}=await SB.auth.getSession();
+    session=data.session;
+  }catch(e){
+    acOffline("Couldn't reach the sign-in server. Check your connection and reload.");
+    return;
+  }
+  if(!session){ acShow(); acUrlError(); return; }
+  ACCT=session.user;
+  const pcId=localStorage.getItem("wc_acct_pc");
+  if(!pcId){ await pcOpen(); return; }
+  /* We're already inside a PC — confirm it still exists, then unlock it. */
+  try{
+    const {data,error}=await SB.from("pcs").select("id,name,updated_at").eq("id",pcId).single();
+    if(error||!data) throw error||new Error("gone");
+    CUR_PC={id:data.id,name:data.name};
+    const seen=localStorage.getItem("wc_acct_seen");
+    if(seen && data.updated_at && data.updated_at>seen){
+      setTimeout(()=>showToast({icon:"☁️",title:"Opened somewhere else",
+        body:"This PC was used on another device more recently. Reload to get that version."}),4000);
+    }
+    $("#login").classList.remove("hide");
+    lgReset();
+  }catch(e){
+    try{ localStorage.removeItem("wc_acct_pc"); }catch(_){}
+    await pcOpen();
+  }
 }
 
 /* ============================ LOCK SCREEN / PASSWORD ============================
@@ -10643,6 +11130,15 @@ function ssStop(){ ssActive=false; cancelAnimationFrame(ssRAF); const ss=$("#scr
 ["mousemove","mousedown","keydown","wheel","touchstart"].forEach(ev=>document.addEventListener(ev,()=>{ if(ssActive) ssStop(); else ssArm(); },{passive:true}));
 $("#lg-go").onclick = trySignIn;
 $("#lg-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") trySignIn(); });
+
+/* ---- WinClone Account screen ---- */
+$("#ac-go").onclick     = acSubmit;
+$("#ac-google").onclick = acGoogle;
+$("#ac-swap").onclick   = ()=>{ acMode = acMode==="register" ? "signin" : "register"; acPaint(); };
+["#ac-email","#ac-pass"].forEach(sel=>{
+  $(sel).addEventListener("keydown", e=>{ if(e.key==="Enter") acSubmit(); });
+});
+$("#pc-signout").onclick = acSignOut;
 
 /* ---- first-run setup: password, then a security question ---- */
 $("#lg-next1").onclick = ()=>{
@@ -10809,7 +11305,7 @@ if(savedAccent){ const [a,s]=savedAccent.split("|"); if(a) document.documentElem
 applyUserUI();
 const savedWall=localStorage.getItem("wc_wall");
 if(savedWall) applyWallpaper(savedWall);
-lgReset();   // shows the sign-in box, or the forced first-run setup if no password exists
+acBoot();    // account → PC picker → lock screen, whichever this visitor needs
 /* boot splash: spin the dots for a moment, then reveal the lock screen */
 setTimeout(()=>{ const b=$("#boot"); if(b) b.classList.add("hide"); }, 2300);
 /* free the audio of any track that was deleted last session (see wcdbGC) */

@@ -293,6 +293,71 @@
   @keyframes lgshake{0%,100%{transform:translateX(0)}20%{transform:translateX(-9px)}
     40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(4px)}}
 
+  /* ---------- WINCLONE ACCOUNT / PC PICKER ---------- */
+  /* Same backdrop as the lock screen so signing in, picking a PC and unlocking
+     read as three steps of one boot rather than three different screens. */
+  #account,#pcs{position:fixed;inset:0;z-index:99998;display:none;flex-direction:column;
+    align-items:center;justify-content:center;color:#fff;
+    background-color:#0a1830;
+    background-image:radial-gradient(60% 55% at 50% 45%,rgba(70,130,220,.6),transparent 70%),radial-gradient(120% 120% at 50% 50%,#12233f,#060d1a)}
+  #account.show,#pcs.show{display:flex}
+
+  .ac-card{display:flex;flex-direction:column;align-items:center;gap:11px;width:300px;
+    animation:lgin .55s var(--ease) both}
+  .ac-logo{width:42px;height:42px;margin-bottom:2px}
+  .ac-title{font-size:24px;font-weight:300}
+  .ac-sub{font-size:12.5px;opacity:.75;text-align:center;line-height:1.5;margin-bottom:6px}
+  #account input{width:100%;height:38px;border-radius:0;border:1px solid rgba(255,255,255,.4);
+    background:rgba(255,255,255,.14);color:#fff;padding:0 14px;font-size:14px;outline:none;
+    font-family:inherit;backdrop-filter:blur(8px)}
+  #account input::placeholder{color:rgba(255,255,255,.7)}
+  #account input:focus{border-color:rgba(255,255,255,.85);background:rgba(255,255,255,.2)}
+  .ac-google{width:100%;height:40px;display:flex;align-items:center;justify-content:center;gap:10px;
+    background:#fff;color:#3c4043;border:0;border-radius:0;cursor:pointer;
+    font-family:inherit;font-size:13.5px;font-weight:500}
+  .ac-google:hover{background:#f1f3f4}
+  .ac-google svg{width:17px;height:17px;flex:0 0 auto}
+  .ac-or{display:flex;align-items:center;gap:10px;width:100%;font-size:11.5px;opacity:.6;margin:1px 0}
+  .ac-or i{flex:1;height:1px;background:rgba(255,255,255,.3)}
+  .ac-go{width:100%;height:38px;background:var(--accent-solid,#0078d7);border:1px solid rgba(255,255,255,.45);
+    color:#fff;font-size:13.5px;cursor:pointer;border-radius:0;font-family:inherit}
+  .ac-go:hover{filter:brightness(1.15)}
+  .ac-go:disabled{opacity:.55;cursor:default;filter:none}
+  .ac-err{font-size:12.5px;color:#ff9c94;text-align:center;line-height:1.45;display:none;width:100%}
+  .ac-err.show{display:block}
+  .ac-offline{font-size:11.5px;color:#ffd9a0;text-align:center;line-height:1.5;display:none;
+    border:1px solid rgba(255,190,110,.35);background:rgba(255,180,90,.1);padding:9px 11px;width:100%}
+  .ac-offline.show{display:block}
+
+  /* PC picker */
+  .pc-wrap{display:flex;flex-direction:column;align-items:center;gap:24px;
+    animation:lgin .55s var(--ease) both}
+  .pc-head{text-align:center}
+  .pc-title{font-size:30px;font-weight:300}
+  .pc-sub{font-size:12.5px;opacity:.75;margin-top:5px}
+  .pc-grid{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
+  .pc-card{width:186px;height:172px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.28);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+    cursor:pointer;backdrop-filter:blur(8px);transition:background .15s,transform .15s,border-color .15s;
+    padding:14px;text-align:center;position:relative}
+  .pc-card:hover{background:rgba(255,255,255,.2);border-color:rgba(255,255,255,.6);transform:translateY(-3px)}
+  .pc-mon{width:56px;height:42px;border:2px solid rgba(255,255,255,.75);position:relative;flex:0 0 auto}
+  .pc-mon::after{content:"";position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);
+    width:20px;height:7px;background:rgba(255,255,255,.75)}
+  .pc-mon i{position:absolute;inset:3px;background:linear-gradient(135deg,#3f7fd4,#7a4fc4);display:block}
+  .pc-name{font-size:14.5px;font-weight:500;margin-top:6px;word-break:break-word;line-height:1.3}
+  .pc-when{font-size:11px;opacity:.6}
+  .pc-acts{position:absolute;top:6px;right:6px;display:flex;gap:2px;opacity:0;transition:opacity .15s}
+  .pc-card:hover .pc-acts{opacity:1}
+  .pc-acts button{width:24px;height:24px;background:rgba(0,0,0,.35);border:0;color:#fff;
+    cursor:pointer;font-size:12px;line-height:1;border-radius:0;font-family:inherit}
+  .pc-acts button:hover{background:rgba(0,0,0,.6)}
+  .pc-card.new{border-style:dashed;background:rgba(255,255,255,.05)}
+  .pc-card.new .pc-plus{font-size:38px;font-weight:200;line-height:1;opacity:.8}
+  .pc-card.busy{opacity:.5;pointer-events:none}
+  .pc-foot{display:flex;align-items:center;gap:14px;font-size:12.5px;opacity:.8}
+  .pc-empty{font-size:13px;opacity:.7;text-align:center;line-height:1.6;max-width:340px}
+
   /* shutdown */
   #shutdown{position:fixed;inset:0;z-index:100000;background:#000;color:#eee;display:none;
     flex-direction:column;align-items:center;justify-content:center;gap:26px;font-weight:300}
