@@ -18,8 +18,16 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.6.0";
+const WC_VERSION = "1.7.0";
 const WC_CHANGELOG = {
+  "1.7.0": [
+    "🎮 wcgame got a real engine upgrade: rotation and scaling (g.push/pop/translate/rotate/scale), real sprites loaded straight out of your Pictures (g.image, g.draw_image), sprite-sheet animation (g.sheet, g.anim), frame-rate-independent movement (g.dt, g.fps), collision helpers, particles, tweening/easing and richer sound (g.tone, g.play).",
+    "🧱 Tilemaps and a real platformer physics helper - g.tilemap() builds a level from text art, g.move_aabb() walks and lands a box on solid tiles for you, gravity and all.",
+    "🧊 wcgame can do 3D now. g.mesh_cube/mesh_plane/mesh_sphere/mesh/terrain build geometry, g.cam3d/orbit_cam3d/light3d set up a camera and a light, and g.draw3d renders it - a small perspective-projected, depth-sorted, flat-shaded software renderer, right on the same canvas as everything else.",
+    "🏔️ g.terrain() + g.terrain_height() + g.ground3d() give you a walkable heightmap with gravity, jumping and ground-snapping - the actual hard part of a 3D platformer, done for you.",
+    "🏗️ engine.py - a small object-oriented layer on top of wcgame: Entity/Sprite/PlatformerEntity objects with update()/draw(), a Scene that owns them, and an Engine that runs a scene stack (menu, play, pause) for you. import engine and subclass it, same as any other module in Documents\\Python.",
+    "📚 Three new examples in Documents\\Python: platformer.py (a real 2D level with tiles, camera scroll and particles), world3d.py (a 3D scene you walk and jump around in), and engine.py (run it directly for a tiny menu + bouncing-entities demo).",
+  ],
   "1.6.0": [
     "\ud83e\udde0 brain.py — a neural network, in Documents\\Python. Draw a digit on the 7×7 pad with the mouse and it tells you what it thinks it is, with how sure it is about all ten answers.",
     "\ud83c\udf93 It learns your handwriting: draw a digit, press the number key for what you actually drew, and it retrains on the spot. Wonky sevens and open-topped fours included.",
@@ -4948,7 +4956,7 @@ function makePyModules(io,stage){
     stdout:new PyModule("stdout",{write:fn("write",a=>{ io.write(pyStr(a[0])); return null; }),flush:fn("flush",()=>null)}),
   });
 
-  if(stage) mk("wcgame",makeWcgameModule(stage,fn));
+  if(stage) mk("wcgame",makeWcgameModule(stage,fn,io));
   mk("winclone",makeWincloneModule(io,fn));
   return M;
 }
@@ -5068,6 +5076,9 @@ function makePyStage(host, opts){
     held:new Set(), pressed:new Set(),
     mx:0, my:0, mdown:false, clicked:false,
     quitted:false, appId:opts.appId,
+    xfDepth:0, dt:0, targetFps:0, lastFlip:null, startTime:performance.now(),
+    cam3d:{x:0,y:0,z:-6,yaw:0,pitch:0,fov:70},
+    light3d:{dir:wc3Norm([0.4,-1,0.35]),ambient:0.35},
   };
   S.alive=()=>!S.quitted && document.body.contains(con) && !!state.wins[S.appId];
   S.quit=()=>{ S.quitted=true; };
@@ -5088,7 +5099,13 @@ function makePyStage(host, opts){
      beginFrame, so clearing on beginFrame would wipe any click that landed during
      the wait before g.click()/g.pressed() ever saw it. Clear on endFrame instead:
      the flag is read during the loop body, then cleared as the frame is presented. */
-  S.beginFrame=()=>{};
+  S.beginFrame=()=>{
+    if(S.ctx){
+      while(S.xfDepth>0){ try{ S.ctx.restore(); }catch(e){} S.xfDepth--; }  // a script that forgot pop() doesn't leak into next frame
+      S.ctx.setTransform(1,0,0,1,0,0);
+      S.ctx.globalAlpha=1;
+    }
+  };
   S.endFrame=()=>{ S.pressed.clear(); S.clicked=false; };
 
   /* ---- console ---- */
@@ -5162,27 +5179,100 @@ function makePyStage(host, opts){
   cv.addEventListener("mousedown",()=>{ S.mdown=true; S.clicked=true; });
   addEventListener("mouseup",()=>{ S.mdown=false; });
 
-  S.beep=(f,d)=>{
+  /* wave: "square" (default, and what beep() always was) · "sine" · "triangle" ·
+     "sawtooth" · "noise". vol is 0..1, on top of the system volume slider. */
+  S.tone=(f,d,wave,vol)=>{
     try{
       AC=AC||new (window.AudioContext||window.webkitAudioContext)();
       if(AC.state==="suspended") AC.resume();
-      const t=AC.currentTime, dur=Math.max(.01,Math.min(2,d||.08));
-      const o=AC.createOscillator(), g=AC.createGain();
-      o.type="square";
-      o.frequency.value=Math.max(40,Math.min(4000,f||440));
-      const vol=Math.max(0,Math.min(100,(typeof masterVol==="number"?masterVol:65)))/100*.05;
-      g.gain.setValueAtTime(0,t);
-      g.gain.linearRampToValueAtTime(vol,t+.008);
-      g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-      o.connect(g); g.connect(AC.destination);
-      o.start(t); o.stop(t+dur+.05);
+      const t=AC.currentTime, dur=Math.max(.01,Math.min(3,d||.08));
+      const sysVol=Math.max(0,Math.min(100,(typeof masterVol==="number"?masterVol:65)))/100;
+      const peak=sysVol*(vol!=null?Math.max(0,Math.min(1,vol)):.05);
+      const gn=AC.createGain();
+      gn.gain.setValueAtTime(0,t);
+      gn.gain.linearRampToValueAtTime(peak,t+.008);
+      gn.gain.exponentialRampToValueAtTime(.0001,t+dur);
+      gn.connect(AC.destination);
+      if(wave==="noise"){
+        const n=Math.max(1,Math.floor(AC.sampleRate*dur));
+        const buf=AC.createBuffer(1,n,AC.sampleRate);
+        const data=buf.getChannelData(0);
+        for(let i=0;i<n;i++) data[i]=Math.random()*2-1;
+        const src=AC.createBufferSource();
+        src.buffer=buf; src.connect(gn); src.start(t); src.stop(t+dur+.05);
+      }else{
+        const o=AC.createOscillator();
+        o.type=(wave==="sine"||wave==="triangle"||wave==="sawtooth")?wave:"square";
+        o.frequency.value=Math.max(20,Math.min(8000,f||440));
+        o.connect(gn); o.start(t); o.stop(t+dur+.05);
+      }
     }catch(e){}
   };
+  S.beep=(f,d)=>S.tone(f,d,"square");
   return S;
 }
 
+/* ---- wcgame's tiny software 3D pipeline ----
+   Model space -> world (rotate XYZ, then translate) -> camera space (undo camera
+   position, then undo yaw around Y, then undo pitch around X) -> perspective
+   projection. Camera convention: yaw 0 / pitch 0 looks down +Z, positive yaw
+   turns right (toward +X), positive pitch looks up. Faces are flat-shaded from
+   one directional light plus ambient, back-face culled, and painter's-algorithm
+   sorted back-to-front - there's no z-buffer, so very close, interpenetrating
+   geometry can sort wrong, same as any hobby software renderer. */
+function wc3Deg2Rad(d){ return d*Math.PI/180; }
+function wc3Norm(v){ const l=Math.hypot(v[0],v[1],v[2])||1; return [v[0]/l,v[1]/l,v[2]/l]; }
+function wc3Cross(a,b){ return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+function wc3RotPoint(p,rx,ry,rz){
+  let [x,y,z]=p;
+  let c=Math.cos(rx), s=Math.sin(rx); let y1=y*c-z*s, z1=y*s+z*c; y=y1; z=z1;
+  c=Math.cos(ry); s=Math.sin(ry); let x1=x*c+z*s, z2=-x*s+z*c; x=x1; z=z2;
+  c=Math.cos(rz); s=Math.sin(rz); let x2=x*c-y*s, y2=x*s+y*c; x=x2; y=y2;
+  return [x,y,z];
+}
+function wc3ToCamSpace(wp,cam){
+  let x=wp[0]-cam.x, y=wp[1]-cam.y, z=wp[2]-cam.z;
+  let rad=wc3Deg2Rad(-cam.yaw), c=Math.cos(rad), s=Math.sin(rad);
+  let x1=x*c+z*s, z1=-x*s+z*c; x=x1; z=z1;
+  rad=wc3Deg2Rad(-cam.pitch); c=Math.cos(rad); s=Math.sin(rad);
+  let y1=y*c-z*s, z2=y*s+z*c; y=y1; z=z2;
+  return [x,y,z];
+}
+function wc3Project(p,w,h,fovDeg){
+  if(p[2]<=0.05) return null;
+  const f=(h/2)/Math.tan(wc3Deg2Rad(fovDeg)/2);
+  return [w/2+(p[0]/p[2])*f, h/2-(p[1]/p[2])*f];
+}
+function wc3TerrainHeight(t,wx,wz){
+  const cols=t.cols, rows=t.rowsN;
+  let gx=wx/t.cell+(cols-1)/2, gz=wz/t.cell+(rows-1)/2;
+  gx=Math.max(0,Math.min(cols-1.0001,gx));
+  gz=Math.max(0,Math.min(rows-1.0001,gz));
+  const c0=Math.floor(gx), r0=Math.floor(gz), fx=gx-c0, fz=gz-r0;
+  const c1=Math.min(c0+1,cols-1), r1=Math.min(r0+1,rows-1);
+  const h00=t.heights[r0][c0], h10=t.heights[r0][c1], h01=t.heights[r1][c0], h11=t.heights[r1][c1];
+  const top=h00+(h10-h00)*fx, bot=h01+(h11-h01)*fx;
+  return top+(bot-top)*fz;
+}
+const _wc3RGBCache=new Map();
+function wc3ResolveRGB(color){
+  if(_wc3RGBCache.has(color)) return _wc3RGBCache.get(color);
+  if(!_wc3RGBCache.probe){ const c=document.createElement("canvas"); c.width=1; c.height=1; _wc3RGBCache.probe=c.getContext("2d"); }
+  const pctx=_wc3RGBCache.probe;
+  pctx.clearRect(0,0,1,1); pctx.fillStyle=color; pctx.fillRect(0,0,1,1);
+  const d=pctx.getImageData(0,0,1,1).data;
+  const rgb=[d[0],d[1],d[2]];
+  _wc3RGBCache.set(color,rgb);
+  return rgb;
+}
+function wc3Shade(color,intensity){
+  const rgb=wc3ResolveRGB(color);
+  const i=Math.max(0,Math.min(1.5,intensity));
+  return "rgb("+Math.min(255,Math.round(rgb[0]*i))+","+Math.min(255,Math.round(rgb[1]*i))+","+Math.min(255,Math.round(rgb[2]*i))+")";
+}
+
 /* ---- the wcgame module: WinClone's tiny graphics library ---- */
-function makeWcgameModule(stage,fn){
+function makeWcgameModule(stage,fn,io){
   const need=()=>{ if(!stage.ctx) stage.initCanvas(320,240); return stage.ctx; };
   const C=(v,d)=>v==null?(d||"#ffffff"):pyStr(v);
   const N=(v,d)=>v==null?(d||0):pyNum(v,"wcgame");
@@ -5240,7 +5330,20 @@ function makeWcgameModule(stage,fn){
     c.textAlign="left";
     return null;
   });
-  d.flip=fn("flip",function*(){ stage.endFrame(); yield {frame:1}; stage.beginFrame(); return null; },true);
+  d.flip=fn("flip",function*(){
+    stage.endFrame();
+    yield {frame:1};
+    stage.beginFrame();
+    const now=performance.now();
+    if(stage.targetFps>0){
+      const want=1000/stage.targetFps, waited=now-(stage.lastFlip||now);
+      if(waited<want) yield {sleep:Math.round(want-waited)};
+    }
+    const now2=performance.now();
+    stage.dt=Math.min(0.25,(now2-(stage.lastFlip||now2))/1000);
+    stage.lastFlip=now2;
+    return null;
+  },true);
   d.wait=fn("wait",function*(a){
     yield {sleep:Math.min(30000,Math.max(0,(a[0]!=null?N(a[0]):0)*1000))};
     return null;
@@ -5253,7 +5356,445 @@ function makeWcgameModule(stage,fn){
   d.mouse_down=fn("mouse_down",()=>stage.mdown);
   d.click  =fn("click",  ()=>stage.clicked);
   d.beep   =fn("beep",   (a)=>{ stage.beep(a[0]!=null?N(a[0]):440, a[1]!=null?N(a[1]):.08); return null; });
+  d.tone   =fn("tone",   (a,kw)=>{
+    const wave=(kw&&kw.wave)?pyStr(kw.wave):(a.length>2?pyStr(a[2]):"square");
+    const vol=(kw&&kw.vol!=null)?N(kw.vol):(a.length>3?N(a[3]):undefined);
+    stage.tone(a.length?N(a[0]):440, a.length>1?N(a[1]):.12, wave, vol);
+    return null;
+  });
+  d.play=fn("play",(a,kw)=>{
+    const notes=pyList(a[0]);
+    const wave=(kw&&kw.wave)?pyStr(kw.wave):"square";
+    const gap=(kw&&kw.gap!=null)?N(kw.gap):0.02;
+    let t=0;
+    for(const nt of notes){
+      const pair=pyList(nt);
+      const freq=N(pair[0]), dur=pair.length>1?N(pair[1]):0.12;
+      setTimeout(()=>{ if(!stage.alive()) return; try{ stage.tone(freq,dur,wave); }catch(e){} }, Math.round(t*1000));
+      t+=dur+gap;
+    }
+    return null;
+  });
   d.quit   =fn("quit",   ()=>{ stage.quit(); return null; });
+
+  /* ---- timing ---- */
+  d.dt =fn("dt", ()=>stage.dt||0);
+  d.fps=fn("fps",(a)=>{ stage.targetFps=a.length?Math.max(0,N(a[0])):0; return null; });
+  d.clock=fn("clock",()=>(performance.now()-stage.startTime)/1000);
+
+  /* ---- transform stack (rect/circle/line/poly/text/draw_image all respect it) ---- */
+  d.push=fn("push",()=>{ need().save(); stage.xfDepth++; return null; });
+  d.pop=fn("pop",()=>{
+    if(!stage.xfDepth) throw pyErr("RuntimeError","pop() without a matching push()");
+    need().restore(); stage.xfDepth--; return null;
+  });
+  d.translate=fn("translate",(a)=>{ need().translate(N(a[0]),N(a[1])); return null; });
+  d.rotate=fn("rotate",(a)=>{ need().rotate(N(a[0])*Math.PI/180); return null; });
+  d.scale=fn("scale",(a)=>{ const c=need(), sx=N(a[0],1); c.scale(sx, a[1]!=null?N(a[1]):sx); return null; });
+  /* sugar for "everything I draw from here is in world space, scrolled by the
+     camera" - pair it with push()/pop() if you also want unscrolled HUD text */
+  d.camera=fn("camera",(a)=>{ need().translate(-N(a[0]),-N(a[1])); return null; });
+
+  /* ---- images & sprites, straight out of the virtual filesystem ---- */
+  const isImg  =(v)=>v&&typeof v==="object"&&v.__wc==="image";
+  const isSheet=(v)=>v&&typeof v==="object"&&v.__wc==="sheet";
+  const isAnim =(v)=>v&&typeof v==="object"&&v.__wc==="anim";
+  const isMap  =(v)=>v&&typeof v==="object"&&v.__wc==="tilemap";
+  const isMesh =(v)=>v&&typeof v==="object"&&Array.isArray(v.verts)&&Array.isArray(v.faces);
+  const isTerrain=(v)=>v&&typeof v==="object"&&v.__wc==="terrain";
+  const imgHome=()=>io&&io.cwd&&io.cwd.length?io.cwd:[...HOME_PATH,"Pictures"];
+  const drawImg=(img,sx,sy,sw,sh,x,y,w,h,kw)=>{
+    const c=need();
+    const angle=(kw&&kw.angle!=null)?N(kw.angle):0;
+    const alpha=(kw&&kw.alpha!=null)?N(kw.alpha):1;
+    const flipx=!!(kw&&kw.flip_x&&pyTruth(kw.flip_x));
+    const flipy=!!(kw&&kw.flip_y&&pyTruth(kw.flip_y));
+    const centered=(kw&&kw.anchor)?pyStr(kw.anchor)==="center":false;
+    const cx=centered?x:x+w/2, cy=centered?y:y+h/2;
+    c.save();
+    c.globalAlpha=Math.max(0,Math.min(1,alpha));
+    c.translate(cx,cy);
+    if(angle) c.rotate(angle*Math.PI/180);
+    c.scale(flipx?-1:1, flipy?-1:1);
+    c.drawImage(img,sx,sy,sw,sh,-w/2,-h/2,w,h);
+    c.restore();
+  };
+  d.image=fn("image",function*(a){
+    const raw=pyStr(a[0]);
+    const segs=batResolve(imgHome(),raw);
+    const parent=nodeAt(segs.slice(0,-1));
+    const name=segs[segs.length-1];
+    const item=parent&&parent.children&&parent.children[name];
+    if(!item||item.folder||!item.img)
+      throw pyErr("FileNotFoundError","no picture called '"+raw+
+        "' - draw one in Paint and save it, or point at a file in Pictures");
+    if(!stage.imgCache) stage.imgCache=new Map();
+    if(stage.imgCache.has(item.img)) return stage.imgCache.get(item.img);
+    const im=new Image();
+    im.src=item.img;
+    let n=0;
+    while(!im.complete && n++<600) yield {sleep:16};
+    if(!im.complete||!im.naturalWidth) throw pyErr("ValueError","'"+raw+"' isn't a readable image");
+    const h={__wc:"image",img:im,w:im.naturalWidth,h:im.naturalHeight};
+    stage.imgCache.set(item.img,h);
+    return h;
+  },true);
+  d.image_size=fn("image_size",(a)=>{
+    if(!isImg(a[0])) throw pyErr("TypeError","image_size() needs an image from g.image()");
+    return PyTuple.from([a[0].w,a[0].h]);
+  });
+  d.draw_image=fn("draw_image",(a,kw)=>{
+    if(!isImg(a[0])) throw pyErr("TypeError","draw_image() needs an image from g.image()");
+    const im=a[0], x=N(a[1]), y=N(a[2]);
+    const w=(kw&&kw.w!=null)?N(kw.w):(a[3]!=null?N(a[3]):im.w);
+    const h=(kw&&kw.h!=null)?N(kw.h):(a[4]!=null?N(a[4]):im.h);
+    drawImg(im.img,0,0,im.w,im.h,x,y,w,h,kw);
+    return null;
+  });
+
+  /* ---- sprite sheets & frame animation ---- */
+  d.sheet=fn("sheet",(a)=>{
+    if(!isImg(a[0])) throw pyErr("TypeError","sheet() needs an image from g.image()");
+    const im=a[0], fw=Math.max(1,Math.round(N(a[1]))), fh=Math.max(1,Math.round(N(a[2])));
+    const cols=Math.max(1,Math.floor(im.w/fw)), rows=Math.max(1,Math.floor(im.h/fh));
+    return {__wc:"sheet",img:im.img,fw,fh,cols,rows,count:cols*rows};
+  });
+  d.draw_frame=fn("draw_frame",(a,kw)=>{
+    if(!isSheet(a[0])) throw pyErr("TypeError","draw_frame() needs a sheet from g.sheet()");
+    const sh=a[0];
+    let idx=Math.trunc(N(a[1])); idx=((idx%sh.count)+sh.count)%sh.count;
+    const sx=(idx%sh.cols)*sh.fw, sy=Math.floor(idx/sh.cols)*sh.fh;
+    const x=N(a[2]), y=N(a[3]);
+    const w=(kw&&kw.w!=null)?N(kw.w):(a[4]!=null?N(a[4]):sh.fw);
+    const h=(kw&&kw.h!=null)?N(kw.h):(a[5]!=null?N(a[5]):sh.fh);
+    drawImg(sh.img,sx,sy,sh.fw,sh.fh,x,y,w,h,kw);
+    return null;
+  });
+  d.anim=fn("anim",(a,kw)=>{
+    const frames=pyList(a[0]).map(v=>Math.trunc(N(v)));
+    if(!frames.length) throw pyErr("ValueError","anim() needs at least one frame index");
+    const fps=Math.max(0.01,a.length>1?N(a[1]):8);
+    const loop=(kw&&"loop" in kw)?pyTruth(kw.loop):(a.length>2?pyTruth(a[2]):true);
+    return {__wc:"anim",frames,fps,loop,t:0,done:false};
+  });
+  d.anim_update=fn("anim_update",(a)=>{
+    if(!isAnim(a[0])) throw pyErr("TypeError","anim_update() needs an anim from g.anim()");
+    const an=a[0], dtv=a.length>1?N(a[1]):(stage.dt||0), step=1/an.fps;
+    if(!an.done) an.t+=dtv;
+    let i=Math.floor(an.t/step);
+    if(an.loop) i=((i%an.frames.length)+an.frames.length)%an.frames.length;
+    else if(i>=an.frames.length-1){ i=an.frames.length-1; an.done=true; }
+    return an.frames[i];
+  });
+  d.anim_reset=fn("anim_reset",(a)=>{ if(isAnim(a[0])){ a[0].t=0; a[0].done=false; } return null; });
+  d.anim_done=fn("anim_done",(a)=>!!(isAnim(a[0])&&a[0].done));
+
+  /* ---- collision ---- */
+  d.hit_rect=fn("hit_rect",(a)=>{
+    const x1=N(a[0]),y1=N(a[1]),w1=N(a[2]),h1=N(a[3]),x2=N(a[4]),y2=N(a[5]),w2=N(a[6]),h2=N(a[7]);
+    return x1<x2+w2 && x2<x1+w1 && y1<y2+h2 && y2<y1+h1;
+  });
+  d.hit_circle=fn("hit_circle",(a)=>{
+    const dx=N(a[0])-N(a[3]), dy=N(a[1])-N(a[4]), rr=N(a[2])+N(a[5]);
+    return dx*dx+dy*dy<=rr*rr;
+  });
+  d.hit_point=fn("hit_point",(a)=>{
+    const px=N(a[0]),py=N(a[1]),x=N(a[2]),y=N(a[3]),w=N(a[4]),h=N(a[5]);
+    return px>=x&&px<x+w&&py>=y&&py<y+h;
+  });
+
+  /* ---- tilemaps: g.tilemap(["####","#..#","####"], 16, 16, {"#": "#553311"}, solid="#") ---- */
+  d.tilemap=fn("tilemap",(a,kw)=>{
+    const rows=pyList(a[0]).map(r=>pyStr(r));
+    const tw=Math.max(1,Math.round(N(a[1]))), th=Math.max(1,Math.round(N(a[2])));
+    const legend=a[3];
+    const colors={};
+    if(legend instanceof PyDict) for(const [,kv] of legend.m) colors[pyStr(kv[0])]=kv[1];
+    const solidStr=(kw&&kw.solid!=null)?pyStr(kw.solid):(a.length>4?pyStr(a[4]):"");
+    return {__wc:"tilemap",rows,tw,th,colors,solid:new Set(solidStr.split("")),
+      cols:rows.length?Math.max(...rows.map(r=>r.length)):0,rowsN:rows.length};
+  });
+  d.draw_tilemap=fn("draw_tilemap",(a)=>{
+    if(!isMap(a[0])) throw pyErr("TypeError","draw_tilemap() needs a tilemap from g.tilemap()");
+    const c=need(), map=a[0], ox=a.length>1?N(a[1]):0, oy=a.length>2?N(a[2]):0;
+    for(let r=0;r<map.rows.length;r++){
+      const row=map.rows[r];
+      for(let col=0;col<row.length;col++){
+        const ch=row[col];
+        if(ch===" ") continue;
+        const v=map.colors[ch];
+        if(v===undefined) continue;
+        const x=ox+col*map.tw, y=oy+r*map.th;
+        if(isImg(v)) c.drawImage(v.img,0,0,v.w,v.h,x,y,map.tw,map.th);
+        else { c.fillStyle=C(v); c.fillRect(x,y,map.tw,map.th); }
+      }
+    }
+    return null;
+  });
+  const tileSolidAt=(map,wx,wy)=>{
+    const col=Math.floor(wx/map.tw), row=Math.floor(wy/map.th);
+    if(row<0||row>=map.rows.length) return false;
+    const r=map.rows[row]; const ch=(col<0||col>=r.length)?" ":r[col];
+    return map.solid.has(ch);
+  };
+  d.tile_at=fn("tile_at",(a)=>{
+    const map=a[0], col=Math.floor(N(a[1])), row=Math.floor(N(a[2]));
+    if(row<0||row>=map.rows.length) return " ";
+    const r=map.rows[row]; return (col<0||col>=r.length)?" ":r[col];
+  });
+  d.tile_solid=fn("tile_solid",(a)=>tileSolidAt(a[0],N(a[1]),N(a[2])));
+  /* the actual hard part of a tile platformer: move a w×h box by (vx,vy),
+     stopping it at solid tiles axis by axis, and report whether it's resting
+     on the ground. Keep |vx| and |vy| under one tile per call - like any
+     simple engine without full swept collision, faster movement can tunnel. */
+  d.move_aabb=fn("move_aabb",(a)=>{
+    const map=a[0];
+    if(!isMap(map)) throw pyErr("TypeError","move_aabb() needs a tilemap from g.tilemap()");
+    const x=N(a[1]), y=N(a[2]), w=N(a[3]), h=N(a[4]);
+    let vx=N(a[5]), vy=N(a[6]);
+    const inset=0.01;
+    const rectSolid=(rx,ry)=>tileSolidAt(map,rx+inset,ry+inset)||tileSolidAt(map,rx+w-inset,ry+inset)||
+                              tileSolidAt(map,rx+inset,ry+h-inset)||tileSolidAt(map,rx+w-inset,ry+h-inset);
+    let nx=x+vx;
+    if(rectSolid(nx,y)){
+      if(vx>0) nx=Math.floor((nx+w)/map.tw)*map.tw-w;
+      else if(vx<0) nx=(Math.floor(nx/map.tw)+1)*map.tw;
+      vx=0;
+    }
+    let ny=y+vy;
+    if(rectSolid(nx,ny)){
+      if(vy>0) ny=Math.floor((ny+h)/map.th)*map.th-h;
+      else if(vy<0) ny=(Math.floor(ny/map.th)+1)*map.th;
+      vy=0;
+    }
+    const onGround=rectSolid(nx,ny+1);
+    return PyTuple.from([nx,ny,vx,vy,onGround]);
+  });
+
+  /* ---- particles: fire-and-forget bursts (sparks, dust, explosions) ---- */
+  d.particles=fn("particles",()=>({__wc:"particles",list:[]}));
+  d.particles_emit=fn("particles_emit",(a,kw)=>{
+    const ps=a[0];
+    if(!ps||ps.__wc!=="particles") throw pyErr("TypeError","particles_emit() needs a system from g.particles()");
+    const x=N(a[1]), y=N(a[2]);
+    const count=(kw&&kw.count!=null)?Math.trunc(N(kw.count)):8;
+    const speed=(kw&&kw.speed!=null)?N(kw.speed):80;
+    const life=(kw&&kw.life!=null)?N(kw.life):0.6;
+    const color=(kw&&kw.color!=null)?C(kw.color):"#ffd166";
+    const size=(kw&&kw.size!=null)?N(kw.size):3;
+    const gravity=(kw&&kw.gravity!=null)?N(kw.gravity):0;
+    const spread=(kw&&kw.spread!=null)?N(kw.spread):360;
+    const baseAngle=(kw&&kw.angle!=null)?N(kw.angle):0;
+    for(let i=0;i<count;i++){
+      const ang=(baseAngle-spread/2+Math.random()*spread)*Math.PI/180;
+      const sp=speed*(0.5+Math.random()*0.5);
+      ps.list.push({x,y,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,life,age:0,color,size,gravity});
+    }
+    return null;
+  });
+  d.particles_update=fn("particles_update",(a)=>{
+    const ps=a[0], dtv=a.length>1?N(a[1]):(stage.dt||0);
+    ps.list=ps.list.filter(p=>{
+      p.age+=dtv; if(p.age>=p.life) return false;
+      p.vy+=p.gravity*dtv; p.x+=p.vx*dtv; p.y+=p.vy*dtv;
+      return true;
+    });
+    return null;
+  });
+  d.particles_draw=fn("particles_draw",(a)=>{
+    const c=need(), ps=a[0];
+    for(const p of ps.list){
+      const t=1-p.age/p.life;
+      c.globalAlpha=Math.max(0,Math.min(1,t));
+      c.fillStyle=p.color;
+      const s=p.size*Math.max(0.15,t);
+      c.fillRect(p.x-s/2,p.y-s/2,s,s);
+    }
+    c.globalAlpha=1;
+    return null;
+  });
+  d.particles_count=fn("particles_count",(a)=>a[0].list.length);
+
+  /* ---- tweening & easing ---- */
+  const EASES={
+    linear:t=>t, in_:t=>t*t, out:t=>1-(1-t)*(1-t),
+    inout:t=>t<0.5?2*t*t:1-Math.pow(-2*t+2,2)/2,
+    bounce:t=>{ const n1=7.5625,d1=2.75; if(t<1/d1) return n1*t*t; if(t<2/d1){ t-=1.5/d1; return n1*t*t+0.75; } if(t<2.5/d1){ t-=2.25/d1; return n1*t*t+0.9375; } t-=2.625/d1; return n1*t*t+0.984375; },
+  };
+  const easeKind=(s)=>s==="in"?"in_":s;   // "in" reads better in Python than "in_", so accept both
+  d.ease=fn("ease",(a)=>{
+    const t=Math.max(0,Math.min(1,N(a[0])));
+    const kind=easeKind(a.length>1?pyStr(a[1]):"linear");
+    const f=EASES[kind];
+    if(!f) throw pyErr("ValueError","unknown ease kind - try linear, in, out, inout, bounce");
+    return f(t);
+  });
+  d.lerp=fn("lerp",(a)=>{ const av=N(a[0]),bv=N(a[1]); return av+(bv-av)*N(a[2]); });
+  d.tween=fn("tween",(a)=>{
+    const av=N(a[0]),bv=N(a[1]),t=Math.max(0,Math.min(1,N(a[2])));
+    const f=EASES[easeKind(a.length>3?pyStr(a[3]):"linear")]||EASES.linear;
+    return av+(bv-av)*f(t);
+  });
+
+  /* ---- 3D: meshes, a camera, a light, and a small software rasterizer ---- */
+  d.mesh=fn("mesh",(a,kw)=>{
+    const verts=pyList(a[0]).map(v=>pyList(v).map(n=>N(n)));
+    const faces=pyList(a[1]).map(f=>pyList(f).map(n=>Math.trunc(N(n))));
+    let colors;
+    if(a.length>2&&a[2]!=null) colors=pyList(a[2]).map(cv=>C(cv));
+    else { const defc=(kw&&kw.color)?C(kw.color):"#c0c0c0"; colors=faces.map(()=>defc); }
+    return {__wc:"mesh",verts,faces,colors};
+  });
+  d.mesh_cube=fn("mesh_cube",(a,kw)=>{
+    const s=(a.length?N(a[0]):1)/2;
+    const color=(kw&&kw.color)?C(kw.color):(a.length>1?C(a[1]):"#c0c0c0");
+    const verts=[[-s,-s,-s],[s,-s,-s],[s,s,-s],[-s,s,-s],[-s,-s,s],[s,-s,s],[s,s,s],[-s,s,s]];
+    const faces=[[1,0,3,2],[4,5,6,7],[0,4,7,3],[5,1,2,6],[3,7,6,2],[4,0,1,5]];
+    return {__wc:"mesh",verts,faces,colors:faces.map(()=>color)};
+  });
+  d.mesh_plane=fn("mesh_plane",(a,kw)=>{
+    const w=a.length?N(a[0]):1, dd=a.length>1?N(a[1]):w;
+    const color=(kw&&kw.color)?C(kw.color):(a.length>2?C(a[2]):"#3a7d44");
+    const hw=w/2, hd=dd/2;
+    return {__wc:"mesh",verts:[[-hw,0,-hd],[-hw,0,hd],[hw,0,hd],[hw,0,-hd]],faces:[[0,1,2,3]],colors:[color]};
+  });
+  d.mesh_sphere=fn("mesh_sphere",(a,kw)=>{
+    const r=a.length?N(a[0]):1;
+    const segs=Math.max(4,Math.min(32,a.length>1?Math.trunc(N(a[1])):10));
+    const color=(kw&&kw.color)?C(kw.color):(a.length>2?C(a[2]):"#c0c0c0");
+    const rows=segs, cols=segs*2, verts=[];
+    for(let i=0;i<=rows;i++){
+      const phi=Math.PI*i/rows-Math.PI/2;
+      for(let j=0;j<cols;j++){
+        const theta=2*Math.PI*j/cols;
+        verts.push([r*Math.cos(phi)*Math.cos(theta), r*Math.sin(phi), r*Math.cos(phi)*Math.sin(theta)]);
+      }
+    }
+    const idx=(i,j)=>i*cols+((j+cols)%cols), faces=[];
+    for(let i=0;i<rows;i++) for(let j=0;j<cols;j++)
+      faces.push([idx(i,j),idx(i+1,j),idx(i+1,j+1),idx(i,j+1)]);
+    return {__wc:"mesh",verts,faces,colors:faces.map(()=>color)};
+  });
+  d.terrain=fn("terrain",(a,kw)=>{
+    const raw=pyList(a[0]).map(row=>pyList(row).map(v=>N(v)));
+    const cell=a.length>1?N(a[1]):2;
+    const color=(kw&&kw.color)?C(kw.color):(a.length>2?C(a[2]):"#3a7d44");
+    const rowsN=raw.length, cols=rowsN?raw[0].length:0;
+    if(!rowsN||!cols) throw pyErr("ValueError","terrain() needs a non-empty grid of heights");
+    const verts=[];
+    for(let r=0;r<rowsN;r++) for(let c=0;c<cols;c++) verts.push([(c-(cols-1)/2)*cell, raw[r][c], (r-(rowsN-1)/2)*cell]);
+    const idx=(r,c)=>r*cols+c, faces=[], colors=[];
+    for(let r=0;r<rowsN-1;r++) for(let c=0;c<cols-1;c++){
+      faces.push([idx(r,c),idx(r+1,c),idx(r+1,c+1),idx(r,c+1)]);
+      colors.push(color);
+    }
+    return {__wc:"terrain",verts,faces,colors,heights:raw,cell,cols,rowsN};
+  });
+  d.terrain_height=fn("terrain_height",(a)=>{
+    if(!isTerrain(a[0])) throw pyErr("TypeError","terrain_height() needs a terrain from g.terrain()");
+    return wc3TerrainHeight(a[0],N(a[1]),N(a[2]));
+  });
+  d.cam3d=fn("cam3d",(a,kw)=>{
+    const pos=pyList(a[0]).map(v=>N(v));
+    const fov=(kw&&kw.fov!=null)?N(kw.fov):(a.length>3?N(a[3]):70);
+    stage.cam3d={x:pos[0]||0,y:pos[1]||0,z:pos[2]||0,yaw:a.length>1?N(a[1]):0,pitch:a.length>2?N(a[2]):0,fov};
+    return null;
+  });
+  /* an orbiting third-person camera: aim it at a target position from a
+     yaw/pitch/distance, the way a platformer camera follows a player */
+  d.orbit_cam3d=fn("orbit_cam3d",(a,kw)=>{
+    const target=pyList(a[0]).map(v=>N(v));
+    const yaw=N(a[1]), pitch=a.length>2?N(a[2]):15, dist=a.length>3?N(a[3]):6;
+    const fov=(kw&&kw.fov!=null)?N(kw.fov):70;
+    const yr=wc3Deg2Rad(yaw), pr=wc3Deg2Rad(pitch);
+    const fwd=[Math.sin(yr)*Math.cos(pr), Math.sin(pr), Math.cos(yr)*Math.cos(pr)];
+    stage.cam3d={x:target[0]-fwd[0]*dist,y:target[1]-fwd[1]*dist,z:target[2]-fwd[2]*dist,yaw,pitch,fov};
+    return null;
+  });
+  d.light3d=fn("light3d",(a,kw)=>{
+    const dir=pyList(a[0]).map(v=>N(v));
+    const ambient=(kw&&kw.ambient!=null)?N(kw.ambient):(a.length>1?N(a[1]):0.35);
+    stage.light3d={dir:wc3Norm(dir),ambient:Math.max(0,Math.min(1,ambient))};
+    return null;
+  });
+  d.draw3d=fn("draw3d",(a,kw)=>{
+    const c=need(), mesh=a[0];
+    if(!isMesh(mesh)) throw pyErr("TypeError","draw3d() needs a mesh - g.mesh_cube(), g.mesh_sphere(), g.terrain(), g.mesh(), …");
+    const pos=a.length>1?pyList(a[1]).map(v=>N(v)):[0,0,0];
+    const rotArr=a.length>2?pyList(a[2]).map(v=>N(v)):[0,0,0];
+    const rx=wc3Deg2Rad(rotArr[0]||0), ry=wc3Deg2Rad(rotArr[1]||0), rz=wc3Deg2Rad(rotArr[2]||0);
+    const overrideColor=(kw&&kw.color!=null)?C(kw.color):null;
+    const sc=(kw&&kw.scale!=null)?N(kw.scale):1;
+    const wire=!!(kw&&kw.wire&&pyTruth(kw.wire));
+    const shaded=!(kw&&"shaded" in kw)||pyTruth(kw.shaded);
+    const cam=stage.cam3d, light=stage.light3d;
+
+    const world=mesh.verts.map(v=>{
+      const p=wc3RotPoint([v[0]*sc,v[1]*sc,v[2]*sc],rx,ry,rz);
+      return [p[0]+pos[0],p[1]+pos[1],p[2]+pos[2]];
+    });
+    const camSp=world.map(p=>wc3ToCamSpace(p,cam));
+
+    const drawList=[];
+    for(let fi=0; fi<mesh.faces.length; fi++){
+      const face=mesh.faces[fi], pts=face.map(i=>camSp[i]);
+      if(pts.some(p=>p[2]<=0.05)) continue;             // crosses the near plane - simplest possible clip
+      const e1=[pts[1][0]-pts[0][0],pts[1][1]-pts[0][1],pts[1][2]-pts[0][2]];
+      const e2=[pts[2][0]-pts[0][0],pts[2][1]-pts[0][1],pts[2][2]-pts[0][2]];
+      const nrm=wc3Cross(e1,e2);
+      const cxs=pts.reduce((s,p)=>s+p[0],0)/pts.length, cys=pts.reduce((s,p)=>s+p[1],0)/pts.length, czs=pts.reduce((s,p)=>s+p[2],0)/pts.length;
+      const facing=nrm[0]*cxs+nrm[1]*cys+nrm[2]*czs;
+      if(facing>=0 && !wire) continue;                  // back-facing
+      const proj=pts.map(p=>wc3Project(p,stage.w,stage.h,cam.fov));
+      if(proj.some(p=>!p)) continue;
+      let intensity=1;
+      if(shaded){
+        const wp=face.map(i=>world[i]);
+        const we1=[wp[1][0]-wp[0][0],wp[1][1]-wp[0][1],wp[1][2]-wp[0][2]];
+        const we2=[wp[2][0]-wp[0][0],wp[2][1]-wp[0][1],wp[2][2]-wp[0][2]];
+        const wn=wc3Norm(wc3Cross(we1,we2));
+        const diff=Math.max(0,-(wn[0]*light.dir[0]+wn[1]*light.dir[1]+wn[2]*light.dir[2]));
+        intensity=light.ambient+(1-light.ambient)*diff;
+      }
+      const baseColor=overrideColor||(mesh.colors&&mesh.colors[fi])||"#c0c0c0";
+      drawList.push({proj,color:baseColor,intensity,z:czs,wire});
+    }
+    drawList.sort((p,q)=>q.z-p.z);                       // painter's algorithm: far first
+    for(const f of drawList){
+      c.beginPath();
+      c.moveTo(f.proj[0][0],f.proj[0][1]);
+      for(let i=1;i<f.proj.length;i++) c.lineTo(f.proj[i][0],f.proj[i][1]);
+      c.closePath();
+      if(f.wire){ c.strokeStyle=f.color; c.lineWidth=1; c.stroke(); }
+      else{
+        c.fillStyle=wc3Shade(f.color,f.intensity);
+        c.fill();
+        c.strokeStyle=c.fillStyle; c.stroke();            // hides 1px seams between adjacent faces
+      }
+    }
+    return null;
+  });
+  /* gravity, jumping and landing on a heightmap - the vertical half of a 3D
+     platformer's movement. You drive x/z yourself (math.sin/cos of a yaw is
+     usually all that takes); this handles y. */
+  d.ground3d=fn("ground3d",(a,kw)=>{
+    const terrain=a[0];
+    if(!isTerrain(terrain)) throw pyErr("TypeError","ground3d() needs a terrain from g.terrain()");
+    const x=N(a[1]); let y=N(a[2]); const z=N(a[3]); let vy=N(a[4]);
+    const dtv=a.length>5?N(a[5]):(stage.dt||0.016);
+    const gravity=(kw&&kw.gravity!=null)?N(kw.gravity):18;
+    const jumpSpeed=(kw&&kw.jump_speed!=null)?N(kw.jump_speed):7;
+    const wantJump=!!(kw&&kw.jump&&pyTruth(kw.jump));
+    const groundY=wc3TerrainHeight(terrain,x,z);
+    let onGround=y<=groundY+0.001;
+    if(onGround&&wantJump) vy=jumpSpeed;
+    else if(onGround) vy=Math.max(vy,0);
+    vy-=gravity*dtv;
+    y+=vy*dtv;
+    if(y<groundY){ y=groundY; vy=0; onGround=true; } else onGround=false;
+    return PyTuple.from([y,vy,onGround]);
+  });
+
   return d;
 }
 
@@ -6195,6 +6736,477 @@ while g.running():
 
 print("bye")
 `,
+"platformer.py":
+`# platformer.py - a real level built from a tilemap, real gravity and
+# collision (g.move_aabb), a camera that follows you, and a little visual
+# "juice" (g.particles) when you grab a coin.
+#
+#   left/right or A/D ... move       space, up or W ... jump
+#   R ................... restart    Q ................ quit
+
+import wcgame as g
+
+TILE = 32
+COLS = 40
+
+def solid_row(positions, width):
+    chars = [" "] * COLS
+    for start in positions:
+        for i in range(width):
+            if start + i < COLS:
+                chars[start + i] = "#"
+    return "".join(chars)
+
+def coin_row(positions):
+    chars = [" "] * COLS
+    for c in positions:
+        if c < COLS:
+            chars[c] = "*"
+    return "".join(chars)
+
+def make_spawn_row():
+    chars = [" "] * COLS
+    chars[1] = "P"
+    chars[COLS - 2] = "E"
+    return "".join(chars)
+
+BLANK = " " * COLS
+GROUND = "#" * COLS
+
+LEVEL_TEXT = [
+    BLANK,
+    coin_row([12, 13, 27, 28]),
+    solid_row([10, 26], 6),
+    BLANK,
+    coin_row([6, 33]),
+    solid_row([4, 32], 5),
+    BLANK,
+    BLANK,
+    make_spawn_row(),
+    GROUND,
+]
+
+def load_level():
+    rows = []
+    coins = []
+    start = (TILE, TILE)
+    goal_x = (COLS - 3) * TILE
+    for r, line in enumerate(LEVEL_TEXT):
+        out = []
+        for c, ch in enumerate(line):
+            if ch == "P":
+                start = (c * TILE, r * TILE - TILE)
+                out.append(" ")
+            elif ch == "E":
+                goal_x = c * TILE
+                out.append(" ")
+            elif ch == "*":
+                coins.append([c * TILE + TILE // 2, r * TILE + TILE // 2, False])
+                out.append(" ")
+            else:
+                out.append(ch)
+        rows.append("".join(out))
+    return rows, coins, start, goal_x
+
+rows, coins, start, goal_x = load_level()
+tmap = g.tilemap(rows, TILE, TILE, {"#": "#5b3a29"}, solid="#")
+
+g.init(720, 320, "platformer.py")
+
+px, py = start
+pw, ph = 20, 28
+vx = 0.0
+vy = 0.0
+speed = 160.0
+jump_speed = -330.0
+gravity = 900.0
+score = 0
+won = False
+ps = g.particles()
+
+def reset():
+    global px, py, vx, vy, score, won, coins
+    px, py = start
+    vx = 0.0
+    vy = 0.0
+    score = 0
+    won = False
+    _, coins, _, _ = load_level()
+
+while g.running():
+    dt = g.dt()
+    if dt <= 0 or dt > 0.25:
+        dt = 1 / 60
+
+    if not won:
+        vx = 0.0
+        if g.key("left") or g.key("a"):
+            vx = -speed
+        if g.key("right") or g.key("d"):
+            vx = speed
+
+        vy = min(900.0, vy + gravity * dt)
+        nx, ny, ndx, ndy, on_ground = g.move_aabb(tmap, px, py, pw, ph, vx * dt, vy * dt)
+        if ndy == 0:
+            vy = 0.0
+        if on_ground and (g.key("space") or g.key("up") or g.key("w")):
+            vy = jump_speed
+        px, py = nx, ny
+
+        for coin in coins:
+            if not coin[2] and g.hit_rect(px, py, pw, ph, coin[0] - 6, coin[1] - 6, 12, 12):
+                coin[2] = True
+                score = score + 1
+                g.particles_emit(ps, coin[0], coin[1], count=14, speed=120,
+                                  life=0.5, color="#ffd166", gravity=260, spread=360)
+
+        if px > goal_x:
+            won = True
+
+    g.particles_update(ps)
+
+    cam_x = max(0.0, px + pw / 2 - g.width() / 2)
+
+    g.fill("#1b2430")
+    g.push()
+    g.camera(cam_x, 0)
+    g.draw_tilemap(tmap)
+    g.rect(goal_x, 0, 6, g.height(), "#59d98e")
+    for coin in coins:
+        if not coin[2]:
+            g.circle(coin[0], coin[1], 6, "#ffd166")
+    g.rect(px, py, pw, ph, "#4cc2ff")
+    g.particles_draw(ps)
+    g.pop()
+
+    g.text("coins: " + str(score), 10, 10, "#ffffff", 14)
+    if won:
+        g.text("you win!  R to restart", g.width() / 2 - 90, g.height() / 2 - 8, "#ffd166", 16)
+
+    if g.pressed("r"):
+        reset()
+    if g.pressed("q"):
+        g.quit()
+
+    g.flip()
+`,
+"world3d.py":
+`# world3d.py - a small 3D scene you can walk and jump around in: a heightmap
+# terrain, a camera that follows behind you, and wcgame's software 3D
+# renderer doing the actual math (projection, lighting, depth sorting) -
+# no WebGL, just a canvas and some trigonometry.
+#
+#   left/right ... turn      up/down ... walk forward/back
+#   space ......... jump     Q ......... quit
+
+import wcgame as g
+import math
+
+GRID = 20
+CELL = 2.0
+
+def build_heights():
+    heights = []
+    for r in range(GRID):
+        row = []
+        for c in range(GRID):
+            x = c - GRID / 2
+            z = r - GRID / 2
+            h = math.sin(x * 0.4) * 1.2 + math.cos(z * 0.35) * 1.2
+            row.append(h)
+        heights.append(row)
+    return heights
+
+terrain = g.terrain(build_heights(), CELL, color="#3a7d44")
+marker = g.mesh_cube(1.4, "#c0523c")
+post = g.mesh_cube(1.0, "#e6c34a")
+ball = g.mesh_sphere(0.8, 10, "#4cc2ff")
+
+g.init(720, 420, "world3d.py")
+g.light3d((0.4, -1, 0.35), ambient=0.4)
+
+px, pz = 0.0, 4.0
+py = g.terrain_height(terrain, px, pz)
+vy = 0.0
+yaw = 180.0
+walk_speed = 5.0
+turn_speed = 120.0
+spin = 0.0
+posts = [(6, -6), (-6, -6), (6, 6), (-6, 6)]
+collected = False
+
+while g.running():
+    dt = g.dt()
+    if dt <= 0 or dt > 0.25:
+        dt = 1 / 60
+
+    if g.key("left") or g.key("a"):
+        yaw -= turn_speed * dt
+    if g.key("right") or g.key("d"):
+        yaw += turn_speed * dt
+
+    move = 0.0
+    if g.key("up") or g.key("w"):
+        move = walk_speed
+    if g.key("down") or g.key("s"):
+        move = -walk_speed
+
+    yr = math.radians(yaw)
+    px = px + math.sin(yr) * move * dt
+    pz = pz + math.cos(yr) * move * dt
+
+    py, vy, on_ground = g.ground3d(terrain, px, py, pz, vy, dt,
+                                    gravity=16, jump_speed=7, jump=g.pressed("space"))
+    spin = spin + dt * 60
+
+    g.fill("#87b6e0")
+    g.orbit_cam3d((px, py + 1.0, pz), yaw, -15, 7.0)
+    g.draw3d(terrain, (0, 0, 0), (0, 0, 0))
+    for i, pos in enumerate(posts):
+        spin_dir = 1 if i % 2 == 0 else -1
+        post_h = g.terrain_height(terrain, pos[0], pos[1])
+        g.draw3d(post, (pos[0], post_h + 0.5, pos[1]), (0, spin * spin_dir, 0))
+    if not collected:
+        ball_h = g.terrain_height(terrain, 0, -3) + 0.9
+        g.draw3d(ball, (0, ball_h, -3), (0, spin, 0))
+        if abs(px) < 1.2 and abs(pz + 3) < 1.2:
+            collected = True
+    g.draw3d(marker, (px, py + 0.7, pz), (0, yaw, 0),
+             color=("#59d98e" if on_ground else "#c0523c"))
+
+    g.text("arrows to walk and turn, space to jump", 10, 10, "#ffffff", 13)
+    if collected:
+        g.text("found the sphere!", 10, 30, "#ffd166", 13)
+    if g.pressed("q"):
+        g.quit()
+
+    g.flip()
+`,
+"engine.py":
+`# engine.py - a small object-oriented game engine, built on top of wcgame.
+#
+# wcgame gives you the primitives: shapes, sprites, tiles, physics helpers,
+# 3D. This wraps them in the shapes a real engine usually has - Entity
+# objects with update()/draw(), a Scene that owns a list of them, and an
+# Engine that owns a stack of scenes and runs the game loop for you.
+#
+#   import engine
+#
+#   class Player(engine.Entity):
+#       def update(self, dt):
+#           self.x = self.x + 100 * dt
+#
+#   class Play(engine.Scene):
+#       def enter(self):
+#           self.add(Player(20, 20, 16, 16))
+#
+#   engine.Engine(640, 480, "my game").run(Play())
+#
+# Note: this interpreter parses decorators but ignores them (see the Python
+# help panel), so there is no @property here on purpose - everything is a
+# plain method or a plain attribute.
+#
+# Run this file directly for a tiny demo: a menu scene, space to start a
+# play scene with a handful of bouncing entities, Q to go back.
+
+import wcgame as g
+
+
+class Entity:
+    """Something a Scene updates and draws every frame. Subclass it and
+    override update()/draw() - the defaults just move by velocity and draw
+    a rectangle, which is enough to try things out before you customize."""
+
+    def __init__(self, x=0, y=0, w=16, h=16, color="#ffffff"):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.vx = 0.0
+        self.vy = 0.0
+        self.color = color
+        self.alive = True
+        self.scene = None
+
+    def update(self, dt):
+        self.x = self.x + self.vx * dt
+        self.y = self.y + self.vy * dt
+
+    def draw(self):
+        g.rect(self.x, self.y, self.w, self.h, self.color)
+
+    def hits(self, other):
+        return g.hit_rect(self.x, self.y, self.w, self.h, other.x, other.y, other.w, other.h)
+
+    def kill(self):
+        self.alive = False
+
+
+class Sprite(Entity):
+    """An Entity that draws an animated frame from a sheet instead of a
+    rectangle. Build the sheet with g.image()/g.sheet(), then call
+    play(anim) with an anim made by g.anim()."""
+
+    def __init__(self, x, y, w, h, sheet=None):
+        Entity.__init__(self, x, y, w, h)
+        self.sheet = sheet
+        self.anim = None
+        self.flip_x = False
+
+    def play(self, anim):
+        self.anim = anim
+
+    def draw(self):
+        if self.anim is not None and self.sheet is not None:
+            frame = g.anim_update(self.anim)
+            g.draw_frame(self.sheet, frame, self.x, self.y, w=self.w, h=self.h, flip_x=self.flip_x)
+        else:
+            Entity.draw(self)
+
+
+class PlatformerEntity(Entity):
+    """An Entity with gravity and tile collision already wired up. Call
+    move_in(tilemap, dt) once a frame instead of writing the physics
+    yourself, and jump() whenever on_ground is True."""
+
+    def __init__(self, x=0, y=0, w=16, h=16, color="#ffffff"):
+        Entity.__init__(self, x, y, w, h, color)
+        self.on_ground = False
+        self.gravity = 900.0
+        self.jump_speed = -330.0
+        self.max_fall_speed = 900.0
+
+    def move_in(self, tilemap, dt):
+        self.vy = min(self.max_fall_speed, self.vy + self.gravity * dt)
+        nx, ny, nvx, nvy, on_ground = g.move_aabb(tilemap, self.x, self.y, self.w, self.h,
+                                                   self.vx * dt, self.vy * dt)
+        if nvy == 0:
+            self.vy = 0.0
+        self.on_ground = on_ground
+        self.x, self.y = nx, ny
+
+    def jump(self):
+        if self.on_ground:
+            self.vy = self.jump_speed
+
+
+class Scene:
+    """A screen: a menu, a level, a pause overlay. Owns its own entities so
+    switching scenes doesn't leak state between them. Override enter()/
+    exit() for setup/teardown, and update()/draw() for anything beyond the
+    entity list - the defaults just run every entity in self.entities."""
+
+    def __init__(self):
+        self.entities = []
+        self.engine = None
+
+    def add(self, entity):
+        entity.scene = self
+        self.entities.append(entity)
+        return entity
+
+    def update(self, dt):
+        for e in list(self.entities):
+            e.update(dt)
+        self.entities = [e for e in self.entities if e.alive]
+
+    def draw(self):
+        for e in self.entities:
+            e.draw()
+
+    def enter(self):
+        pass
+
+    def exit(self):
+        pass
+
+
+class Engine:
+    """Owns the window and a stack of Scenes, and runs the game loop for
+    you. push()/pop() layer a scene on top of another (a pause menu over a
+    running game); switch() replaces the whole stack (menu -> play ->
+    game over)."""
+
+    def __init__(self, w, h, title=""):
+        g.init(w, h, title)
+        self.stack = []
+        self.scene = None
+
+    def push(self, scene):
+        scene.engine = self
+        self.stack.append(scene)
+        self.scene = scene
+        scene.enter()
+        return scene
+
+    def pop(self):
+        if self.stack:
+            done = self.stack.pop()
+            done.exit()
+            self.scene = self.stack[len(self.stack) - 1] if self.stack else None
+
+    def switch(self, scene):
+        while self.stack:
+            self.pop()
+        return self.push(scene)
+
+    def run(self, start_scene):
+        self.push(start_scene)
+        while g.running():
+            dt = g.dt()
+            if dt <= 0 or dt > 0.25:
+                dt = 1 / 60
+            if self.scene is not None:
+                self.scene.update(dt)
+                self.scene.draw()
+            g.flip()
+
+
+if __name__ == "__main__":
+    import random
+
+    class Ball(Entity):
+        def __init__(self, x, y):
+            Entity.__init__(self, x, y, 14, 14, random.choice(["#4cc2ff", "#59d98e", "#ffd166", "#e05252"]))
+            self.vx = random.choice([-140, 140])
+            self.vy = random.choice([-140, 140])
+
+        def update(self, dt):
+            Entity.update(self, dt)
+            if self.x < 0 or self.x + self.w > g.width():
+                self.vx = 0 - self.vx
+            if self.y < 40 or self.y + self.h > g.height():
+                self.vy = 0 - self.vy
+
+    class Menu(Scene):
+        def update(self, dt):
+            if g.pressed("space"):
+                self.engine.switch(Play())
+
+        def draw(self):
+            g.fill("#1b2430")
+            g.text("engine.py demo", g.width() / 2 - 70, g.height() / 2 - 20, "#ffffff", 18)
+            g.text("press space to start", g.width() / 2 - 90, g.height() / 2 + 10, "#9a9a9a", 13)
+
+    class Play(Scene):
+        def enter(self):
+            i = 0
+            while i < 10:
+                self.add(Ball(60 + i * 20, 80 + i * 10))
+                i = i + 1
+
+        def update(self, dt):
+            Scene.update(self, dt)
+            if g.pressed("q"):
+                self.engine.switch(Menu())
+
+        def draw(self):
+            g.fill("#10151d")
+            Scene.draw(self)
+            g.text("Q for menu", 10, 10, "#9a9a9a", 12)
+
+    Engine(480, 360, "engine.py").run(Menu())
+`,
 };
 
 /* ---- shared: run a source string into a host element ---- */
@@ -6499,7 +7511,66 @@ function pyHelpDialog(){
     <code>g.keys()</code> everything held<br>
     <code>g.mouse()</code> → (x, y) · <code>g.mouse_down()</code> · <code>g.click()</code><br>
     <code>g.flip()</code> show the frame and wait for the next · <code>g.wait(seconds)</code><br>
-    <code>g.running()</code> False once the window closes · <code>g.quit()</code> stop early<br><br>
+    <code>g.running()</code> False once the window closes · <code>g.quit()</code> stop early<br>
+    <code>g.dt()</code> seconds since the last flip · <code>g.fps(60)</code> cap the frame rate ·
+    <code>g.clock()</code> seconds since init<br><br>
+
+    <b>Rotate, scale, scroll - <code>import wcgame as g</code></b><br>
+    <code>g.push()</code> / <code>g.pop()</code> save and restore the drawing state ·
+    <code>g.translate(x, y)</code> · <code>g.rotate(degrees)</code> · <code>g.scale(sx, sy)</code><br>
+    <code>g.camera(x, y)</code> scroll the world (put it between <code>push()</code> and a
+    matching <code>pop()</code> if you also draw an un-scrolled HUD)<br>
+    <span style="color:#9a9a9a">everything - rect, circle, poly, text, images - is drawn inside whatever
+    transform is currently active</span><br><br>
+
+    <b>Sprites &amp; animation - <code>import wcgame as g</code></b><br>
+    <code>g.image("Pictures\\ship.png")</code> load a picture from your files (draw one
+    in Paint, or point at anything in Pictures) · <code>g.image_size(img)</code><br>
+    <code>g.draw_image(img, x, y, w=, h=, angle=, alpha=, flip_x=, flip_y=, anchor=)</code><br>
+    <code>g.sheet(img, frame_w, frame_h)</code> slice a picture into frames ·
+    <code>g.draw_frame(sheet, index, x, y, …)</code> - same keywords as draw_image<br>
+    <code>g.anim([0,1,2,3], fps=8, loop=True)</code> · <code>g.anim_update(anim)</code> → current
+    frame index · <code>g.anim_reset(anim)</code> · <code>g.anim_done(anim)</code><br><br>
+
+    <b>Collision, tilemaps &amp; particles - <code>import wcgame as g</code></b><br>
+    <code>g.hit_rect(x1,y1,w1,h1, x2,y2,w2,h2)</code> ·
+    <code>g.hit_circle(x1,y1,r1, x2,y2,r2)</code> · <code>g.hit_point(px,py, x,y,w,h)</code><br>
+    <code>g.tilemap(["#####","#...#","#####"], tile_w, tile_h, {"#":"#553311"}, solid="#")</code>
+    a level built from text art · <code>g.draw_tilemap(map, ox, oy)</code><br>
+    <code>g.tile_at(map, col, row)</code> · <code>g.tile_solid(map, world_x, world_y)</code><br>
+    <code>g.move_aabb(map, x, y, w, h, vx, vy)</code> → (x, y, vx, vy, on_ground) - walks a
+    box through the level and stops it at walls and floors for you<br>
+    <code>g.particles()</code> · <code>g.particles_emit(ps, x, y, count=, speed=, life=,
+    color=, size=, gravity=, spread=, angle=)</code> ·
+    <code>g.particles_update(ps)</code> · <code>g.particles_draw(ps)</code><br>
+    <code>g.lerp(a, b, t)</code> · <code>g.ease(t, "out")</code> - linear, in, out, inout,
+    bounce · <code>g.tween(a, b, t, "out")</code><br>
+    <code>g.tone(freq, seconds, wave="square")</code> - sine, triangle, sawtooth, noise ·
+    <code>g.play([(440, 0.1), (550, 0.1)])</code> a note sequence<br><br>
+
+    <b>3D - <code>import wcgame as g</code></b><br>
+    <span style="color:#9a9a9a">a small software renderer: perspective camera, one
+    directional light, flat shading, drawn on the same canvas as everything else</span><br>
+    <code>g.mesh_cube(size, color)</code> · <code>g.mesh_plane(w, d, color)</code> ·
+    <code>g.mesh_sphere(r, segments, color)</code> ·
+    <code>g.mesh(verts, faces, color=)</code> a custom shape<br>
+    <code>g.terrain(heights, cell, color=)</code> a walkable heightmap from a grid of
+    numbers · <code>g.terrain_height(terrain, x, z)</code><br>
+    <code>g.cam3d((x,y,z), yaw, pitch, fov=70)</code> · <code>g.orbit_cam3d(target, yaw,
+    pitch, distance)</code> a third-person follow camera · <code>g.light3d((x,y,z),
+    ambient=0.35)</code><br>
+    <code>g.draw3d(mesh, (x,y,z), (rx,ry,rz), color=, scale=, wire=, shaded=)</code><br>
+    <code>g.ground3d(terrain, x, y, z, vy, gravity=18, jump_speed=7, jump=held)</code> →
+    (y, vy, on_ground) - gravity, landing and jumping on the terrain; you drive x/z
+    yourself, usually with <code>math.sin</code>/<code>cos</code> of a facing angle<br><br>
+
+    <b>A real engine on top of it all - <code>import engine</code></b><br>
+    <code>engine.py</code> in Documents\\Python wraps wcgame in <code>Entity</code>,
+    <code>Sprite</code> and <code>PlatformerEntity</code> classes with
+    <code>update()</code>/<code>draw()</code>, a <code>Scene</code> that owns a list of
+    them, and an <code>Engine</code> that runs a scene stack (menu, play, pause) for
+    you - <code>Engine(w, h, title).run(MyFirstScene())</code>. Open it (Examples ▾) to
+    read the source, or run it directly for a tiny demo.<br><br>
 
     <b>Talking to the OS — <code>import winclone</code></b><br>
     <code>winclone.notify(title, body)</code> · <code>winclone.beep()</code><br>
