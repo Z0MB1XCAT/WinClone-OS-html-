@@ -67,20 +67,110 @@ Deno.serve(async (req: Request) => {
     return handleDebugYoutube();
   }
 
-  if (req.method === "GET" && url.pathname === "/proxy-youtube") {
-    return handleProxyYoutube();
-  }
-
-  if (req.method === "GET" && url.pathname === "/proxy-youtube-test") {
-    return htmlResponse(
-      `<!doctype html><html><head><title>proxy-youtube test</title>` +
-        `<style>body{margin:0}iframe{width:100%;height:100vh;border:0}</style></head>` +
-        `<body><iframe src="/proxy-youtube"></iframe></body></html>`,
-    );
+  if (req.method === "GET" && url.pathname === "/proxy") {
+    return handleProxy(url);
   }
 
   return new Response("Not found", { status: 404 });
 });
+
+// General-purpose version of the /proxy-youtube experiment: fetches
+// whatever URL Edgy asks for server-side and hands the HTML back from this
+// domain, unmodified apart from a <base> tag (so the page's own relative
+// links/assets still resolve against the real site, not this proxy) and a
+// small script that reports link clicks/form submissions up to Edgy via
+// postMessage instead of navigating the iframe directly (same technique
+// /search already uses, generalized).
+//
+// This is Edgy's fallback for any site that's known to block framing or
+// that times out loading directly - not a replacement for direct loading,
+// which still works better (and cheaper, and faster) for every site that
+// doesn't block it. Expect this to work well for viewing public,
+// non-interactive content and not at all for anything requiring a real
+// login or session (cookies are origin-scoped; this proxy never has the
+// real site's session) or dynamic/JS-driven data (relative-path or
+// session-bound XHR calls the page's own JS makes won't reroute through
+// here the way static assets do). Some sites will also just refuse the
+// server-side fetch itself with a bot check, the same way DuckDuckGo and a
+// public SearXNG instance did earlier - that's a per-site coin flip with no
+// general fix, not a bug in this code.
+async function handleProxy(reqUrl: URL): Promise<Response> {
+  const target = reqUrl.searchParams.get("url") ?? "";
+  if (!target) return htmlResponse("<p>Missing url parameter.</p>", 400);
+
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    return htmlResponse("<p>Invalid URL.</p>", 400);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return htmlResponse("<p>Only http/https URLs can be proxied.</p>", 400);
+  }
+
+  try {
+    const res = await fetch(parsed.href, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        // harmless on non-Google sites; skips Google's EEA/UK consent wall
+        // on ones that check for it, see handleDebugYoutube's comment
+        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!contentType.includes("text/html")) {
+      return htmlResponse(
+        `<p>That URL isn't a web page (content-type: ${escapeHtml(contentType || "unknown")}).</p>`,
+        415,
+      );
+    }
+    const html = await res.text();
+    return htmlResponse(injectProxyBridge(html, parsed.href), res.status);
+  } catch (err) {
+    return htmlResponse(
+      `<p>Could not reach ${escapeHtml(parsed.href)}: ${escapeHtml(String(err))}</p>`,
+      502,
+    );
+  }
+}
+
+// Same idea as /search's CLICK_BRIDGE, generalized: reports the resolved
+// (already <base>-relative-to-real-site) destination of clicks and form
+// submissions up to the parent instead of navigating this iframe directly,
+// so Edgy can load the destination through its own normal address-bar/
+// history/back-button flow (which will itself try loading it directly
+// first, falling back to this same proxy only if that fails).
+const PROXY_CLICK_BRIDGE = `<script>(function(){
+  function send(url){
+    try{ window.parent.postMessage({source:"macrohard-edgy-proxy",url:url},"*"); }catch(e){}
+  }
+  document.addEventListener("click",function(e){
+    var a=e.target.closest("a[href]");
+    if(!a) return;
+    var raw=a.getAttribute("href")||"";
+    if(raw.charAt(0)==="#" || raw.indexOf("javascript:")===0) return;
+    e.preventDefault();
+    send(a.href);
+  },true);
+  document.addEventListener("submit",function(e){
+    var f=e.target;
+    if(!f || f.tagName!=="FORM") return;
+    e.preventDefault();
+    var action=new URL(f.action);
+    action.search=new URLSearchParams(new FormData(f)).toString();
+    send(action.href);
+  },true);
+})();</script>`;
+
+function injectProxyBridge(html: string, baseUrl: string): string {
+  const tag = `<base href="${escapeHtml(baseUrl)}">` + PROXY_CLICK_BRIDGE;
+  return /<head[^>]*>/i.test(html)
+    ? html.replace(/<head([^>]*)>/i, `<head$1>${tag}`)
+    : tag + html;
+}
 
 // Throwaway diagnostic route, not used by Edgy or anything else - just
 // fetches a real YouTube video page server-side and reports exactly what
@@ -133,45 +223,6 @@ async function handleDebugYoutube(): Promise<Response> {
   return new Response(JSON.stringify(report, null, 2), {
     headers: { "content-type": "application/json" },
   });
-}
-
-// Experiment, step one: fetch the same YouTube page server-side and hand
-// its HTML back completely unmodified, from this domain, deliberately not
-// forwarding YouTube's own X-Frame-Options/CSP headers (the same
-// no-headers-of-theirs approach /search already uses successfully). This
-// answers "does anything render at all when framed" before spending any
-// effort on the much bigger job of rewriting the page's own asset/API
-// references so it would actually function once embedded - almost
-// certainly it won't (relative/absolute URLs on the page still point at
-// youtube.com, and video playback specifically pulls from Google's CDN via
-// signed, session-bound URLs unlikely to survive being served from a
-// different origin), but let's see what actually happens rather than
-// assume. Visit /proxy-youtube-test to see it inside an iframe, which is
-// the scenario that actually matters (a plain top-level visit to
-// /proxy-youtube proves less, since framing is the whole question).
-async function handleProxyYoutube(): Promise<Response> {
-  const target = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-  try {
-    const res = await fetch(target, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        // Google's EEA/UK consent wall ("Before you continue to YouTube")
-        // checks for this cookie before deciding to show the interstitial.
-        // A long-used static value here tells it consent was already given,
-        // so it serves the real page directly instead - this is specific to
-        // Google's own consent-cookie scheme, not a general trick that
-        // applies to other sites' walls.
-        "Cookie": "CONSENT=YES+cb.20210328-17-p0.en+FX+410",
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-    const html = await res.text();
-    return htmlResponse(html, res.status);
-  } catch (err) {
-    return htmlResponse(`<p>Could not reach YouTube: ${escapeHtml(String(err))}</p>`, 502);
-  }
 }
 
 type SearchItem = { title: string; link: string; snippet?: string; displayLink?: string };

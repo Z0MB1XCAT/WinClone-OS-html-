@@ -29,9 +29,13 @@
   /* the user's own AI chat app (its own site, its own backend/API key).
      This plugin frames its chat page as the AI sidebar, and also uses its
      /search route (a real search API, proxied so results can be framed)
-     for search results instead of getting blocked outright. */
+     for search results, and its /proxy route as a fallback for sites that
+     block framing directly or fail to load - none of these call any AI
+     API, they're all just the same "fetch server-side, serve from a domain
+     that doesn't send a blocking header" trick applied to different things. */
   const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
   const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
+  const SITE_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/proxy?url=";
 
   function install(){
     if(APPS.edgy) return; // don't double-install if this file loads twice
@@ -493,24 +497,54 @@
 
     /* real page in a sandboxed iframe, same locked-down approach the
        built-in Edge uses. Genuinely fetches the live site, but can't reach
-       anything of WinClone's. */
+       anything of WinClone's. Sites already known to block framing (see
+       edgeBlocked) skip straight to the proxy fallback instead of wasting
+       a timeout on an attempt that's certain to fail; anything else still
+       tries loading directly first, since that's faster, cheaper and more
+       fully interactive for every site that doesn't block it, and only
+       falls back to the proxy if it actually times out. */
     function loadSite(t, loc){
       const u = loc.u;
       t.displayUrl = u; t.title = loc.label || hostOf(u); t.icon = loc.icon || "🌐";
       t.favicon = loc.icon ? null : faviconFor(u);
-      if(edgeBlocked(u)){ showRejected(t,loc); return; }
+      if(edgeBlocked(u)){ loadViaProxy(t,loc); return; }
       t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
       t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
         <iframe class="edgy-frame" referrerpolicy="no-referrer"
           sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
       const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
       let done=false;
-      const timer = setTimeout(()=>{ if(!done){ done=true; showRejected(t,loc); } }, 10000);
+      const timer = setTimeout(()=>{ if(!done){ done=true; loadViaProxy(t,loc); } }, 10000);
       frame.addEventListener("load", ()=>{
         if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
         if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
       });
       frame.src = u;
+      applyZoom(t); renderTabs(); syncChrome(t);
+    }
+    /* fallback for sites that block direct framing or timed out trying:
+       the user's own AI backend fetches the page server-side and serves it
+       back from its own domain, which sets no blocking header. Works well
+       for viewing public, non-interactive content; won't work for anything
+       needing a real login (cookies are origin-scoped, this proxy never
+       has the real site's session) or heavily JS-driven dynamic data, and
+       some sites will refuse the server-side fetch itself with a bot check
+       the same way DuckDuckGo and a public SearXNG instance did earlier -
+       that's still possible here, just per-site rather than universal. */
+    function loadViaProxy(t, loc){
+      const u = loc.u;
+      t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
+      t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
+        <iframe class="edgy-frame" referrerpolicy="no-referrer"
+          sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
+      const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
+      let done=false;
+      const timer = setTimeout(()=>{ if(!done){ done=true; showRejected(t,loc); } }, 12000);
+      frame.addEventListener("load", ()=>{
+        if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
+        if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+      });
+      frame.src = SITE_PROXY_URL+encodeURIComponent(u);
       applyZoom(t); renderTabs(); syncChrome(t);
     }
     function showRejected(t, loc){
@@ -519,14 +553,14 @@
       t.pageEl.innerHTML = `<div class="edgy-reject">
         <div class="em">🚧</div>
         <b>${esc(loc.label||hostOf(u))} won't load here</b>
-        <div class="rj-sub">This site tells browsers not to show it inside another page, a real security rule it sets itself, so it wouldn't load in Microsoft Edge here either.</div>
+        <div class="rj-sub">Neither loading it directly nor the fallback proxy worked, most likely because the destination itself refused the request. Some sites do that to any automated-looking traffic, not just framed ones.</div>
         <div class="rj-btns">
           <button class="edgy-btn pri" data-retry>Try again</button>
           <button class="edgy-btn" data-home>Go home</button>
         </div>
         <a class="edgy-openreal" data-real target="_blank" rel="noopener noreferrer" href="${esc(u)}">Open the real page in a new browser tab ↗</a>
       </div>`;
-      t.pageEl.querySelector("[data-retry]").onclick = ()=>loadSite(t,loc);
+      t.pageEl.querySelector("[data-retry]").onclick = ()=>loadViaProxy(t,loc);
       t.pageEl.querySelector("[data-home]").onclick = ()=>go(t,"home");
       applyZoom(t); renderTabs(); syncChrome(t);
     }
@@ -647,10 +681,11 @@
       else if(e.key==="0"){ e.preventDefault(); setZoom(0, true); }
     });
 
-    /* the /search proxy's page reports clicked links (and re-searches) up via
-       postMessage instead of navigating on its own, so those stay inside the
-       normal address-bar/history/back-button flow instead of just vanishing
-       into the iframe. Guards on `body` still being attached so a stale
+    /* both the /search proxy's page and the general /proxy fallback report
+       clicked links (and, for search, re-searches) up via postMessage
+       instead of navigating on its own, so those stay inside the normal
+       address-bar/history/back-button flow instead of just vanishing into
+       the iframe. Guards on `body` still being attached so a stale
        listener from a previous, already-closed Edgy window (only one can be
        open at a time, but the listener would otherwise outlive it) quietly
        unregisters itself instead of acting on dead state. */
@@ -660,16 +695,29 @@
     window.addEventListener("message", function onMsg(e){
       if(!document.body.contains(body)){ window.removeEventListener("message", onMsg); return; }
       if(!aiOrigin || e.origin!==aiOrigin) return;
-      if(!e.data || e.data.source!=="macrohard-edgy-search" || typeof e.data.url!=="string") return;
+      if(!e.data || typeof e.data.url!=="string") return;
       const t = active(); if(!t) return;
       let dest;
       try{ dest = new URL(e.data.url); }catch(err){ return; }
-      /* a re-search submitted from the results page itself lands back on our
-         own /search route; give it the same nice "Search: query" tab title
-         instead of the raw proxy hostname. */
-      const q = (dest.origin===proxyOrigin && dest.pathname===proxyPath) ? dest.searchParams.get("q") : null;
-      if(q) navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
-      else navTo(t, {type:"site", u:dest.href});
+
+      if(e.data.source==="macrohard-edgy-search"){
+        /* a re-search submitted from the results page itself lands back on
+           our own /search route; give it the same nice "Search: query" tab
+           title instead of the raw proxy hostname. */
+        const q = (dest.origin===proxyOrigin && dest.pathname===proxyPath) ? dest.searchParams.get("q") : null;
+        if(q) navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
+        else navTo(t, {type:"site", u:dest.href});
+        return;
+      }
+
+      if(e.data.source==="macrohard-edgy-proxy"){
+        /* a link clicked inside a proxied page - same download check go()
+           already does for typed URLs, then the normal load pipeline (tries
+           loading it directly first, only re-proxies if that fails too). */
+        const path=dest.href.split("#")[0].split("?")[0], last=path.split("/").pop()||"";
+        if(EDGE_DL_RE.test(last)){ downloadFromWeb(dest.href); return; }
+        navTo(t, {type:"site", u:dest.href});
+      }
     });
 
     renderBookmarksBar();
