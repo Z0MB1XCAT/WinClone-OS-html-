@@ -1197,8 +1197,8 @@ function buildTerminal(body){
   let cwd = [...HOME_PATH];
   const hist=[]; let hi=0;
   const pathStr=()=> "C:\\"+cwd.slice(1).join("\\");
-  const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); };
-  const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); };
+  const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); return d; };
+  const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); return d; };
   print(`WinClone Terminal [Version 10.0.26100]\n(c) WinClone. All rights reserved.  Type "help" for commands.\n`);
   term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); } });
   function prompt(){
@@ -1209,8 +1209,9 @@ function buildTerminal(body){
     inp.addEventListener("keydown", e=>{
       if(e.key==="Enter"){
         const cmd=inp.value; inp.disabled=true; if(cmd.trim()) hist.push(cmd); hi=hist.length;
+        const cursor=el("span","term-cursor","▌"); line.appendChild(cursor);
         const r=run(cmd.trim());
-        const advance=()=>{ prompt(); term.scrollTop=term.scrollHeight; };
+        const advance=()=>{ cursor.remove(); prompt(); term.scrollTop=term.scrollHeight; };
         if(r && typeof r.then==="function") r.then(advance, advance); else advance();
       }
       else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; inp.value=hist[hi]||""; } }
@@ -1232,7 +1233,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit &lt;task&gt;  orbit model [pulsar|star|belt]  (or just "orbit" to open the app)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit &lt;task&gt;  orbit model [pulsar|star|belt]  orbit effort [1-5]  (or just "orbit" to open the app)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "fx": {
         const sub=(args[0]||"").toLowerCase();
         if(!sub||sub==="list"){
@@ -1352,14 +1353,29 @@ function buildTerminal(body){
       }
       case "orbit": case "oc": {
         if(!args.length){ openApp("orbit"); print("Opening Orbit…"); break; }
-        if(args[0].toLowerCase()==="model"){
+        const sub=args[0].toLowerCase();
+        if(sub==="model"){
           const t=(args[1]||"").toLowerCase();
           if(!t) print("Orbit Code model: "+ORBIT_TIERS[getOrbitTermTier()].label+"  (pulsar / star / belt)");
-          else if(ORBIT_TIERS[t]){ setOrbitTermTier(t); print("Orbit Code model → "+ORBIT_TIERS[t].label); }
+          else if(ORBIT_TIERS[t]){
+            setOrbitTermTier(t);
+            if(t==="pulsar"){ setOrbitTermEffort(1); print("Orbit Code model → Pulsar (effort locked to 1 · Quick)"); }
+            else print("Orbit Code model → "+ORBIT_TIERS[t].label);
+          }
           else print("Unknown model '"+t+"'. Choose: pulsar, star, belt");
           break;
         }
-        return runOrbitAgentIn({cwd, print, printHtml, pathStr, tier:getOrbitTermTier(), task:a});
+        if(sub==="effort"){
+          const curTier=getOrbitTermTier(), nStr=args[1];
+          if(!nStr){ print("Orbit Code effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked — Pulsar is always Quick)":"")); break; }
+          if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) for fast responses — switch model to change this."); break; }
+          const n=clampOrbitEffort(nStr);
+          setOrbitTermEffort(n);
+          print("Orbit Code effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
+          break;
+        }
+        const oTier=getOrbitTermTier(), oEffort=(oTier==="pulsar")?1:getOrbitTermEffort();
+        return runOrbitAgentIn({cwd, print, printHtml, pathStr, tier:oTier, effort:oEffort, task:a, setBusy:b=>term.classList.toggle("orbit-busy", b)});
       }
       case "start": case "open": if(APPS[args[0]]) openApp(args[0]); else print("Unknown app: "+(a||"")); break;
       case "exit": closeWin("terminal"); break;
@@ -9588,15 +9604,42 @@ const FRAME_CHECK_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/frame-check?url=";
    backend as Edgy's assistant sidebar above (AI_SIDEBAR_URL) via a plain
    POST to /api/chat - no iframe here, since a terminal can't embed one.
    The backend picks the model from an optional "tier" field (pulsar/star/
-   belt) and an optional "system" prompt override; omitting both keeps the
-   backend's original default behavior (what Edgy's sidebar still uses). */
+   belt), an optional "effort" level (1-5, see ORBIT_EFFORT_LEVELS), and an
+   optional "system" prompt override; omitting all three keeps the backend's
+   original default behavior (what Edgy's sidebar still uses). */
 const ORBIT_TIERS = {
-  pulsar:{label:"Pulsar", icon:"💫", desc:"Fast chatting"},
-  star:  {label:"Star",   icon:"⭐", desc:"Chat & writing"},
-  belt:  {label:"Belt",   icon:"🪐", desc:"Coding"},
+  pulsar:{label:"Pulsar", icon:"💫", desc:"Fastest responses"},
+  star:  {label:"Star",   icon:"⭐", desc:"Advanced chat & writing"},
+  belt:  {label:"Belt",   icon:"🪐", desc:"Coding, data & complex tasks"},
 };
+/* Pulsar exists to answer fast, so its effort is locked to 1 everywhere
+   (client UI *and* re-checked server-side, since client JS is editable). */
+const ORBIT_EFFORT_LEVELS = [
+  {n:1, label:"Quick",    desc:"Fastest, briefest"},
+  {n:2, label:"Fast",     desc:"A little more thought"},
+  {n:3, label:"Balanced", desc:"Normal depth"},
+  {n:4, label:"Thorough", desc:"Careful, weighs edge cases"},
+  {n:5, label:"Deep",     desc:"Slowest - reasons hard and double-checks itself"},
+];
 const ORBIT_CHAT_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/api/chat";
 const ORBIT_SYSTEM_PROMPT = "You are Orbit, WinClone's built-in AI assistant. Keep answers concise unless asked for detail.";
+
+/* What every Orbit tier is told about the OS it's embedded in, so code or
+   advice it gives actually fits WinClone instead of assuming a real desktop
+   OS or real CPython. Shared by the Orbit app and Orbit Code so there's one
+   place to keep this accurate as WinClone's own feature set changes. */
+const WINCLONE_ENV_DOC = `You're running inside WinClone: a fan-made desktop OS that's entirely one browser tab (HTML/CSS/JS, no real backend) - a window manager, a persistent virtual file system rooted at C:\\ (folders are {folder:true,children:{...}}, files carry a plain "content" string, all saved in the browser's localStorage), and a set of built-in apps.
+Terminal commands: dir/ls, cd, pwd, cat/type, mkdir, del/erase, tree, <script>.bat, python <file>.py, orbit <task>, orbit model [pulsar|star|belt], orbit effort [1-5], ver, winver, whoami, hostname, ipconfig, neofetch, color, history, cls/clear, shutdown, exit, start <app>, fx list/<effect>/all/off, echo, cowsay, matrix, winget, fortune, sudo.
+Apps (open with "start <id>" or just the id): explorer, notepad, docs, calc, terminal, settings, edge, edgy (the default browser), photos, media, recycle, defender, youtube, paint, taskmgr, mines, snake, python, doom, restore, screenfx, orbit.
+WinClone's Python is NOT real CPython - it's a small custom Python-subset interpreter (sys.version reports "3.x (WinClone mini-Python)"). Core syntax works (functions, classes, loops, comprehensions, f-strings, dict/list/set, try/except, print()/input()), but only these modules exist: math, random, time, sys, wcgame, winclone. There is no pip, no tkinter, no real pygame, no os/requests/numpy/etc - never import anything outside that list, it will fail.
+  - wcgame (import wcgame as g): a small 2D/3D canvas game API. g.init(w,h), g.fill(color), g.rect/circle/line/poly/text, g.flip() (call every frame - also drives input/timing), g.running(), g.pressed("key")/g.mouse_down(), g.push/pop/translate/rotate/scale, plus sprite/animation/tilemap/particle/easing and basic 3D mesh/terrain/camera helpers. Typical shape: g.init(...) once, then "while g.running(): ...draw calls...; g.flip()".
+  - winclone (import winclone): OS integration. winclone.notify(title, body), winclone.user(), winclone.open_app(id_or_path), winclone.ls(path), winclone.read(path), winclone.write(path, text), winclone.new_file(path, text), winclone.append(path, text), winclone.del_file(path), winclone.apps(), winclone.cwd(), winclone.version().
+A "WinClone Python app" is one .py file saved in the virtual filesystem (e.g. under Documents), run via the Terminal (python <file>.py) or the Python app. If asked to write "a WinClone app" or "a Python app for this OS", write it against wcgame/winclone above, not real-world libraries - they don't exist here.`;
+
+function orbitTierBlurb(tier){
+  const others=Object.keys(ORBIT_TIERS).filter(k=>k!==tier).map(k=>`${ORBIT_TIERS[k].label} (${ORBIT_TIERS[k].desc})`).join(" and ");
+  return `You are Orbit's ${ORBIT_TIERS[tier].label} tier (${ORBIT_TIERS[tier].desc}) - one of three tiers built into WinClone. The other two are ${others}. Users pick between tiers themselves; don't suggest they switch unless asked.`;
+}
 
 async function orbitChat(messages, opts){
   opts = opts||{};
@@ -9605,7 +9648,7 @@ async function orbitChat(messages, opts){
     res = await fetch(ORBIT_CHAT_URL, {
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({messages, tier:opts.tier, system:opts.system}),
+      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort}),
     });
   }catch(e){ throw new Error("Couldn't reach Orbit's server: "+e); }
   let data;
@@ -9614,11 +9657,18 @@ async function orbitChat(messages, opts){
   return data.reply;
 }
 
+function clampOrbitEffort(n){ n=parseInt(n,10); return (n>=1&&n<=5)?n:3; }
+
 const ORBIT_APP_TIER_KEY="wc_orbit_app_tier", ORBIT_TERM_TIER_KEY="wc_orbit_term_tier";
+const ORBIT_APP_EFFORT_KEY="wc_orbit_app_effort", ORBIT_TERM_EFFORT_KEY="wc_orbit_term_effort";
 function getOrbitAppTier(){ try{ const t=localStorage.getItem(ORBIT_APP_TIER_KEY); return ORBIT_TIERS[t]?t:"star"; }catch(e){ return "star"; } }
 function setOrbitAppTier(t){ try{ localStorage.setItem(ORBIT_APP_TIER_KEY, t); }catch(e){} }
 function getOrbitTermTier(){ try{ const t=localStorage.getItem(ORBIT_TERM_TIER_KEY); return ORBIT_TIERS[t]?t:"belt"; }catch(e){ return "belt"; } }
 function setOrbitTermTier(t){ try{ localStorage.setItem(ORBIT_TERM_TIER_KEY, t); }catch(e){} }
+function getOrbitAppEffort(){ try{ return clampOrbitEffort(localStorage.getItem(ORBIT_APP_EFFORT_KEY)); }catch(e){ return 3; } }
+function setOrbitAppEffort(n){ try{ localStorage.setItem(ORBIT_APP_EFFORT_KEY, clampOrbitEffort(n)); }catch(e){} }
+function getOrbitTermEffort(){ try{ return clampOrbitEffort(localStorage.getItem(ORBIT_TERM_EFFORT_KEY)); }catch(e){ return 3; } }
+function setOrbitTermEffort(n){ try{ localStorage.setItem(ORBIT_TERM_EFFORT_KEY, clampOrbitEffort(n)); }catch(e){} }
 
 const ORBIT_CHAT_KEY="wc_orbit_chat";
 function loadOrbitChat(){ try{ const h=JSON.parse(localStorage.getItem(ORBIT_CHAT_KEY)); return Array.isArray(h)?h:[]; }catch(e){ return []; } }
@@ -9630,6 +9680,10 @@ function buildOrbit(body){
     <div class="orbit-head">
       <div class="orbit-tiers">${Object.keys(ORBIT_TIERS).map(k=>
         `<button class="orbit-tier" data-tier="${k}" title="${esc(ORBIT_TIERS[k].desc)}">${ORBIT_TIERS[k].icon} ${ORBIT_TIERS[k].label}</button>`).join("")}</div>
+      <div class="orbit-effort" title="Effort: how hard Orbit thinks before answering. Higher takes longer but answers better.">
+        <span class="orbit-eff-lbl">Effort</span>
+        ${ORBIT_EFFORT_LEVELS.map(l=>`<button class="orbit-eff" data-eff="${l.n}" title="${esc(l.label)}: ${esc(l.desc)}">${l.n}</button>`).join("")}
+      </div>
       <button class="orbit-clear" title="Clear chat">🗑️</button>
     </div>
     <div class="orbit-log"></div>
@@ -9644,18 +9698,39 @@ function buildOrbit(body){
   const inputEl=root.querySelector(".orbit-input");
   const sendBtn=form.querySelector("button[type=submit]");
   const tierBtns=[...root.querySelectorAll(".orbit-tier")];
+  const effBtns=[...root.querySelectorAll(".orbit-eff")];
   let tier=getOrbitAppTier();
+  let effort=getOrbitAppEffort();
   let history=loadOrbitChat();
 
-  function setTier(t){ tier=t; setOrbitAppTier(t); tierBtns.forEach(b=>b.classList.toggle("on", b.dataset.tier===t)); }
+  function renderEffort(){
+    const locked=tier==="pulsar";
+    effBtns.forEach(b=>{
+      const n=+b.dataset.eff;
+      b.classList.toggle("on", locked?n===1:n===effort);
+      b.classList.toggle("locked", locked);
+      b.disabled=locked && n!==1;
+    });
+  }
+  function setTier(t){
+    tier=t; setOrbitAppTier(t);
+    tierBtns.forEach(b=>b.classList.toggle("on", b.dataset.tier===t));
+    effort = (t==="pulsar") ? 1 : getOrbitAppEffort();
+    renderEffort();
+  }
+  function setEffort(n){
+    if(tier==="pulsar") return;
+    effort=n; setOrbitAppEffort(n); renderEffort();
+  }
   tierBtns.forEach(b=>b.onclick=()=>setTier(b.dataset.tier));
+  effBtns.forEach(b=>b.onclick=()=>setEffort(+b.dataset.eff));
   setTier(tier);
 
   function bubble(role,text){
     const d=el("div","orbit-msg "+role); d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight; return d;
   }
   history.forEach(m=>bubble(m.role==="user"?"user":"bot", m.content));
-  if(!history.length) bubble("bot","Hi, I'm Orbit. Pick a model above and ask me anything.");
+  if(!history.length) bubble("bot","Hi, I'm Orbit. Pick a model and an effort level above, then ask me anything.");
 
   root.querySelector(".orbit-clear").onclick=()=>{
     history=[]; saveOrbitChat(history); log.innerHTML=""; bubble("bot","Chat cleared.");
@@ -9673,7 +9748,8 @@ function buildOrbit(body){
     const typing=bubble("bot typing","Orbit is thinking…");
     sendBtn.disabled=true;
     try{
-      const reply = await orbitChat(history, {tier, system:ORBIT_SYSTEM_PROMPT});
+      const sys=ORBIT_SYSTEM_PROMPT+"\n\n"+orbitTierBlurb(tier)+"\n\n"+WINCLONE_ENV_DOC;
+      const reply = await orbitChat(history, {tier, effort, system:sys});
       typing.remove();
       bubble("bot", reply);
       history.push({role:"assistant",content:reply}); saveOrbitChat(history);
@@ -9690,12 +9766,13 @@ function buildOrbit(body){
    The model gets a system prompt describing a tiny tool protocol and
    replies with one JSON action per turn; this loop executes each action
    against WinClone's virtual file system and feeds the result back, up to
-   a step cap (both to bound cost against the backend's per-IP rate limit
-   and to stop a confused free model from looping forever). A reply that
-   isn't valid JSON is treated as the model's final answer and printed as-is
-   - free models don't always follow a format perfectly, and failing loudly
-   would be worse than just showing what it said. */
-const ORBIT_MAX_STEPS = 8;
+   a step cap that scales with effort (both to bound cost against the
+   backend's per-IP rate limit and to stop a confused free model from
+   looping forever). A reply that isn't valid JSON is treated as the
+   model's final answer and printed as-is - free models don't always follow
+   a format perfectly, and failing loudly would be worse than just showing
+   what it said. */
+function orbitStepsForEffort(effort){ return [6,8,10,13,16][Math.max(1,Math.min(5,effort||3))-1]; }
 const ORBIT_MAX_WRITE_CHARS = 200000;
 
 function orbitEnsureDir(segs){
@@ -9762,7 +9839,7 @@ function orbitParseAction(text){
   if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
   return null;
 }
-function orbitCodeSystemPrompt(cwdStr){
+function orbitCodeSystemPrompt(cwdStr, maxSteps){
   return `You are Orbit Code, an autonomous coding assistant working inside a virtual Windows-style `+
     `file system rooted at C:\\. The current directory is ${cwdStr}. `+
     `Reply with ONLY a single JSON object per turn - no prose outside it, no markdown fences. Valid actions:\n`+
@@ -9770,27 +9847,61 @@ function orbitCodeSystemPrompt(cwdStr){
     `{"action":"list_dir","path":"..."}\n{"action":"mkdir","path":"..."}\n{"action":"delete_file","path":"..."}\n`+
     `{"action":"done","message":"short summary of what you did"}\n`+
     `Paths may be relative to the current directory or absolute (starting with a drive letter like C:\\). `+
-    `You have at most ${ORBIT_MAX_STEPS} tool calls total, so inspect only what's necessary before writing. `+
+    `You have at most ${maxSteps} tool calls total, so inspect only what's necessary before writing. `+
     `Always finish with a "done" action once the task is complete.`;
 }
-async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, task}){
-  if(!task){ print('Usage: orbit <task>   |   orbit model [pulsar|star|belt]'); return; }
-  print(`🪐 Orbit Code (${ORBIT_TIERS[tier].label}) — ${task}`, "cyan");
+
+/* A live-updating status line, in the spirit of how Claude Code shows its
+   own tool calls: a spinner while a step is in flight, then replaced in
+   place with what actually happened (read/wrote/listed/... or an error) -
+   instead of the terminal just sitting there silent between prompts, or
+   only ever showing results after the fact. Needs print() to hand back the
+   line it created, which is why print/printHtml in buildTerminal now
+   return their element instead of just appending it. */
+function orbitSpinner(print, label){
+  const frames=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+  let i=0;
+  const d=print(frames[0]+" "+label, "orbit-spin");
+  const iv=setInterval(()=>{
+    if(!d || !d.isConnected){ clearInterval(iv); return; }
+    i=(i+1)%frames.length; d.textContent=frames[i]+" "+label;
+  }, 90);
+  return {
+    ok(text){ clearInterval(iv); if(d){ d.className="orbit-step-ok"; d.textContent=text; } },
+    fail(text){ clearInterval(iv); if(d){ d.className="orbit-step-fail"; d.textContent=text; } },
+    stop(){ clearInterval(iv); if(d) d.remove(); },
+  };
+}
+
+async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task, setBusy}){
+  if(!task){ print('Usage: orbit <task>   |   orbit model [pulsar|star|belt]   |   orbit effort [1-5]'); return; }
+  const maxSteps=orbitStepsForEffort(effort);
+  printHtml(`<span class="cyan">🪐 Orbit Code</span> — <b>${esc(ORBIT_TIERS[tier].label)}</b> · effort ${effort}/5 (${esc(ORBIT_EFFORT_LEVELS[effort-1].label)}) · ${esc(task)}`);
   const messages=[{role:"user", content:task}];
-  const sys=orbitCodeSystemPrompt(pathStr());
-  for(let step=1; step<=ORBIT_MAX_STEPS; step++){
-    let reply;
-    try{ reply = await orbitChat(messages, {tier, system:sys}); }
-    catch(e){ printHtml(`<span class="cyan">Orbit error:</span> ${esc(String(e.message||e))}`); return; }
-    const action=orbitParseAction(reply);
-    if(!action||!action.action){ print(reply); return; }
-    messages.push({role:"assistant", content:JSON.stringify(action)});
-    if(action.action==="done"){ print("✅ "+(action.message||"Done.")); return; }
-    const result=orbitToolExec(cwd, action);
-    print((result.ok?"  → ":"  ✗ ")+(result.summary||result.error));
-    messages.push({role:"user", content:"Tool result: "+JSON.stringify(result.ok?{ok:true,data:result.data}:{ok:false,error:result.error})});
+  const sys=orbitCodeSystemPrompt(pathStr(), maxSteps)+"\n\n"+orbitTierBlurb(tier)+"\n\n"+WINCLONE_ENV_DOC;
+  let summary="", failed=false;
+  if(setBusy) setBusy(true);
+  try{
+    for(let step=1; step<=maxSteps; step++){
+      const spin=orbitSpinner(print, `Thinking… (step ${step}/${maxSteps})`);
+      let reply;
+      try{ reply = await orbitChat(messages, {tier, effort, system:sys}); }
+      catch(e){ spin.fail("✗ Orbit error: "+String(e.message||e)); summary=String(e.message||e); failed=true; return; }
+      const action=orbitParseAction(reply);
+      if(!action||!action.action){ spin.stop(); print(reply); summary=reply; return; }
+      messages.push({role:"assistant", content:JSON.stringify(action)});
+      if(action.action==="done"){ spin.ok("✓ "+(action.message||"Done.")); summary=action.message||"Done."; return; }
+      const result=orbitToolExec(cwd, action);
+      if(result.ok) spin.ok("● "+result.summary);
+      else spin.fail("✗ "+result.error);
+      messages.push({role:"user", content:"Tool result: "+JSON.stringify(result.ok?{ok:true,data:result.data}:{ok:false,error:result.error})});
+    }
+    print(`⚠ Stopped after ${maxSteps} steps without finishing.`, "cyan");
+    summary=`Stopped after ${maxSteps} steps without finishing.`; failed=true;
+  }finally{
+    if(setBusy) setBusy(false);
+    try{ notify({icon:failed?"⚠️":"🪐", title:"Orbit Code", body:(failed?"Needs a look — ":"Finished — ")+task.slice(0,80)+(summary?": "+summary.slice(0,120):"")}); }catch(e){}
   }
-  print(`⚠ Stopped after ${ORBIT_MAX_STEPS} steps without finishing.`);
 }
 
 /* asks the backend whether a site's own headers (X-Frame-Options / CSP

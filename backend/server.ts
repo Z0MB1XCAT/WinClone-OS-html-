@@ -61,20 +61,76 @@ const MODEL = Deno.env.get("OPENROUTER_MODEL") ?? "meta-llama/llama-3.3-70b-inst
 // one of three server-defined keys keeps that fixed, while still letting
 // you retune what each tier points at via env vars, with no redeploy.
 //
-// Same free-tier volatility note as MODEL above applies to all three —
-// check https://openrouter.ai/models?max_price=0 periodically and adjust
-// the env vars (OPENROUTER_MODEL_PULSAR / _STAR / _BELT) on Deno Deploy if
-// one of these gets delisted.
-const MODEL_TIERS: Record<string, string> = {
-  pulsar: Deno.env.get("OPENROUTER_MODEL_PULSAR") ?? "openai/gpt-oss-20b:free",
-  star: Deno.env.get("OPENROUTER_MODEL_STAR") ?? "openai/gpt-oss-120b:free",
-  belt: Deno.env.get("OPENROUTER_MODEL_BELT") ?? "openai/gpt-oss-120b:free",
+// Same free-tier volatility note as MODEL above applies to all three — and
+// in practice it bit almost immediately: OpenRouter's free catalog has been
+// observed losing whole model families within days. A single hardcoded slug
+// per tier means Orbit goes down hard the moment that one slug is delisted
+// ("this model is no longer available for free"), even though the fix is
+// just picking a different still-free model. So each tier is a *list*:
+// OPENROUTER_MODEL_PULSAR / _STAR / _BELT can be set to a comma-separated
+// list of candidates on Deno Deploy, tried in order until one answers,
+// instead of a single point of failure. Check
+// https://openrouter.ai/models?max_price=0 periodically and update the env
+// vars (no redeploy needed) if every candidate in a tier gets delisted at
+// once.
+function envModelList(key: string, fallback: string[]): string[] {
+  const raw = Deno.env.get(key);
+  if (!raw) return fallback;
+  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  return list.length ? list : fallback;
+}
+const MODEL_TIERS: Record<string, string[]> = {
+  // Pulsar: smallest/fastest candidate only - it's meant to answer quickly,
+  // so it doesn't reach for a bigger fallback just because the first one
+  // is briefly unavailable.
+  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free"]),
+  // Star and Belt share a candidate pool today (both being general-purpose
+  // free models) but are free to diverge via env vars - Belt in particular
+  // is meant to be the strongest tier for coding/data/complex work, so put
+  // your best free coding-capable model first in OPENROUTER_MODEL_BELT once
+  // you find one worth pinning.
+  star: envModelList("OPENROUTER_MODEL_STAR", ["openai/gpt-oss-120b:free", "openai/gpt-oss-20b:free"]),
+  belt: envModelList("OPENROUTER_MODEL_BELT", ["openai/gpt-oss-120b:free", "openai/gpt-oss-20b:free"]),
 };
 // Orbit Code's agent loop sends its own tool-use system prompt instead of
 // the default assistant persona below; capped the same way pageUrl's
 // extracted text is, so a request can't ask this server to forward an
 // unbounded prompt to OpenRouter.
 const MAX_SYSTEM_CHARS = 4000;
+
+// Orbit's "effort" control (1-5, tiered callers only - the default
+// untiered path below is untouched by any of this). Two independent knobs
+// per level: max_tokens (works on every model, and is itself why higher
+// effort visibly takes longer - more tokens to generate) and OpenRouter's
+// unified `reasoning.effort` field, which reasoning-capable free models
+// (the gpt-oss family among them) use to actually think longer before
+// answering. A model that doesn't support reasoning at all is expected to
+// just ignore that field rather than error on it; if a specific model in a
+// tier's fallback list ever proves otherwise, the same fallback loop that
+// handles delisted models will just move on to the next candidate. The
+// `note` is appended to the system prompt so effort still visibly scales
+// generation depth through the prompt itself, independent of whether the
+// underlying model has real reasoning tokens.
+const EFFORT_LEVELS: { maxTokens: number; reasoning?: "low" | "medium" | "high"; note: string }[] = [
+  { maxTokens: 600, note: "Answer quickly - be brief and direct, skip extra explanation." },
+  { maxTokens: 1000, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
+  { maxTokens: 1800, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
+  {
+    maxTokens: 3000,
+    reasoning: "high",
+    note: "Reason carefully; consider edge cases and alternatives before finalizing.",
+  },
+  {
+    maxTokens: 4500,
+    reasoning: "high",
+    note:
+      "Take your time: reason deeply, double-check your own answer or code for mistakes, then give a thorough, well-considered final response.",
+  },
+];
+function clampEffort(n: unknown): number {
+  const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 3;
+  return Math.min(5, Math.max(1, v));
+}
 // -----------------------------------------------------------------------
 
 const SYSTEM_PROMPT =
@@ -669,7 +725,13 @@ async function handleChat(req: Request): Promise<Response> {
     return json({ error: "Server is missing OPENROUTER_API_KEY." }, 500);
   }
 
-  let body: { messages?: { role: string; content: string }[]; pageUrl?: string; tier?: string; system?: string };
+  let body: {
+    messages?: { role: string; content: string }[];
+    pageUrl?: string;
+    tier?: string;
+    system?: string;
+    effort?: number;
+  };
   try {
     body = await req.json();
   } catch {
@@ -683,17 +745,27 @@ async function handleChat(req: Request): Promise<Response> {
     return json({ error: "No messages provided." }, 400);
   }
 
-  // Orbit addition: an optional client-chosen tier picks the model (falls
-  // back to the original fixed MODEL, unchanged, if tier is absent or
-  // unrecognized); an optional system override replaces the default persona
-  // (falls back to the original SYSTEM_PROMPT, unchanged, if absent). Every
-  // existing caller that doesn't send these two fields gets byte-identical
-  // behavior to before.
-  const model = (typeof body.tier === "string" && MODEL_TIERS[body.tier]) || MODEL;
-  const systemPrompt =
+  // Orbit addition: an optional client-chosen tier picks a *list* of
+  // candidate models (falls back to the original single fixed MODEL,
+  // unchanged, if tier is absent or unrecognized); an optional system
+  // override replaces the default persona (falls back to the original
+  // SYSTEM_PROMPT, unchanged, if absent); an optional effort level (1-5,
+  // tiered callers only) scales max_tokens/reasoning depth. Every existing
+  // caller that sends none of tier/system/effort gets byte-identical
+  // behavior to before this and the fallback-chain change: models = [MODEL],
+  // level = null, so no max_tokens/reasoning field is added at all.
+  const tierKey = typeof body.tier === "string" && MODEL_TIERS[body.tier] ? body.tier : null;
+  const models = tierKey ? MODEL_TIERS[tierKey] : [MODEL];
+  // Pulsar is meant to always be the fast, low-effort tier - locked here too,
+  // not just in the client UI, since the client is just JS a user could edit.
+  const effort = tierKey ? (tierKey === "pulsar" ? 1 : clampEffort(body.effort)) : null;
+  const level = effort ? EFFORT_LEVELS[effort - 1] : null;
+
+  let systemPrompt =
     typeof body.system === "string" && body.system.trim()
       ? body.system.slice(0, MAX_SYSTEM_CHARS)
       : SYSTEM_PROMPT;
+  if (level) systemPrompt += "\n\n" + level.note;
 
   const systemMessages = [{ role: "system", content: systemPrompt }];
   if (typeof body.pageUrl === "string" && body.pageUrl) {
@@ -709,34 +781,50 @@ async function handleChat(req: Request): Promise<Response> {
     }
   }
 
-  let upstream: Response;
-  try {
-    upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [...systemMessages, ...messages],
-      }),
-    });
-  } catch (err) {
-    return json({ error: `Could not reach OpenRouter: ${String(err)}` }, 502);
+  const requestBody: Record<string, unknown> = { messages: [...systemMessages, ...messages] };
+  if (level) {
+    requestBody.max_tokens = level.maxTokens;
+    if (level.reasoning) requestBody.reasoning = { effort: level.reasoning };
   }
 
-  if (!upstream.ok) {
-    const text = await upstream.text();
-    return json(
-      { error: `OpenRouter error ${upstream.status}: ${text.slice(0, 300)}` },
-      502,
-    );
+  // Try each candidate model in order - a delisted/unavailable one (the
+  // single biggest cause of Orbit chat failures given how often OpenRouter's
+  // free catalog churns) just falls through to the next instead of failing
+  // the whole request. Errors from every attempt are kept so the final
+  // failure message says what was actually tried, instead of a bare
+  // "something went wrong".
+  const attempts: string[] = [];
+  for (const model of models) {
+    let upstream: Response;
+    try {
+      upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ model, ...requestBody }),
+      });
+    } catch (err) {
+      attempts.push(`${model}: could not reach OpenRouter (${String(err)})`);
+      continue;
+    }
+
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      attempts.push(`${model}: HTTP ${upstream.status} ${text.slice(0, 200)}`);
+      continue;
+    }
+
+    const data = await upstream.json();
+    const reply = data?.choices?.[0]?.message?.content ?? "(the model returned no reply)";
+    return json({ reply, model });
   }
 
-  const data = await upstream.json();
-  const reply = data?.choices?.[0]?.message?.content ?? "(the model returned no reply)";
-  return json({ reply });
+  return json(
+    { error: `Every model for this request failed:\n` + attempts.join("\n") },
+    502,
+  );
 }
 
 function json(obj: unknown, status = 200): Response {
