@@ -9871,16 +9871,20 @@ function orbitParseAction(text){
   if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
   return null;
 }
+/* The backend enforces the actual JSON shape via response_format
+   (structured output) whenever mode: "agent" is set - see ORBIT_ACTION_SCHEMA
+   server-side - so this only needs to teach the *semantics* of each action,
+   not police formatting the model would otherwise have to reason about
+   getting right on its own. */
 function orbitCodeSystemPrompt(cwdStr, maxSteps){
   return `You are Orbit Code, an autonomous coding assistant working inside a virtual Windows-style `+
     `file system rooted at C:\\. The current directory is ${cwdStr}. `+
-    `Reply with ONLY a single JSON object per turn - no prose outside it, no markdown fences. Valid actions:\n`+
-    `{"action":"read_file","path":"..."}\n{"action":"write_file","path":"...","content":"..."}\n`+
-    `{"action":"list_dir","path":"..."}\n{"action":"mkdir","path":"..."}\n{"action":"delete_file","path":"..."}\n`+
-    `{"action":"done","message":"short summary of what you did"}\n`+
-    `Paths may be relative to the current directory or absolute (starting with a drive letter like C:\\). `+
+    `Each turn, choose exactly one action: read_file, write_file, list_dir, mkdir, delete_file, or done. `+
+    `Set "path" to the target for every action except done - relative to the current directory, or absolute `+
+    `(starting with a drive letter like C:\\). Set "content" to the full file text, only for write_file. `+
+    `Set "message" to a short summary of what you accomplished, only for done. `+
     `You have at most ${maxSteps} tool calls total, so inspect only what's necessary before writing. `+
-    `Always finish with a "done" action once the task is complete.`;
+    `Always finish with "done" once the task is complete.`;
 }
 
 /* A live-updating status line, in the spirit of how Claude Code shows its

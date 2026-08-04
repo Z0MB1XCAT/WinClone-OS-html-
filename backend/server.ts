@@ -149,6 +149,50 @@ function clampEffort(n: unknown): number {
 // says mode: "agent" (Orbit Code's terminal loop) instead of the chat
 // app's default. See where it's used in handleChat for why.
 const AGENT_TOKEN_BONUS = 3000;
+// Orbit Code (mode: "agent") used to be told "reply with ONLY a JSON
+// object, no prose, no markdown fences" as a plain English instruction and
+// left to comply on its own - which is exactly what was fragile about it.
+// gpt-oss (and most current OpenRouter models) natively support structured
+// output: passing this schema as response_format makes the *decoder*
+// enforce a matching JSON object, so the model never has to spend any of
+// its reasoning budget figuring out formatting - only the actual task.
+// That's the direct fix for "model returned an empty reply (spent its
+// budget on reasoning instead)", which was happening on every terminal
+// call regardless of tier or token budget precisely because formatting
+// compliance was being asked for in prose instead of enforced by the API.
+//
+// A flat, non-discriminated shape (every field always present, nullable
+// when not applicable to the chosen action) rather than a oneOf/anyOf union
+// keyed on "action" - broader provider support, and simpler for both sides
+// to reason about. All fields are listed in "required" (even the nullable
+// ones) because OpenAI-style strict structured output requires that; a
+// field being "not used this turn" is expressed as null, not omitted.
+const ORBIT_ACTION_SCHEMA = {
+  type: "object",
+  properties: {
+    action: {
+      type: "string",
+      enum: ["read_file", "write_file", "list_dir", "mkdir", "delete_file", "done"],
+      description: "Exactly one tool action to perform this turn.",
+    },
+    path: {
+      type: ["string", "null"],
+      description:
+        "File or folder path, relative to the current directory or absolute (starting with a drive letter like C:\\). Required for every action except 'done'; null for 'done'.",
+    },
+    content: {
+      type: ["string", "null"],
+      description: "Full text content to write. Only used for 'write_file'; null for every other action.",
+    },
+    message: {
+      type: ["string", "null"],
+      description: "Short summary of what was accomplished. Only used for 'done'; null for every other action.",
+    },
+  },
+  required: ["action", "path", "content", "message"],
+  additionalProperties: false,
+};
+
 // Flat top-up applied only on the empty-reply retry in handleChat's
 // fallback loop - on top of whatever max_tokens (including AGENT_TOKEN_BONUS,
 // if this was an agent-mode call) the first attempt already had.
@@ -897,6 +941,16 @@ async function handleChat(req: Request): Promise<Response> {
     const agentBonus = body.mode === "agent" ? AGENT_TOKEN_BONUS : 0;
     requestBody.max_tokens = level.maxTokens + agentBonus;
     if (level.reasoning) requestBody.reasoning = { effort: level.reasoning };
+  }
+  // Structured output is scoped to agent mode only - Orbit Code expects an
+  // action object on *every* turn, but the chat app's replies are mostly
+  // ordinary conversation with an occasional tool call, and forcing every
+  // chat reply into this schema would break plain conversation outright.
+  if (body.mode === "agent") {
+    requestBody.response_format = {
+      type: "json_schema",
+      json_schema: { name: "orbit_action", strict: true, schema: ORBIT_ACTION_SCHEMA },
+    };
   }
 
   // Try each candidate model in order - a delisted/unavailable one (the
