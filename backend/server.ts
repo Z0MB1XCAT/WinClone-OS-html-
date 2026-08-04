@@ -109,6 +109,21 @@ const RATE_LIMIT_MAX = 30;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMITED_PATHS = new Set(["/api/chat", "/search", "/proxy", "/frame-check"]);
 
+// /api/chat used to only ever be loaded two ways: navigated to directly, or
+// fetched by this server's own renderPage() script running same-origin
+// inside Nova's own page (loaded in Edgy's sidebar iframe). Orbit's app.js
+// calls it with fetch() from WinClone's own origin instead - a different
+// origin - which the browser won't allow without this server explicitly
+// opting in via CORS. Same reasoning as /frame-check's existing CORS
+// header: this endpoint is already public and unauthenticated (rate limiting
+// is the only gate, not Origin), so there's no meaningful trust boundary
+// that "*" gives up here that a direct curl couldn't already cross.
+const CORS_HEADERS = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+
 function clientIp(req: Request, info: unknown): string {
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();
@@ -139,6 +154,14 @@ function rateLimitedResponse(pathname: string): Response {
 
 Deno.serve(async (req: Request, info: unknown) => {
   const url = new URL(req.url);
+
+  // The browser sends this automatically ahead of the real cross-origin
+  // POST (content-type: application/json makes it a "non-simple" request);
+  // answered before the rate limiter so a preflight never itself counts
+  // against the same budget as the request it's clearing the way for.
+  if (req.method === "OPTIONS" && url.pathname === "/api/chat") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
 
   if (req.method === "GET" && url.pathname === "/") {
     return new Response(renderPage(), {
@@ -719,7 +742,7 @@ async function handleChat(req: Request): Promise<Response> {
 function json(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...CORS_HEADERS },
   });
 }
 
