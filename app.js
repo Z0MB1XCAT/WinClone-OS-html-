@@ -1200,10 +1200,11 @@ function buildTerminal(body){
   const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); return d; };
   const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); return d; };
   print(`WinClone Terminal [Version 10.0.26100]\n(c) WinClone. All rights reserved.  Type "help" for commands.\n`);
+  printOrbitWelcome(term);
   term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); } });
   function prompt(){
     const line = el("div","term-input");
-    line.innerHTML = `<span class="green">${esc(pathStr())}></span>`;
+    line.innerHTML = `<span class="purple">${esc(pathStr())}></span>`;
     const inp = el("input"); inp.autocomplete="off"; inp.spellcheck=false;
     line.appendChild(inp); term.appendChild(line); inp.focus();
     inp.addEventListener("keydown", e=>{
@@ -9909,6 +9910,63 @@ function orbitSpinner(print, label){
   };
 }
 
+/* ---- Terminal welcome panel: a small localStorage log of recent Orbit
+   Code tasks, plus the panel itself (purple, dashed border, a drawn
+   ringed-planet mark instead of an emoji so its color is actually under
+   CSS control) shown once per Terminal session, in the spirit of a CLI's
+   own startup screen. ---- */
+const ORBIT_ACTIVITY_KEY="wc_orbit_activity";
+function loadOrbitActivity(){ try{ const a=JSON.parse(localStorage.getItem(ORBIT_ACTIVITY_KEY)); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function logOrbitActivity(task, ok){
+  try{
+    const list=loadOrbitActivity();
+    list.unshift({task:String(task||"").slice(0,60), ok:!!ok, at:Date.now()});
+    localStorage.setItem(ORBIT_ACTIVITY_KEY, JSON.stringify(list.slice(0,5)));
+  }catch(e){}
+}
+const ORBIT_PLANET_SVG = `<svg viewBox="0 0 64 64" width="46" height="46" aria-hidden="true">
+  <ellipse cx="32" cy="35" rx="27" ry="8" fill="none" stroke="#b48cff" stroke-width="3" opacity=".85" transform="rotate(-15 32 35)"/>
+  <circle cx="30" cy="26" r="15" fill="#9b6bff"/>
+  <path d="M18 27a12 12 0 0 0 19 10 15 15 0 0 1-19-10z" fill="#7c4de0"/>
+  <circle cx="25" cy="21" r="2.1" fill="#e4d9ff" opacity=".65"/>
+</svg>`;
+function printOrbitWelcome(term){
+  const activity=loadOrbitActivity();
+  const activityHtml = activity.length
+    ? activity.map(a=>`<div class="ow-row"><span class="ow-t">${esc(notifTimeAgo(a.at))}</span>${esc(a.task)}${a.ok?"":" ⚠"}</div>`).join("")
+    : `<div class="ow-row ow-dim">No Orbit Code activity yet</div>`;
+  const tier=getOrbitTermTier();
+  const box=el("div","orbit-welcome");
+  /* .term div{white-space:pre-wrap} (further up in styles.css - meant for
+     plain-text print() lines) is inherited by every div in this box, so the
+     indentation below - insignificant markup formatting under normal HTML
+     whitespace rules - would otherwise render as real blank lines. Collapsing
+     inter-tag whitespace before it ever becomes DOM sidesteps that at the
+     source instead of fighting it with :not() selectors and specificity for
+     every new div added here. */
+  box.innerHTML = `
+    <div class="ow-left">
+      <div class="ow-planet-wrap">${ORBIT_PLANET_SVG}</div>
+      <div class="ow-title">Orbit Code</div>
+      <div class="ow-sub">WinClone</div>
+      <div class="ow-greet">Welcome back, ${esc(getUser())}!</div>
+    </div>
+    <div class="ow-right">
+      <div class="ow-section">
+        <div class="ow-h">Recent activity</div>
+        ${activityHtml}
+      </div>
+      <div class="ow-section">
+        <div class="ow-h">Tips</div>
+        <div class="ow-row"><span class="ow-k">orbit &lt;task&gt;</span>run an agentic coding task</div>
+        <div class="ow-row"><span class="ow-k">orbit model [tier]</span>switch Pulsar / Star / Belt</div>
+        <div class="ow-row"><span class="ow-k">orbit effort [1-5]</span>speed vs. depth</div>
+      </div>
+    </div>`.replace(/>\s+</g, "><").trim();
+  term.appendChild(box);
+  term.appendChild(el("div","ow-footer", `orbit to start · currently ${esc(ORBIT_TIERS[tier].label)} · "help" for everything else`));
+}
+
 async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task, setBusy}){
   if(!task){ print('Usage: orbit <task>   |   orbit model [pulsar|star|belt]   |   orbit effort [1-5]'); return; }
   const maxSteps=orbitStepsForEffort(effort);
@@ -9936,6 +9994,7 @@ async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, ta
     summary=`Stopped after ${maxSteps} steps without finishing.`; failed=true;
   }finally{
     if(setBusy) setBusy(false);
+    logOrbitActivity(task, !failed);
     try{ notify({icon:failed?"⚠️":"🪐", title:"Orbit Code", body:(failed?"Needs a look — ":"Finished — ")+task.slice(0,80)+(summary?": "+summary.slice(0,120):"")}); }catch(e){}
   }
 }

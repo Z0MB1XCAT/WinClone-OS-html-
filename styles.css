@@ -387,16 +387,43 @@
     font-size:13.5px;padding:10px 12px;overflow:auto;line-height:1.45}
   .term .green{color:#16c60c}
   .term .cyan{color:#3a96dd}
+  .term .purple{color:#b48cff}
   .term-input{display:flex;gap:6px}
   .term-input input{flex:1;background:transparent;border:0;outline:0;color:#e0e0e0;font-family:inherit;font-size:13.5px}
-  .term-cursor{display:inline-block;color:#4ade80;animation:termblink 1s steps(1) infinite}
+  .term-cursor{display:inline-block;color:#b48cff;animation:termblink 1s steps(1) infinite}
   @keyframes termblink{0%,49%{opacity:1}50%,100%{opacity:0}}
   .term .orbit-spin{color:#8b8a9a;font-style:italic}
   .term .orbit-step-ok{color:#4ade80}
   .term .orbit-step-fail{color:#ff6b6b}
-  @keyframes orbitpulse{0%,100%{box-shadow:inset 0 0 0 1px rgba(124,140,255,.22),inset 0 0 18px rgba(124,140,255,.07)}
-    50%{box-shadow:inset 0 0 0 1px rgba(124,140,255,.5),inset 0 0 34px rgba(124,140,255,.18)}}
+  @keyframes orbitpulse{0%,100%{box-shadow:inset 0 0 0 1px rgba(155,107,255,.25),inset 0 0 18px rgba(155,107,255,.08)}
+    50%{box-shadow:inset 0 0 0 1px rgba(155,107,255,.55),inset 0 0 34px rgba(155,107,255,.2)}}
   .term.orbit-busy{animation:orbitpulse 1.7s ease-in-out infinite}
+
+  /* .term div{white-space:pre-wrap} (further up, meant for plain-text print()
+     lines) is a one-class-plus-element selector - (0,0,1,1) - which beats a
+     bare single class like ".orbit-welcome{...}" (0,0,1,0) on specificity,
+     so every rule here that needs to win against it is written as ".term
+     .whatever" (0,0,2,0) instead. Without that, the incidental whitespace
+     between tags in this box's HTML (just markup formatting, not content)
+     renders as real blank lines under pre-wrap. */
+  .term .orbit-welcome, .term .ow-left, .term .ow-right, .term .ow-section, .term .ow-title,
+  .term .ow-sub, .term .ow-greet, .term .ow-h, .term .ow-footer{white-space:normal}
+  .orbit-welcome{display:flex;gap:20px;border:1px dashed #7c4de0;border-radius:8px;
+    padding:14px 18px;margin:8px 0 10px;background:rgba(124,77,224,.08)}
+  .ow-left{flex:0 0 140px;display:flex;flex-direction:column;align-items:center;text-align:center;
+    gap:2px;padding-right:16px;border-right:1px dashed rgba(155,107,255,.3)}
+  .ow-planet-wrap{margin-bottom:6px;filter:drop-shadow(0 0 8px rgba(155,107,255,.55))}
+  .ow-title{color:#c9b6ff;font-weight:700;font-size:14px;letter-spacing:.02em}
+  .ow-sub{color:#8b7bb8;font-size:11px;margin-bottom:6px}
+  .ow-greet{color:#e0d6ff;font-size:12px}
+  .ow-right{flex:1;display:flex;flex-direction:column;gap:10px;min-width:0}
+  .ow-h{color:#a37bff;font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+  .term .ow-row{font-size:12.5px;color:#d8cdf5;line-height:1.55;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ow-row .ow-t{color:#8b7bb8;display:inline-block;width:54px;margin-right:8px}
+  .ow-row .ow-k{color:#c9b6ff;font-weight:600;display:inline-block;min-width:132px;margin-right:8px}
+  .ow-row.ow-dim{color:#6f6389;font-style:italic}
+  .ow-footer{color:#8b7bb8;font-size:11.5px;padding:0 2px 12px;
+    border-bottom:1px dashed rgba(155,107,255,.22);margin-bottom:10px}
 
   .orbit{display:flex;flex-direction:column;height:100%;background:#16151d;color:#ececf1;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
