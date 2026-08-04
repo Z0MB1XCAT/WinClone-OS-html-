@@ -80,10 +80,16 @@ function envModelList(key: string, fallback: string[]): string[] {
   return list.length ? list : fallback;
 }
 const MODEL_TIERS: Record<string, string[]> = {
-  // Pulsar: smallest/fastest candidate only - it's meant to answer quickly,
-  // so it doesn't reach for a bigger fallback just because the first one
-  // is briefly unavailable.
-  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free"]),
+  // Pulsar used to be a single-candidate list ("it's meant to be fast, so
+  // don't reach for a bigger fallback") - but a single candidate means zero
+  // fallback the moment that one model has a bad day, and gpt-oss-20b:free
+  // has repeatedly returned genuinely empty replies (burning its whole
+  // budget on hidden reasoning) on ordinary Orbit Code tasks, with no
+  // second model to fall through to. gpt-oss-120b:free is bigger than
+  // Pulsar's "smallest/fastest" ideal, but it's the one this project has
+  // actual evidence is reliable (it's what Star/Belt already lean on) - a
+  // slightly-bigger-than-ideal answer beats a hard failure.
+  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free", "openai/gpt-oss-120b:free"]),
   // Star and Belt share a candidate pool today (both being general-purpose
   // free models) but are free to diverge via env vars - Belt in particular
   // is meant to be the strongest tier for coding/data/complex work, so put
@@ -119,19 +125,24 @@ const MAX_SYSTEM_CHARS = 4000;
 //
 // Level 1 used to omit the `reasoning` field entirely on the assumption
 // that meant "don't reason" - it doesn't. The gpt-oss family reasons by
-// default with or without this field set, so leaving it unset just meant
-// "let the model decide how much," and it decided to spend all 700 tokens
-// thinking and return nothing at all (exactly the failure this table was
-// already trying to avoid at the higher levels). Every level now sets
-// `reasoning` explicitly, "low" at minimum, so Pulsar is actually telling
-// the model to hold back instead of hoping it does.
-const EFFORT_LEVELS: { maxTokens: number; reasoning: "low" | "medium" | "high"; note: string }[] = [
-  { maxTokens: 1500, reasoning: "low", note: "Answer quickly - be brief and direct, skip extra explanation." },
-  { maxTokens: 2200, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
-  { maxTokens: 3400, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
+// default with or without this field set. It was then moved to an explicit
+// "low", which turned out to still leave real reasoning headroom - gpt-oss
+// kept returning genuinely empty replies (spending the whole budget on
+// hidden reasoning) even at "low" on ordinary tasks. OpenRouter's unified
+// reasoning.effort actually supports a wider ladder than the commonly-cited
+// low/medium/high three - "none" and "minimal" sit below "low" - so the
+// low end of this table now reaches for those instead of just hoping "low"
+// holds the model back enough. There's no hard guarantee a given model
+// honors any of this (some models are documented to silently ignore
+// reasoning-effort controls entirely), which is exactly why the fallback
+// candidates and the empty-reply retry below still exist as backstops.
+const EFFORT_LEVELS: { maxTokens: number; reasoning: "none" | "minimal" | "low" | "medium" | "high"; note: string }[] = [
+  { maxTokens: 1500, reasoning: "none", note: "Answer quickly - be brief and direct, skip extra explanation." },
+  { maxTokens: 2200, reasoning: "minimal", note: "Keep it fairly brief; light reasoning only." },
+  { maxTokens: 3400, reasoning: "low", note: "Think it through at a normal, moderate depth before answering." },
   {
     maxTokens: 5200,
-    reasoning: "high",
+    reasoning: "medium",
     note: "Reason carefully; consider edge cases and alternatives before finalizing.",
   },
   {
@@ -990,27 +1001,22 @@ async function handleChat(req: Request): Promise<Response> {
     // OpenRouter) means the model spent its whole max_tokens budget on
     // hidden reasoning tokens and never got to a final answer - this is
     // what produced the earlier "the model returned no reply" failures.
-    // *Dropping* the reasoning field doesn't reliably fix this: some
-    // models (the gpt-oss family among them) reason by default whether or
-    // not this field is set at all, so an unset field isn't "off", it's
-    // "the model's own default depth" - which is exactly how effort 1
-    // (originally no reasoning field, 700 tokens) still burned its whole
-    // budget on reasoning and returned nothing. Forcing the lowest
-    // explicit setting plus a real token bonus targets the actual
-    // mechanism - constrain how much it reasons, and leave headroom for
-    // the answer even if it reasons anyway - instead of hoping "unset"
-    // means "less".
+    // Forcing the *strongest* suppression OpenRouter's API offers
+    // ("none", not just "low" - see the EFFORT_LEVELS comment for why
+    // "low" alone proved not to be enough) plus a real token bonus
+    // targets the actual mechanism - constrain how much it reasons, and
+    // leave headroom for the answer even if it reasons anyway.
     if (r1.emptyReply) {
       const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
       if (remaining2 >= 3000) {
         const retryBody = {
           ...requestBody,
-          reasoning: { effort: "low" },
+          reasoning: { effort: "none" },
           max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
         };
         const r2 = await callOpenRouter(apiKey, { model, ...retryBody }, Math.min(remaining2, CANDIDATE_MAX_MS));
         if (r2.ok) return json({ reply: r2.content, model });
-        attempts.push(`${model} (retried at low reasoning + more headroom): ${r2.error}`);
+        attempts.push(`${model} (retried at minimum reasoning + more headroom): ${r2.error}`);
       }
     }
   }
