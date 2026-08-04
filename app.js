@@ -1192,8 +1192,17 @@ function buildCalc(body){
 const TERM_START=Date.now();
 const TERM_FORTUNES=["A folder in the hand is worth two in the Recycle Bin.","There is no cloud. It's just someone else's WinClone.","rm -rf is not a personality.","Have you tried turning systemwinclone.sys off and on again?","The best code is no code. The second best is this HTML file.","404: motivation not found.","You miss 100% of the packets you don't send."];
 function buildTerminal(body){
-  body.innerHTML = `<div class="term"></div>`;
+  body.innerHTML = `<div class="term-wrap">
+    <div class="term"></div>
+    <div class="orbit-footer hide">
+      <div class="orbit-box"><span class="orbit-box-arrow">›</span><input class="orbit-box-input" autocomplete="off" spellcheck="false" placeholder="Message Orbit Code…"></div>
+      <div class="orbit-hint"><span>/model /effort /exit for shortcuts</span><span class="orbit-hint-status"></span></div>
+    </div>
+  </div>`;
   const term = body.querySelector(".term");
+  const orbitFooter = body.querySelector(".orbit-footer");
+  const orbitInput = orbitFooter.querySelector(".orbit-box-input");
+  const orbitStatusEl = orbitFooter.querySelector(".orbit-hint-status");
   let cwd = [...HOME_PATH];
   const hist=[]; let hi=0;
   let orbitMode=false;
@@ -1201,10 +1210,9 @@ function buildTerminal(body){
   const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); return d; };
   const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); return d; };
   print(`WinClone Terminal [Version 10.0.26100]\n(c) WinClone. All rights reserved.  Type "help" for commands.\n`);
-  printOrbitWelcome(term);
-  term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); } });
+  term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); else if(!orbitInput.disabled) orbitInput.focus(); } });
   function prompt(){
-    if(orbitMode) return orbitPrompt();
+    if(orbitMode) return; // input lives in the persistent Orbit footer instead - see orbitInput's own listener
     const line = el("div","term-input");
     line.innerHTML = `<span class="purple">${esc(pathStr())}></span>`;
     const inp = el("input"); inp.autocomplete="off"; inp.spellcheck=false;
@@ -1222,48 +1230,63 @@ function buildTerminal(body){
     });
   }
   /* The enclosed Orbit Code prompt: entered by typing bare "orbit" (see the
-     orbit case in run() below), it replaces the normal C:\...> line with a
-     bordered input box - so it's visually obvious input here goes to the
-     AI, not the shell - and stays up until /exit. Plain text is sent
-     straight to Orbit Code as a task, no "orbit" prefix needed; lines
-     starting with / are slash commands instead. */
+     orbit case in run() below). Unlike the normal shell prompt (a new line
+     appended per command), this is ONE persistent input - a fixed footer
+     below the scrolling log, shown/hidden rather than recreated each turn,
+     so a multi-step conversation never looks like it's stacking up several
+     input boxes. Plain text goes straight to Orbit Code as a task, no
+     "orbit" prefix needed; lines starting with / are slash commands. */
   function orbitHintText(){
     const tier=getOrbitTermTier(), locked=tier==="pulsar", eff=locked?1:getOrbitTermEffort();
     return `${ORBIT_TIERS[tier].label} · Effort ${eff}/5${locked?" (locked)":" (tab to cycle)"}`;
   }
-  function orbitPrompt(){
-    const wrap=el("div","orbit-repl");
-    wrap.innerHTML=`<div class="orbit-box"><span class="orbit-box-arrow">›</span>`+
-      `<input class="orbit-box-input" autocomplete="off" spellcheck="false" placeholder="Message Orbit Code…"></div>`+
-      `<div class="orbit-hint"><span>/model /effort /exit for shortcuts</span><span class="orbit-hint-status"></span></div>`;
-    term.appendChild(wrap);
-    const inp=wrap.querySelector(".orbit-box-input");
-    const statusEl=wrap.querySelector(".orbit-hint-status");
-    statusEl.textContent=orbitHintText();
-    inp.focus();
-    inp.addEventListener("keydown", e=>{
-      if(e.key==="Enter"){
-        const cmd=inp.value.trim(); inp.disabled=true; if(cmd) hist.push(cmd); hi=hist.length;
-        const cursor=el("span","term-cursor","▌"); wrap.appendChild(cursor);
-        const r=runOrbitRepl(cmd);
-        const advance=()=>{ cursor.remove(); prompt(); term.scrollTop=term.scrollHeight; };
-        if(r && typeof r.then==="function") r.then(advance, advance); else advance();
-      }
-      else if(e.key==="Tab"){
-        e.preventDefault();
-        if(getOrbitTermTier()==="pulsar") return;
-        setOrbitTermEffort((getOrbitTermEffort()%5)+1);
-        statusEl.textContent=orbitHintText();
-      }
-      else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; inp.value=hist[hi]||""; } }
-      else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; inp.value=hist[hi]||""; } else { hi=hist.length; inp.value=""; } }
-    });
+  function updateOrbitStatus(){ orbitStatusEl.textContent=orbitHintText(); }
+  function enterOrbitMode(){
+    orbitMode=true;
+    printOrbitWelcome(term);
+    printHtml(`<span class="cyan">🪐 Entering Orbit Code</span> — type a task directly, or /model, /effort, /exit.`);
+    orbitFooter.classList.remove("hide");
+    updateOrbitStatus();
+    orbitInput.value=""; orbitInput.disabled=false; orbitInput.focus();
+    term.scrollTop=term.scrollHeight;
   }
+  function exitOrbitMode(){
+    orbitMode=false;
+    orbitFooter.classList.add("hide");
+    printHtml(`<span class="purple">🪐 Left Orbit Code</span> — back to the regular shell.`);
+    prompt();
+  }
+  orbitInput.addEventListener("keydown", e=>{
+    if(e.key==="Enter"){
+      const cmd=orbitInput.value.trim();
+      orbitInput.value="";
+      if(!cmd) return;
+      hist.push(cmd); hi=hist.length;
+      orbitInput.disabled=true; orbitFooter.querySelector(".orbit-box").classList.add("busy");
+      print("› "+cmd, "purple");
+      const r=runOrbitRepl(cmd);
+      const advance=()=>{
+        orbitFooter.querySelector(".orbit-box").classList.remove("busy");
+        orbitInput.disabled=false;
+        if(orbitMode){ updateOrbitStatus(); orbitInput.focus(); }
+        term.scrollTop=term.scrollHeight;
+      };
+      if(r && typeof r.then==="function") r.then(advance, advance); else advance();
+    }
+    else if(e.key==="Tab"){
+      e.preventDefault();
+      if(getOrbitTermTier()==="pulsar") return;
+      setOrbitTermEffort((getOrbitTermEffort()%5)+1);
+      updateOrbitStatus();
+    }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; orbitInput.value=hist[hi]||""; } }
+    else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; orbitInput.value=hist[hi]||""; } else { hi=hist.length; orbitInput.value=""; } }
+  });
   function runOrbitRepl(cmd){
     if(!cmd) return;
     if(cmd[0]==="/"){
       const parts=cmd.slice(1).split(/\s+/), sub=(parts[0]||"").toLowerCase(), rest=parts.slice(1);
-      if(sub==="exit"||sub==="quit"){ orbitMode=false; printHtml(`<span class="purple">🪐 Left Orbit Code</span> — back to the regular shell.`); return; }
+      if(sub==="exit"||sub==="quit"){ exitOrbitMode(); return; }
       if(sub==="model"){
         const t=(rest[0]||"").toLowerCase();
         if(!t) print("Model: "+ORBIT_TIERS[getOrbitTermTier()].label+"  (pulsar / star / belt)");
@@ -1430,11 +1453,7 @@ function buildTerminal(body){
         break;
       }
       case "orbit": case "oc": {
-        if(!args.length){
-          orbitMode=true;
-          printHtml(`<span class="cyan">🪐 Entering Orbit Code</span> — type a task directly, or /model, /effort, /exit.`);
-          break;
-        }
+        if(!args.length){ enterOrbitMode(); break; }
         const sub=args[0].toLowerCase();
         if(sub==="model"){
           const t=(args[1]||"").toLowerCase();
@@ -9962,10 +9981,19 @@ function orbitCodeSystemPrompt(cwdStr, maxSteps){
   return `You are Orbit Code, an autonomous coding assistant working inside a virtual Windows-style `+
     `file system rooted at C:\\. The current directory is ${cwdStr}. `+
     `Each turn, choose exactly one action: read_file, write_file, list_dir, mkdir, delete_file, or done. `+
+    `Set "note" to one short present-tense sentence saying what this step is doing and why - it's shown to `+
+    `the user as a running log, so make it genuinely informative, not just a restatement of the action name. `+
     `Set "path" to the target for every action except done - relative to the current directory, or absolute `+
     `(starting with a drive letter like C:\\). Set "content" to the full file text, only for write_file. `+
     `Set "message" to a short summary of what you accomplished, only for done. `+
-    `You have at most ${maxSteps} tool calls total, so inspect only what's necessary before writing. `+
+    `\n\nDefault to writing code to a file via write_file - never put source code inside "message" or any `+
+    `other field, and never just describe code in prose expecting the user to copy it themselves, unless `+
+    `they explicitly asked you to show/print/explain code without saving it. If they named a destination `+
+    `(e.g. "the desktop", "a folder called X"), write there; otherwise write into the current directory `+
+    `given above - that's what "cd into a folder, then run Orbit" means. For anything beyond a single small `+
+    `file, create a project folder first (mkdir) and put the files inside it, rather than dropping several `+
+    `loose files directly into an existing folder like Desktop or Documents. `+
+    `\n\nYou have at most ${maxSteps} tool calls total, so inspect only what's necessary before writing. `+
     `Always finish with "done" once the task is complete.`;
 }
 
@@ -10005,12 +10033,18 @@ function logOrbitActivity(task, ok){
     localStorage.setItem(ORBIT_ACTIVITY_KEY, JSON.stringify(list.slice(0,5)));
   }catch(e){}
 }
-const ORBIT_PLANET_SVG = `<svg viewBox="0 0 64 64" width="46" height="46" aria-hidden="true">
-  <ellipse cx="32" cy="35" rx="27" ry="8" fill="none" stroke="#b48cff" stroke-width="3" opacity=".85" transform="rotate(-15 32 35)"/>
-  <circle cx="30" cy="26" r="15" fill="#9b6bff"/>
-  <path d="M18 27a12 12 0 0 0 19 10 15 15 0 0 1-19-10z" fill="#7c4de0"/>
-  <circle cx="25" cy="21" r="2.1" fill="#e4d9ff" opacity=".65"/>
-</svg>`;
+/* Chunky pixel-art planet (not a smooth vector shape) - flat 2-row ring band
+   behind the sphere with a short brighter arc redrawn in front of its lower
+   edge, in the spirit of a small blocky CLI mascot rather than a polished
+   icon. One <path> of 1x1 unit squares per color, not one <rect> per pixel -
+   far fewer DOM nodes for the same grid. */
+const ORBIT_PLANET_SVG = `<svg viewBox="0 0 20 13" width="58" height="38" shape-rendering="crispEdges" aria-hidden="true">
+    <path fill="#c9b6ff" d="M0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1zM7 5h1v1h-1zM8 5h1v1h-1zM9 5h1v1h-1zM10 5h1v1h-1zM11 5h1v1h-1zM12 5h1v1h-1zM13 5h1v1h-1zM14 5h1v1h-1zM15 5h1v1h-1zM16 5h1v1h-1zM17 5h1v1h-1zM18 5h1v1h-1zM19 5h1v1h-1zM5 7h1v1h-1zM6 7h1v1h-1zM7 7h1v1h-1zM8 7h1v1h-1zM9 7h1v1h-1zM10 7h1v1h-1zM11 7h1v1h-1zM12 7h1v1h-1zM13 7h1v1h-1zM14 7h1v1h-1zM15 7h1v1h-1z"/>
+    <path fill="#7a5cc4" d="M0 6h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1zM5 6h1v1h-1zM6 6h1v1h-1zM7 6h1v1h-1zM8 6h1v1h-1zM9 6h1v1h-1zM10 6h1v1h-1zM11 6h1v1h-1zM12 6h1v1h-1zM13 6h1v1h-1zM14 6h1v1h-1zM15 6h1v1h-1zM16 6h1v1h-1zM17 6h1v1h-1zM18 6h1v1h-1zM19 6h1v1h-1z"/>
+    <path fill="#e4d9ff" d="M6 4h1v1h-1zM6 5h1v1h-1zM7 3h1v1h-1zM7 4h1v1h-1zM8 2h1v1h-1zM8 3h1v1h-1zM8 4h1v1h-1zM9 2h1v1h-1zM9 3h1v1h-1zM10 2h1v1h-1zM11 2h1v1h-1z"/>
+    <path fill="#9b6bff" d="M6 6h1v1h-1zM6 7h1v1h-1zM6 8h1v1h-1zM7 5h1v1h-1zM7 6h1v1h-1zM7 7h1v1h-1zM7 8h1v1h-1zM7 9h1v1h-1zM8 5h1v1h-1zM8 6h1v1h-1zM8 7h1v1h-1zM8 8h1v1h-1zM8 9h1v1h-1zM9 4h1v1h-1zM9 5h1v1h-1zM9 6h1v1h-1zM9 7h1v1h-1zM9 8h1v1h-1zM10 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM12 2h1v1h-1zM12 3h1v1h-1zM12 4h1v1h-1zM12 5h1v1h-1zM12 6h1v1h-1zM13 3h1v1h-1zM13 4h1v1h-1zM13 5h1v1h-1zM13 6h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1z"/>
+    <path fill="#7c4de0" d="M8 10h1v1h-1zM9 9h1v1h-1zM9 10h1v1h-1zM10 8h1v1h-1zM10 9h1v1h-1zM10 10h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM12 7h1v1h-1zM12 8h1v1h-1zM12 9h1v1h-1zM12 10h1v1h-1zM13 7h1v1h-1zM13 8h1v1h-1zM13 9h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1z"/>
+  </svg>`;
 function printOrbitWelcome(term){
   const activity=loadOrbitActivity();
   const activityHtml = activity.length
@@ -10064,11 +10098,18 @@ async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, ta
       catch(e){ spin.fail("✗ Orbit error: "+String(e.message||e)); summary=String(e.message||e); failed=true; return; }
       const action=orbitParseAction(reply);
       if(!action||!action.action){ spin.stop(); print(reply); summary=reply; return; }
+      spin.stop();
+      /* The spinner can only ever say "thinking" - it's shown before a
+         reply exists, so it can't describe what the model is about to do.
+         The model's own "note" can, once we have it: a real explanation
+         instead of a generic status word, printed as its own line before
+         the mechanical read/wrote/listed result. */
+      if(action.note) printHtml(`<span class="orbit-note">💭 ${esc(action.note)}</span>`);
       messages.push({role:"assistant", content:JSON.stringify(action)});
-      if(action.action==="done"){ spin.ok("✓ "+(action.message||"Done.")); summary=action.message||"Done."; return; }
+      if(action.action==="done"){ print("✓ "+(action.message||"Done."), "orbit-step-ok"); summary=action.message||"Done."; return; }
       const result=orbitToolExec(cwd, action);
-      if(result.ok) spin.ok("● "+result.summary);
-      else spin.fail("✗ "+result.error);
+      if(result.ok) print("● "+result.summary, "orbit-step-ok");
+      else print("✗ "+result.error, "orbit-step-fail");
       messages.push({role:"user", content:"Tool result: "+JSON.stringify(result.ok?{ok:true,data:result.data}:{ok:false,error:result.error})});
     }
     print(`⚠ Stopped after ${maxSteps} steps without finishing.`, "cyan");

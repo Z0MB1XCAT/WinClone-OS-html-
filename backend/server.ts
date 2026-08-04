@@ -234,6 +234,11 @@ const ORBIT_ACTION_SCHEMA = {
       enum: ["read_file", "write_file", "list_dir", "mkdir", "delete_file", "done"],
       description: "Exactly one tool action to perform this turn.",
     },
+    note: {
+      type: ["string", "null"],
+      description:
+        "One short present-tense sentence explaining what this step is doing and why, shown to the user as a running log (e.g. 'Reading app.py to see how routes are currently structured' or 'Creating a project folder before writing the game files'). Genuinely informative, not a restatement of the action name. Null only if there's truly nothing to add.",
+    },
     path: {
       type: ["string", "null"],
       description:
@@ -241,14 +246,16 @@ const ORBIT_ACTION_SCHEMA = {
     },
     content: {
       type: ["string", "null"],
-      description: "Full text content to write. Only used for 'write_file'; null for every other action.",
+      description:
+        "Full text content to write, for 'write_file' only; null for every other action. This is the ONLY place source code belongs - never put code in 'message'.",
     },
     message: {
       type: ["string", "null"],
-      description: "Short summary of what was accomplished. Only used for 'done'; null for every other action.",
+      description:
+        "Short summary of what was accomplished, for 'done' only; null for every other action. A human-readable sentence, never source code or file contents - anything that needs to end up in a file was already written there via 'write_file' in an earlier step.",
     },
   },
-  required: ["action", "path", "content", "message"],
+  required: ["action", "note", "path", "content", "message"],
   additionalProperties: false,
 };
 
