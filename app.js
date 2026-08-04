@@ -9641,6 +9641,11 @@ function orbitTierBlurb(tier){
   return `You are Orbit's ${ORBIT_TIERS[tier].label} tier (${ORBIT_TIERS[tier].desc}) - one of three tiers built into WinClone. The other two are ${others}. Users pick between tiers themselves; don't suggest they switch unless asked.`;
 }
 
+/* The backend bounds its own OpenRouter fallback loop to ~50s so it can
+   always send back a real response (see CHAT_DEADLINE_MS server-side) -
+   this client-side timeout is set comfortably above that, so a genuinely
+   stuck request still fails with a clear message instead of hanging the
+   terminal/app indefinitely. */
 async function orbitChat(messages, opts){
   opts = opts||{};
   let res;
@@ -9649,8 +9654,12 @@ async function orbitChat(messages, opts){
       method:"POST",
       headers:{"content-type":"application/json"},
       body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort}),
+      signal: AbortSignal.timeout(55000),
     });
-  }catch(e){ throw new Error("Couldn't reach Orbit's server: "+e); }
+  }catch(e){
+    if(e && e.name==="TimeoutError") throw new Error("Orbit's server took too long to answer (55s) - try a lower effort level.");
+    throw new Error("Couldn't reach Orbit's server: "+e);
+  }
   let data;
   try{ data = await res.json(); }catch(e){ throw new Error("Orbit's server sent back something unreadable."); }
   if(data.error) throw new Error(data.error);

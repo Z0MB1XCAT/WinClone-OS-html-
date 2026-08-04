@@ -131,6 +131,12 @@ function clampEffort(n: unknown): number {
   const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 3;
   return Math.min(5, Math.max(1, v));
 }
+// Whole-request and per-candidate time budgets for the OpenRouter fallback
+// loop in handleChat - see the long comment at that loop for why these
+// exist (in short: staying under Deno Deploy's own request time limit so
+// this handler always gets to send back a real response).
+const CHAT_DEADLINE_MS = 50_000;
+const CANDIDATE_MAX_MS = 30_000;
 // -----------------------------------------------------------------------
 
 const SYSTEM_PROMPT =
@@ -793,8 +799,29 @@ async function handleChat(req: Request): Promise<Response> {
   // the whole request. Errors from every attempt are kept so the final
   // failure message says what was actually tried, instead of a bare
   // "something went wrong".
+  //
+  // High effort (reasoning.effort: "high", a big max_tokens) can make a
+  // free, possibly-queued OpenRouter model genuinely slow to answer -
+  // slow enough to run into Deno Deploy's own request wall-clock limit.
+  // When the platform kills a request like that, it drops the connection
+  // outright instead of letting this handler send back a real response,
+  // which is what shows up client-side as a bare "failed to fetch" instead
+  // of a readable error. CHAT_DEADLINE_MS keeps the whole handler (every
+  // candidate combined) safely under that ceiling, so it always gets to
+  // return *something* - a reply, or a clean JSON error - before the
+  // platform would step in. Each candidate is also capped individually
+  // (CANDIDATE_MAX_MS) so one slow model can't burn the entire budget and
+  // starve the fallback candidates after it.
   const attempts: string[] = [];
+  const startedAt = Date.now();
   for (const model of models) {
+    const remaining = CHAT_DEADLINE_MS - (Date.now() - startedAt);
+    if (remaining < 3000) {
+      attempts.push(`${model}: skipped - out of time budget`);
+      break;
+    }
+    const timeoutMs = Math.min(remaining, CANDIDATE_MAX_MS);
+
     let upstream: Response;
     try {
       upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -804,9 +831,11 @@ async function handleChat(req: Request): Promise<Response> {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ model, ...requestBody }),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
-      attempts.push(`${model}: could not reach OpenRouter (${String(err)})`);
+      const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+      attempts.push(`${model}: ${timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `could not reach OpenRouter (${String(err)})`}`);
       continue;
     }
 
