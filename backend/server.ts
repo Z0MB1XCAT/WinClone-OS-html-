@@ -76,7 +76,7 @@ const MODEL = Deno.env.get("OPENROUTER_MODEL") ?? "meta-llama/llama-3.3-70b-inst
 function envModelList(key: string, fallback: string[]): string[] {
   const raw = Deno.env.get(key);
   if (!raw) return fallback;
-  const list = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const list = raw.split(",").map((s: string) => s.trim()).filter(Boolean);
   return list.length ? list : fallback;
 }
 const MODEL_TIERS: Record<string, string[]> = {
@@ -111,17 +111,24 @@ const MAX_SYSTEM_CHARS = 4000;
 // `note` is appended to the system prompt so effort still visibly scales
 // generation depth through the prompt itself, independent of whether the
 // underlying model has real reasoning tokens.
+// max_tokens is generous relative to what the note asks for, especially at
+// higher effort: reasoning tokens are billed out of the same budget as the
+// visible answer for these models, and a ceiling that's too tight lets the
+// model spend the whole thing "thinking" and return an empty message.content
+// - which is exactly what an earlier, tighter version of this table did.
+// handleChat also retries a same-model empty reply with reasoning dropped
+// entirely, as a second line of defense against this same failure mode.
 const EFFORT_LEVELS: { maxTokens: number; reasoning?: "low" | "medium" | "high"; note: string }[] = [
-  { maxTokens: 600, note: "Answer quickly - be brief and direct, skip extra explanation." },
-  { maxTokens: 1000, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
-  { maxTokens: 1800, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
+  { maxTokens: 700, note: "Answer quickly - be brief and direct, skip extra explanation." },
+  { maxTokens: 1400, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
+  { maxTokens: 2600, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
   {
-    maxTokens: 3000,
+    maxTokens: 4200,
     reasoning: "high",
     note: "Reason carefully; consider edge cases and alternatives before finalizing.",
   },
   {
-    maxTokens: 4500,
+    maxTokens: 6000,
     reasoning: "high",
     note:
       "Take your time: reason deeply, double-check your own answer or code for mistakes, then give a thorough, well-considered final response.",
@@ -725,6 +732,53 @@ function htmlResponse(html: string, status = 200): Response {
   });
 }
 
+// One OpenRouter chat-completions attempt. Every way this can fail -
+// network/timeout, a non-2xx from OpenRouter, or a 200 whose message.content
+// comes back empty (typically a reasoning-budget-exhaustion problem, not a
+// real "no answer") - collapses to the same {ok:false, error} shape, so the
+// fallback loop in handleChat can treat "try the next thing" uniformly
+// whether "next thing" means a different model or the same model without
+// reasoning turned on.
+async function callOpenRouter(
+  apiKey: string,
+  body: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<{ ok: true; content: string } | { ok: false; error: string; emptyReply?: boolean }> {
+  let upstream: Response;
+  try {
+    upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+    return {
+      ok: false,
+      error: timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `could not reach OpenRouter (${String(err)})`,
+    };
+  }
+
+  if (!upstream.ok) {
+    const text = await upstream.text();
+    return { ok: false, error: `HTTP ${upstream.status} ${text.slice(0, 200)}` };
+  }
+
+  const data = await upstream.json();
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === "string" && content.trim()) return { ok: true, content };
+  const hadReasoning = !!data?.choices?.[0]?.message?.reasoning;
+  return {
+    ok: false,
+    emptyReply: true,
+    error: `model returned an empty reply${hadReasoning ? " (spent its budget on reasoning instead)" : ""}`,
+  };
+}
+
 async function handleChat(req: Request): Promise<Response> {
   const apiKey = Deno.env.get("OPENROUTER_API_KEY");
   if (!apiKey) {
@@ -822,32 +876,27 @@ async function handleChat(req: Request): Promise<Response> {
     }
     const timeoutMs = Math.min(remaining, CANDIDATE_MAX_MS);
 
-    let upstream: Response;
-    try {
-      upstream = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model, ...requestBody }),
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-    } catch (err) {
-      const timedOut = err instanceof DOMException && err.name === "TimeoutError";
-      attempts.push(`${model}: ${timedOut ? `timed out after ${Math.round(timeoutMs / 1000)}s` : `could not reach OpenRouter (${String(err)})`}`);
-      continue;
-    }
+    const r1 = await callOpenRouter(apiKey, { model, ...requestBody }, timeoutMs);
+    if (r1.ok) return json({ reply: r1.content, model });
+    attempts.push(`${model}: ${r1.error}`);
 
-    if (!upstream.ok) {
-      const text = await upstream.text();
-      attempts.push(`${model}: HTTP ${upstream.status} ${text.slice(0, 200)}`);
-      continue;
+    // "Ok but empty" (as opposed to a network error or a non-2xx from
+    // OpenRouter) with reasoning turned on almost always means the model
+    // spent its whole max_tokens budget on hidden reasoning tokens and
+    // never got to a final answer - this is what produced the earlier
+    // "the model returned no reply" failures. Retrying the *same* model
+    // with reasoning dropped entirely targets that directly, instead of
+    // just hoping the next candidate in the list happens to behave better
+    // under the same constrained budget.
+    if (r1.emptyReply && requestBody.reasoning) {
+      const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
+      if (remaining2 >= 3000) {
+        const { reasoning: _drop, ...withoutReasoning } = requestBody;
+        const r2 = await callOpenRouter(apiKey, { model, ...withoutReasoning }, Math.min(remaining2, CANDIDATE_MAX_MS));
+        if (r2.ok) return json({ reply: r2.content, model });
+        attempts.push(`${model} (retried without reasoning): ${r2.error}`);
+      }
     }
-
-    const data = await upstream.json();
-    const reply = data?.choices?.[0]?.message?.content ?? "(the model returned no reply)";
-    return json({ reply, model });
   }
 
   return json(
