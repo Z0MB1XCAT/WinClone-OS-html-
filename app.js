@@ -9623,6 +9623,14 @@ const ORBIT_EFFORT_LEVELS = [
 ];
 const ORBIT_CHAT_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/api/chat";
 const ORBIT_SYSTEM_PROMPT = "You are Orbit, WinClone's built-in AI assistant. Keep answers concise unless asked for detail.";
+/* The chat app isn't an agent loop like Orbit Code, but it can still do the
+   single most-requested thing a chat-only assistant can't: actually save
+   what it just wrote instead of telling the user to copy it in themselves.
+   One tool call per reply, only when explicitly asked - not a multi-step
+   loop, so this stays a lightweight addition rather than turning the app
+   into a second copy of Orbit Code. */
+const ORBIT_APP_TOOL_PROMPT = `If, and only if, the user explicitly asks you to save, create, or write something as a file (e.g. "put that in Downloads as hello.py", "save this as a file"), reply with ONLY a single JSON object - no prose, no markdown fences: {"action":"write_file","path":"...","content":"..."}. Paths are resolved from C:\\Users\\User (so "Downloads/hello.py" or "Documents/notes.txt" both work). {"action":"read_file","path":"..."}, {"action":"list_dir","path":"..."} and {"action":"mkdir","path":"..."} work the same way if that's what's actually being asked for. For every other message, including just showing code without being asked to save it, reply normally in plain conversational text - never use the JSON form unless a real file operation was requested.`;
+const ORBIT_APP_ALLOWED_ACTIONS = new Set(["write_file", "read_file", "list_dir", "mkdir"]);
 
 /* What every Orbit tier is told about the OS it's embedded in, so code or
    advice it gives actually fits WinClone instead of assuming a real desktop
@@ -9653,7 +9661,7 @@ async function orbitChat(messages, opts){
     res = await fetch(ORBIT_CHAT_URL, {
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort}),
+      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort, mode:opts.mode}),
       signal: AbortSignal.timeout(55000),
     });
   }catch(e){
@@ -9757,11 +9765,26 @@ function buildOrbit(body){
     const typing=bubble("bot typing","Orbit is thinking…");
     sendBtn.disabled=true;
     try{
-      const sys=ORBIT_SYSTEM_PROMPT+"\n\n"+orbitTierBlurb(tier)+"\n\n"+WINCLONE_ENV_DOC;
+      const sys=ORBIT_SYSTEM_PROMPT+"\n\n"+orbitTierBlurb(tier)+"\n\n"+ORBIT_APP_TOOL_PROMPT+"\n\n"+WINCLONE_ENV_DOC;
       const reply = await orbitChat(history, {tier, effort, system:sys});
       typing.remove();
-      bubble("bot", reply);
-      history.push({role:"assistant",content:reply}); saveOrbitChat(history);
+      /* Only trusts a reply as a tool call if it's *entirely* valid JSON
+         (no regex-extraction leniency like Orbit Code uses) - the app
+         handles ordinary conversation, including messages that legitimately
+         contain "{...}" snippets (JSON examples, code), so being strict
+         here matters a lot more than it does for Orbit Code's tool-only
+         turns. */
+      let action=null;
+      try{ action=JSON.parse(reply.trim()); }catch(err){}
+      if(action && typeof action==="object" && ORBIT_APP_ALLOWED_ACTIONS.has(action.action)){
+        const result=orbitToolExec(HOME_PATH, action);
+        const summary=result.ok?("📄 "+result.summary):("⚠️ "+result.error);
+        bubble("bot", summary);
+        history.push({role:"assistant", content:"("+summary+")"}); saveOrbitChat(history);
+      }else{
+        bubble("bot", reply);
+        history.push({role:"assistant",content:reply}); saveOrbitChat(history);
+      }
     }catch(err){
       typing.remove();
       bubble("bot", "Error: "+(err.message||err));
@@ -9894,7 +9917,7 @@ async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, ta
     for(let step=1; step<=maxSteps; step++){
       const spin=orbitSpinner(print, `Thinking… (step ${step}/${maxSteps})`);
       let reply;
-      try{ reply = await orbitChat(messages, {tier, effort, system:sys}); }
+      try{ reply = await orbitChat(messages, {tier, effort, system:sys, mode:"agent"}); }
       catch(e){ spin.fail("✗ Orbit error: "+String(e.message||e)); summary=String(e.message||e); failed=true; return; }
       const action=orbitParseAction(reply);
       if(!action||!action.action){ spin.stop(); print(reply); summary=reply; return; }

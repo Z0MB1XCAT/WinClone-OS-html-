@@ -138,6 +138,10 @@ function clampEffort(n: unknown): number {
   const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 3;
   return Math.min(5, Math.max(1, v));
 }
+// Flat top-up added to every effort level's max_tokens when the caller
+// says mode: "agent" (Orbit Code's terminal loop) instead of the chat
+// app's default. See where it's used in handleChat for why.
+const AGENT_TOKEN_BONUS = 3000;
 // Whole-request and per-candidate time budgets for the OpenRouter fallback
 // loop in handleChat - see the long comment at that loop for why these
 // exist (in short: staying under Deno Deploy's own request time limit so
@@ -221,44 +225,65 @@ function rateLimitedResponse(pathname: string): Response {
   return json({ error: msg }, 429);
 }
 
+// An unhandled exception anywhere below this point would otherwise reach
+// Deno Deploy's own default error response, which carries none of this
+// server's CORS headers - json()'s "access-control-allow-origin" header
+// only gets attached on the *normal* return paths. For same-origin callers
+// (direct navigation, or Nova's own page loading itself) that's invisible;
+// for Orbit's cross-origin fetch() calls (the terminal's agent loop makes
+// several of these per task, so it has more chances to hit whatever this
+// is) the browser can't even read a CORS-less error response and reports
+// it to JS as a bare "Failed to fetch" - indistinguishable from the
+// request never having reached the server at all, and useless for
+// figuring out what actually went wrong. Wrapping the whole handler
+// guarantees every response, including a crash, is real JSON with CORS
+// headers attached, and the error is logged server-side (visible in the
+// Deno Deploy dashboard) so a bug like this is diagnosable from the
+// client-visible error text instead of just disappearing into "failed to
+// fetch".
 Deno.serve(async (req: Request, info: unknown) => {
-  const url = new URL(req.url);
+  try {
+    const url = new URL(req.url);
 
-  // The browser sends this automatically ahead of the real cross-origin
-  // POST (content-type: application/json makes it a "non-simple" request);
-  // answered before the rate limiter so a preflight never itself counts
-  // against the same budget as the request it's clearing the way for.
-  if (req.method === "OPTIONS" && url.pathname === "/api/chat") {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
+    // The browser sends this automatically ahead of the real cross-origin
+    // POST (content-type: application/json makes it a "non-simple" request);
+    // answered before the rate limiter so a preflight never itself counts
+    // against the same budget as the request it's clearing the way for.
+    if (req.method === "OPTIONS" && url.pathname === "/api/chat") {
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
+
+    if (req.method === "GET" && url.pathname === "/") {
+      return new Response(renderPage(), {
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    if (RATE_LIMITED_PATHS.has(url.pathname) && isRateLimited(clientIp(req, info))) {
+      return rateLimitedResponse(url.pathname);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/chat") {
+      return await handleChat(req);
+    }
+
+    if (req.method === "GET" && url.pathname === "/search") {
+      return await handleSearch(url);
+    }
+
+    if (req.method === "GET" && url.pathname === "/proxy") {
+      return await handleProxy(url);
+    }
+
+    if (req.method === "GET" && url.pathname === "/frame-check") {
+      return await handleFrameCheck(url);
+    }
+
+    return new Response("Not found", { status: 404 });
+  } catch (err) {
+    console.error("Unhandled error:", err);
+    return json({ error: `Server error: ${String(err)}` }, 500);
   }
-
-  if (req.method === "GET" && url.pathname === "/") {
-    return new Response(renderPage(), {
-      headers: { "content-type": "text/html; charset=utf-8" },
-    });
-  }
-
-  if (RATE_LIMITED_PATHS.has(url.pathname) && isRateLimited(clientIp(req, info))) {
-    return rateLimitedResponse(url.pathname);
-  }
-
-  if (req.method === "POST" && url.pathname === "/api/chat") {
-    return handleChat(req);
-  }
-
-  if (req.method === "GET" && url.pathname === "/search") {
-    return handleSearch(url);
-  }
-
-  if (req.method === "GET" && url.pathname === "/proxy") {
-    return handleProxy(url);
-  }
-
-  if (req.method === "GET" && url.pathname === "/frame-check") {
-    return handleFrameCheck(url);
-  }
-
-  return new Response("Not found", { status: 404 });
 });
 
 // General-purpose version of the /proxy-youtube experiment: fetches
@@ -791,6 +816,7 @@ async function handleChat(req: Request): Promise<Response> {
     tier?: string;
     system?: string;
     effort?: number;
+    mode?: string;
   };
   try {
     body = await req.json();
@@ -843,7 +869,15 @@ async function handleChat(req: Request): Promise<Response> {
 
   const requestBody: Record<string, unknown> = { messages: [...systemMessages, ...messages] };
   if (level) {
-    requestBody.max_tokens = level.maxTokens;
+    // Orbit Code (mode: "agent") writes whole files out as part of a single
+    // completion - a file's content has to fit inside max_tokens along with
+    // the rest of that turn's JSON, unlike an ordinary chat reply. Giving
+    // agent-mode calls a flat bonus on top of the normal per-effort budget
+    // means the chat app and Orbit Code can share one effort table instead
+    // of needing two, while Orbit Code still gets the extra room it
+    // actually needs.
+    const agentBonus = body.mode === "agent" ? AGENT_TOKEN_BONUS : 0;
+    requestBody.max_tokens = level.maxTokens + agentBonus;
     if (level.reasoning) requestBody.reasoning = { effort: level.reasoning };
   }
 
