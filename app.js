@@ -1196,6 +1196,7 @@ function buildTerminal(body){
   const term = body.querySelector(".term");
   let cwd = [...HOME_PATH];
   const hist=[]; let hi=0;
+  let orbitMode=false;
   const pathStr=()=> "C:\\"+cwd.slice(1).join("\\");
   const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); return d; };
   const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); return d; };
@@ -1203,6 +1204,7 @@ function buildTerminal(body){
   printOrbitWelcome(term);
   term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); } });
   function prompt(){
+    if(orbitMode) return orbitPrompt();
     const line = el("div","term-input");
     line.innerHTML = `<span class="purple">${esc(pathStr())}></span>`;
     const inp = el("input"); inp.autocomplete="off"; inp.spellcheck=false;
@@ -1219,6 +1221,81 @@ function buildTerminal(body){
       else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; inp.value=hist[hi]||""; } else { hi=hist.length; inp.value=""; } }
     });
   }
+  /* The enclosed Orbit Code prompt: entered by typing bare "orbit" (see the
+     orbit case in run() below), it replaces the normal C:\...> line with a
+     bordered input box - so it's visually obvious input here goes to the
+     AI, not the shell - and stays up until /exit. Plain text is sent
+     straight to Orbit Code as a task, no "orbit" prefix needed; lines
+     starting with / are slash commands instead. */
+  function orbitHintText(){
+    const tier=getOrbitTermTier(), locked=tier==="pulsar", eff=locked?1:getOrbitTermEffort();
+    return `${ORBIT_TIERS[tier].label} · Effort ${eff}/5${locked?" (locked)":" (tab to cycle)"}`;
+  }
+  function orbitPrompt(){
+    const wrap=el("div","orbit-repl");
+    wrap.innerHTML=`<div class="orbit-box"><span class="orbit-box-arrow">›</span>`+
+      `<input class="orbit-box-input" autocomplete="off" spellcheck="false" placeholder="Message Orbit Code…"></div>`+
+      `<div class="orbit-hint"><span>/model /effort /exit for shortcuts</span><span class="orbit-hint-status"></span></div>`;
+    term.appendChild(wrap);
+    const inp=wrap.querySelector(".orbit-box-input");
+    const statusEl=wrap.querySelector(".orbit-hint-status");
+    statusEl.textContent=orbitHintText();
+    inp.focus();
+    inp.addEventListener("keydown", e=>{
+      if(e.key==="Enter"){
+        const cmd=inp.value.trim(); inp.disabled=true; if(cmd) hist.push(cmd); hi=hist.length;
+        const cursor=el("span","term-cursor","▌"); wrap.appendChild(cursor);
+        const r=runOrbitRepl(cmd);
+        const advance=()=>{ cursor.remove(); prompt(); term.scrollTop=term.scrollHeight; };
+        if(r && typeof r.then==="function") r.then(advance, advance); else advance();
+      }
+      else if(e.key==="Tab"){
+        e.preventDefault();
+        if(getOrbitTermTier()==="pulsar") return;
+        setOrbitTermEffort((getOrbitTermEffort()%5)+1);
+        statusEl.textContent=orbitHintText();
+      }
+      else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; inp.value=hist[hi]||""; } }
+      else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; inp.value=hist[hi]||""; } else { hi=hist.length; inp.value=""; } }
+    });
+  }
+  function runOrbitRepl(cmd){
+    if(!cmd) return;
+    if(cmd[0]==="/"){
+      const parts=cmd.slice(1).split(/\s+/), sub=(parts[0]||"").toLowerCase(), rest=parts.slice(1);
+      if(sub==="exit"||sub==="quit"){ orbitMode=false; printHtml(`<span class="purple">🪐 Left Orbit Code</span> — back to the regular shell.`); return; }
+      if(sub==="model"){
+        const t=(rest[0]||"").toLowerCase();
+        if(!t) print("Model: "+ORBIT_TIERS[getOrbitTermTier()].label+"  (pulsar / star / belt)");
+        else if(ORBIT_TIERS[t]){
+          setOrbitTermTier(t);
+          if(t==="pulsar"){ setOrbitTermEffort(1); print("Model → Pulsar (effort locked to 1 · Quick)"); }
+          else print("Model → "+ORBIT_TIERS[t].label);
+        }
+        else print("Unknown model '"+t+"'. Choose: pulsar, star, belt");
+        return;
+      }
+      if(sub==="effort"){
+        const curTier=getOrbitTermTier(), nStr=rest[0];
+        if(!nStr){ print("Effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked — Pulsar is always Quick)":"")); return; }
+        if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) — switch model to change this."); return; }
+        const n=clampOrbitEffort(nStr);
+        setOrbitTermEffort(n);
+        print("Effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
+        return;
+      }
+      if(sub==="help"){
+        printHtml(`<span class="cyan">/model [pulsar|star|belt]</span> — switch model<br>`+
+          `<span class="cyan">/effort [1-5]</span> — speed vs. depth (or press Tab)<br>`+
+          `<span class="cyan">/exit</span> — back to the regular shell`);
+        return;
+      }
+      print("Unknown command '/"+sub+"'. Try /model, /effort, /exit, /help.");
+      return;
+    }
+    const tier=getOrbitTermTier(), effort=(tier==="pulsar")?1:getOrbitTermEffort();
+    return runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task:cmd, setBusy:b=>term.classList.toggle("orbit-busy", b)});
+  }
   function cowsay(t){ t=(t||"moo").slice(0,120); const b="-".repeat(t.length+2);
     return ` ${"_".repeat(t.length+2)}\n< ${t} >\n ${b}\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||`; }
   function neofetch(){
@@ -1234,7 +1311,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit &lt;task&gt;  orbit model [pulsar|star|belt]  orbit effort [1-5]  (or just "orbit" to open the app)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit — enter the AI prompt (/model /effort /exit inside)  ·  orbit &lt;task&gt; for a one-off  ·  orbit model / orbit effort also work directly<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "fx": {
         const sub=(args[0]||"").toLowerCase();
         if(!sub||sub==="list"){
@@ -1353,7 +1430,11 @@ function buildTerminal(body){
         break;
       }
       case "orbit": case "oc": {
-        if(!args.length){ openApp("orbit"); print("Opening Orbit…"); break; }
+        if(!args.length){
+          orbitMode=true;
+          printHtml(`<span class="cyan">🪐 Entering Orbit Code</span> — type a task directly, or /model, /effort, /exit.`);
+          break;
+        }
         const sub=args[0].toLowerCase();
         if(sub==="model"){
           const t=(args[1]||"").toLowerCase();
@@ -9958,9 +10039,9 @@ function printOrbitWelcome(term){
       </div>
       <div class="ow-section">
         <div class="ow-h">Tips</div>
-        <div class="ow-row"><span class="ow-k">orbit &lt;task&gt;</span>run an agentic coding task</div>
-        <div class="ow-row"><span class="ow-k">orbit model [tier]</span>switch Pulsar / Star / Belt</div>
-        <div class="ow-row"><span class="ow-k">orbit effort [1-5]</span>speed vs. depth</div>
+        <div class="ow-row"><span class="ow-k">orbit</span>enter the AI prompt</div>
+        <div class="ow-row"><span class="ow-k">/model /effort</span>switch tier or depth (inside)</div>
+        <div class="ow-row"><span class="ow-k">orbit &lt;task&gt;</span>run a one-off without entering</div>
       </div>
     </div>`.replace(/>\s+</g, "><").trim();
   term.appendChild(box);

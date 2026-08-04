@@ -425,6 +425,20 @@
   .ow-footer{color:#8b7bb8;font-size:11.5px;padding:0 2px 12px;
     border-bottom:1px dashed rgba(155,107,255,.22);margin-bottom:10px}
 
+  /* Enclosed Orbit Code prompt (entered via bare "orbit") - a bordered box
+     stands in for the normal C:\...> line so it reads as "this goes to the
+     AI", with a status row underneath showing the live model/effort. */
+  .term .orbit-repl{white-space:normal;margin:2px 0}
+  .orbit-box{display:flex;align-items:center;gap:8px;border:1px solid #7c4de0;border-radius:8px;
+    padding:8px 12px;background:rgba(124,77,224,.07)}
+  .orbit-box-arrow{color:#b48cff;font-weight:700;font-size:14px}
+  .orbit-box-input{flex:1;background:transparent;border:0;outline:0;color:#e0e0e0;
+    font-family:inherit;font-size:13.5px}
+  .orbit-box-input::placeholder{color:#5f5578}
+  .orbit-hint{display:flex;justify-content:space-between;gap:12px;color:#6f6389;
+    font-size:11px;padding:5px 4px 2px}
+  .orbit-hint-status{color:#a37bff;font-weight:600;white-space:nowrap}
+
   .orbit{display:flex;flex-direction:column;height:100%;background:#16151d;color:#ececf1;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
   .orbit-head{flex:0 0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
