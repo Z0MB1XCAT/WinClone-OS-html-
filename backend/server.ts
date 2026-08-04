@@ -79,24 +79,29 @@ function envModelList(key: string, fallback: string[]): string[] {
   const list = raw.split(",").map((s: string) => s.trim()).filter(Boolean);
   return list.length ? list : fallback;
 }
+// openai/gpt-oss-120b:free was this table's shared anchor for Star, Belt,
+// and Pulsar's fallback - and then OpenRouter delisted it (confirmed live:
+// it now 404s with "unavailable for free, use openai/gpt-oss-120b [paid]
+// instead"). That's the second hardcoded free-model slug in this file to
+// go stale out from under it, which is exactly the churn the comments
+// elsewhere in this file kept warning about. Rather than hardcode a third
+// guess and have this break again next month, DISCOVER_FALLBACK_MODELS
+// below (see discoverFreeModels()) queries OpenRouter's own live model
+// list as a last resort once these configured candidates are exhausted -
+// so a delisted model degrades to "tries something else that's actually
+// free right now" instead of a hard failure needing another manual fix.
+// These hardcoded defaults are just the *first* candidates tried, and are
+// still worth keeping current by hand via the env vars - discovery is a
+// safety net under them, not a replacement for picking good ones.
 const MODEL_TIERS: Record<string, string[]> = {
-  // Pulsar used to be a single-candidate list ("it's meant to be fast, so
-  // don't reach for a bigger fallback") - but a single candidate means zero
-  // fallback the moment that one model has a bad day, and gpt-oss-20b:free
-  // has repeatedly returned genuinely empty replies (burning its whole
-  // budget on hidden reasoning) on ordinary Orbit Code tasks, with no
-  // second model to fall through to. gpt-oss-120b:free is bigger than
-  // Pulsar's "smallest/fastest" ideal, but it's the one this project has
-  // actual evidence is reliable (it's what Star/Belt already lean on) - a
-  // slightly-bigger-than-ideal answer beats a hard failure.
-  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free", "openai/gpt-oss-120b:free"]),
-  // Star and Belt share a candidate pool today (both being general-purpose
-  // free models) but are free to diverge via env vars - Belt in particular
-  // is meant to be the strongest tier for coding/data/complex work, so put
-  // your best free coding-capable model first in OPENROUTER_MODEL_BELT once
-  // you find one worth pinning.
-  star: envModelList("OPENROUTER_MODEL_STAR", ["openai/gpt-oss-120b:free", "openai/gpt-oss-20b:free"]),
-  belt: envModelList("OPENROUTER_MODEL_BELT", ["openai/gpt-oss-120b:free", "openai/gpt-oss-20b:free"]),
+  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free"]),
+  star: envModelList("OPENROUTER_MODEL_STAR", ["openai/gpt-oss-20b:free"]),
+  // Belt is meant to be the strongest tier for coding/data/complex work -
+  // right now it shares Star's only confirmed-live free candidate, so set
+  // OPENROUTER_MODEL_BELT once you've checked
+  // https://openrouter.ai/models?max_price=0 for something bigger that's
+  // actually still free.
+  belt: envModelList("OPENROUTER_MODEL_BELT", ["openai/gpt-oss-20b:free"]),
 };
 // Orbit Code's agent loop sends its own tool-use system prompt instead of
 // the default assistant persona below; capped the same way pageUrl's
@@ -129,15 +134,19 @@ const MAX_SYSTEM_CHARS = 4000;
 // "low", which turned out to still leave real reasoning headroom - gpt-oss
 // kept returning genuinely empty replies (spending the whole budget on
 // hidden reasoning) even at "low" on ordinary tasks. OpenRouter's unified
-// reasoning.effort actually supports a wider ladder than the commonly-cited
-// low/medium/high three - "none" and "minimal" sit below "low" - so the
-// low end of this table now reaches for those instead of just hoping "low"
-// holds the model back enough. There's no hard guarantee a given model
-// honors any of this (some models are documented to silently ignore
-// reasoning-effort controls entirely), which is exactly why the fallback
-// candidates and the empty-reply retry below still exist as backstops.
-const EFFORT_LEVELS: { maxTokens: number; reasoning: "none" | "minimal" | "low" | "medium" | "high"; note: string }[] = [
-  { maxTokens: 1500, reasoning: "none", note: "Answer quickly - be brief and direct, skip extra explanation." },
+// reasoning.effort supports a wider ladder than the commonly-cited
+// low/medium/high three, including "minimal" and "none" below "low" - but
+// "none" turned out to be actively rejected (HTTP 400 "Reasoning is
+// mandatory for this endpoint and cannot be disabled") rather than just
+// ignored, on the exact model this table defaults to. So "minimal" is the
+// actual floor here, not "none" - a real API error is a worse failure mode
+// than reasoning being slightly higher than ideal. There's still no hard
+// guarantee a given model honors "minimal" either (some models are
+// documented to silently ignore reasoning-effort controls entirely), which
+// is exactly why the fallback candidates and the empty-reply retry below
+// still exist as backstops.
+const EFFORT_LEVELS: { maxTokens: number; reasoning: "minimal" | "low" | "medium" | "high"; note: string }[] = [
+  { maxTokens: 1500, reasoning: "minimal", note: "Answer quickly - be brief and direct, skip extra explanation." },
   { maxTokens: 2200, reasoning: "minimal", note: "Keep it fairly brief; light reasoning only." },
   { maxTokens: 3400, reasoning: "low", note: "Think it through at a normal, moderate depth before answering." },
   {
@@ -155,6 +164,45 @@ const EFFORT_LEVELS: { maxTokens: number; reasoning: "none" | "minimal" | "low" 
 function clampEffort(n: unknown): number {
   const v = typeof n === "number" && Number.isFinite(n) ? Math.round(n) : 3;
   return Math.min(5, Math.max(1, v));
+}
+
+// Last-resort safety net for when every hardcoded/env-configured candidate
+// in a tier has failed - most often because one got delisted, the way
+// openai/gpt-oss-120b:free was (see the MODEL_TIERS comment). Rather than
+// needing a manual fix here every time OpenRouter's free catalog churns,
+// this asks OpenRouter's own live model list what's actually free *right
+// now* - the one source of truth that can't go stale the way a slug
+// hardcoded in this file can. Cached for an hour: it's a large, slow-moving
+// list, and there's no reason to refetch it on every single chat request.
+const FREE_MODEL_CACHE_MS = 60 * 60 * 1000;
+const FREE_MODEL_DISCOVERY_TIMEOUT_MS = 8000;
+const FREE_MODEL_DISCOVERY_MAX = 3;
+let freeModelCache: { list: string[]; at: number } | null = null;
+async function discoverFreeModels(): Promise<string[]> {
+  if (freeModelCache && Date.now() - freeModelCache.at < FREE_MODEL_CACHE_MS) {
+    return freeModelCache.list;
+  }
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/models", {
+      signal: AbortSignal.timeout(FREE_MODEL_DISCOVERY_TIMEOUT_MS),
+    });
+    if (!res.ok) return freeModelCache?.list ?? [];
+    const data = await res.json();
+    const list: string[] = Array.isArray(data?.data)
+      ? data.data
+          .filter((m: { id?: unknown; pricing?: { prompt?: unknown; completion?: unknown } }) =>
+            typeof m?.id === "string" && m.id.endsWith(":free") &&
+            Number(m?.pricing?.prompt) === 0 && Number(m?.pricing?.completion) === 0)
+          .map((m: { id: string }) => m.id)
+      : [];
+    freeModelCache = { list, at: Date.now() };
+    return list;
+  } catch {
+    // stale cache beats nothing; an empty list beats a thrown exception,
+    // since this is already the last-resort path and the caller just
+    // treats "no discovered candidates" as "nothing more to try"
+    return freeModelCache?.list ?? [];
+  }
 }
 // Flat top-up added to every effort level's max_tokens when the caller
 // says mode: "agent" (Orbit Code's terminal loop) instead of the chat
@@ -1001,23 +1049,50 @@ async function handleChat(req: Request): Promise<Response> {
     // OpenRouter) means the model spent its whole max_tokens budget on
     // hidden reasoning tokens and never got to a final answer - this is
     // what produced the earlier "the model returned no reply" failures.
-    // Forcing the *strongest* suppression OpenRouter's API offers
-    // ("none", not just "low" - see the EFFORT_LEVELS comment for why
+    // Forcing the lowest *allowed* suppression OpenRouter's API offers
+    // ("minimal", not just "low" - see the EFFORT_LEVELS comment for why
     // "low" alone proved not to be enough) plus a real token bonus
     // targets the actual mechanism - constrain how much it reasons, and
-    // leave headroom for the answer even if it reasons anyway.
+    // leave headroom for the answer even if it reasons anyway. Not
+    // "none": that's rejected outright (HTTP 400 "cannot be disabled") on
+    // at least one model this table uses, so it's not a safe thing to
+    // force blindly on a retry - a hard error is worse than this retry
+    // just not helping.
     if (r1.emptyReply) {
       const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
       if (remaining2 >= 3000) {
         const retryBody = {
           ...requestBody,
-          reasoning: { effort: "none" },
+          reasoning: { effort: "minimal" },
           max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
         };
         const r2 = await callOpenRouter(apiKey, { model, ...retryBody }, Math.min(remaining2, CANDIDATE_MAX_MS));
         if (r2.ok) return json({ reply: r2.content, model });
         attempts.push(`${model} (retried at minimum reasoning + more headroom): ${r2.error}`);
       }
+    }
+  }
+
+  // Every configured candidate failed. Before giving up, ask OpenRouter
+  // what's actually free right now and try a few of those - see
+  // discoverFreeModels() for why this exists. One attempt each, no
+  // empty-reply retry here: these are unvetted last-resort candidates, and
+  // the goal is bounded latency (still inside CHAT_DEADLINE_MS), not
+  // exhaustively debugging a model this server has no prior data on.
+  const remainingForDiscovery = CHAT_DEADLINE_MS - (Date.now() - startedAt);
+  if (remainingForDiscovery >= 3000) {
+    const discovered = (await discoverFreeModels())
+      .filter((m) => !models.includes(m))
+      .slice(0, FREE_MODEL_DISCOVERY_MAX);
+    for (const model of discovered) {
+      const remaining = CHAT_DEADLINE_MS - (Date.now() - startedAt);
+      if (remaining < 3000) {
+        attempts.push(`${model} (discovered): skipped - out of time budget`);
+        break;
+      }
+      const r = await callOpenRouter(apiKey, { model, ...requestBody }, Math.min(remaining, CANDIDATE_MAX_MS));
+      if (r.ok) return json({ reply: r.content, model, discovered: true });
+      attempts.push(`${model} (discovered): ${r.error}`);
     }
   }
 
