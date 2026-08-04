@@ -116,19 +116,26 @@ const MAX_SYSTEM_CHARS = 4000;
 // visible answer for these models, and a ceiling that's too tight lets the
 // model spend the whole thing "thinking" and return an empty message.content
 // - which is exactly what an earlier, tighter version of this table did.
-// handleChat also retries a same-model empty reply with reasoning dropped
-// entirely, as a second line of defense against this same failure mode.
-const EFFORT_LEVELS: { maxTokens: number; reasoning?: "low" | "medium" | "high"; note: string }[] = [
-  { maxTokens: 700, note: "Answer quickly - be brief and direct, skip extra explanation." },
-  { maxTokens: 1400, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
-  { maxTokens: 2600, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
+//
+// Level 1 used to omit the `reasoning` field entirely on the assumption
+// that meant "don't reason" - it doesn't. The gpt-oss family reasons by
+// default with or without this field set, so leaving it unset just meant
+// "let the model decide how much," and it decided to spend all 700 tokens
+// thinking and return nothing at all (exactly the failure this table was
+// already trying to avoid at the higher levels). Every level now sets
+// `reasoning` explicitly, "low" at minimum, so Pulsar is actually telling
+// the model to hold back instead of hoping it does.
+const EFFORT_LEVELS: { maxTokens: number; reasoning: "low" | "medium" | "high"; note: string }[] = [
+  { maxTokens: 1500, reasoning: "low", note: "Answer quickly - be brief and direct, skip extra explanation." },
+  { maxTokens: 2200, reasoning: "low", note: "Keep it fairly brief; light reasoning only." },
+  { maxTokens: 3400, reasoning: "medium", note: "Think it through at a normal, moderate depth before answering." },
   {
-    maxTokens: 4200,
+    maxTokens: 5200,
     reasoning: "high",
     note: "Reason carefully; consider edge cases and alternatives before finalizing.",
   },
   {
-    maxTokens: 6000,
+    maxTokens: 7500,
     reasoning: "high",
     note:
       "Take your time: reason deeply, double-check your own answer or code for mistakes, then give a thorough, well-considered final response.",
@@ -142,6 +149,10 @@ function clampEffort(n: unknown): number {
 // says mode: "agent" (Orbit Code's terminal loop) instead of the chat
 // app's default. See where it's used in handleChat for why.
 const AGENT_TOKEN_BONUS = 3000;
+// Flat top-up applied only on the empty-reply retry in handleChat's
+// fallback loop - on top of whatever max_tokens (including AGENT_TOKEN_BONUS,
+// if this was an agent-mode call) the first attempt already had.
+const EMPTY_REPLY_RETRY_BONUS = 3000;
 // Whole-request and per-candidate time budgets for the OpenRouter fallback
 // loop in handleChat - see the long comment at that loop for why these
 // exist. Deno Deploy doesn't actually enforce a strict per-request
@@ -922,20 +933,30 @@ async function handleChat(req: Request): Promise<Response> {
     attempts.push(`${model}: ${r1.error}`);
 
     // "Ok but empty" (as opposed to a network error or a non-2xx from
-    // OpenRouter) with reasoning turned on almost always means the model
-    // spent its whole max_tokens budget on hidden reasoning tokens and
-    // never got to a final answer - this is what produced the earlier
-    // "the model returned no reply" failures. Retrying the *same* model
-    // with reasoning dropped entirely targets that directly, instead of
-    // just hoping the next candidate in the list happens to behave better
-    // under the same constrained budget.
-    if (r1.emptyReply && requestBody.reasoning) {
+    // OpenRouter) means the model spent its whole max_tokens budget on
+    // hidden reasoning tokens and never got to a final answer - this is
+    // what produced the earlier "the model returned no reply" failures.
+    // *Dropping* the reasoning field doesn't reliably fix this: some
+    // models (the gpt-oss family among them) reason by default whether or
+    // not this field is set at all, so an unset field isn't "off", it's
+    // "the model's own default depth" - which is exactly how effort 1
+    // (originally no reasoning field, 700 tokens) still burned its whole
+    // budget on reasoning and returned nothing. Forcing the lowest
+    // explicit setting plus a real token bonus targets the actual
+    // mechanism - constrain how much it reasons, and leave headroom for
+    // the answer even if it reasons anyway - instead of hoping "unset"
+    // means "less".
+    if (r1.emptyReply) {
       const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
       if (remaining2 >= 3000) {
-        const { reasoning: _drop, ...withoutReasoning } = requestBody;
-        const r2 = await callOpenRouter(apiKey, { model, ...withoutReasoning }, Math.min(remaining2, CANDIDATE_MAX_MS));
+        const retryBody = {
+          ...requestBody,
+          reasoning: { effort: "low" },
+          max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
+        };
+        const r2 = await callOpenRouter(apiKey, { model, ...retryBody }, Math.min(remaining2, CANDIDATE_MAX_MS));
         if (r2.ok) return json({ reply: r2.content, model });
-        attempts.push(`${model} (retried without reasoning): ${r2.error}`);
+        attempts.push(`${model} (retried at low reasoning + more headroom): ${r2.error}`);
       }
     }
   }
