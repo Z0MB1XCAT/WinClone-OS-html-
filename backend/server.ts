@@ -144,10 +144,17 @@ function clampEffort(n: unknown): number {
 const AGENT_TOKEN_BONUS = 3000;
 // Whole-request and per-candidate time budgets for the OpenRouter fallback
 // loop in handleChat - see the long comment at that loop for why these
-// exist (in short: staying under Deno Deploy's own request time limit so
-// this handler always gets to send back a real response).
-const CHAT_DEADLINE_MS = 50_000;
-const CANDIDATE_MAX_MS = 30_000;
+// exist. Deno Deploy doesn't actually enforce a strict per-request
+// wall-clock cap the way these were first sized around - it keeps an
+// isolate alive as long as it's actively handling a request (its own
+// runtime docs describe the shutdown condition as no new requests *and*
+// no response bytes sent for a while, not "N seconds since this request
+// started"). These still exist for a real reason - OpenRouter itself can
+// hang, and this handler should always send back a real response instead
+// of leaving the client waiting forever - just sized generously now
+// instead of defensively against a limit that isn't actually there.
+const CHAT_DEADLINE_MS = 170_000;
+const CANDIDATE_MAX_MS = 90_000;
 // -----------------------------------------------------------------------
 
 const SYSTEM_PROMPT =
