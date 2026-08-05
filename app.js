@@ -898,7 +898,7 @@ document.addEventListener("contextmenu", e=>{
   e.preventDefault();
   if(e.target.closest(".window")) { showCtx(e.clientX,e.clientY,[
       {icon:"✂️",label:"Cut"},{icon:"📋",label:"Copy"},{icon:"📄",label:"Paste"},"sep",
-      {icon:"🔄",label:"Reload",action:()=>location.reload()}
+      {icon:"🔄",label:"Reload",action:()=>pcPush().finally(()=>location.reload())}
   ]); return; }
   const dpath=[...HOME_PATH,"Desktop"];
   const menu=[
@@ -1624,7 +1624,11 @@ function buildRestore(body,win){
           if(!rpRestore(p.id)){ winDialog({icon:"⚠️",title:"Restore failed",msg:"That restore point couldn't be read."}); return; }
           const sd=$("#shutdown");
           if(sd){ sd.style.display="flex"; $("#sd-text").textContent="Restoring your files…"; }
-          setTimeout(()=>location.reload(),2000);
+          /* The restored keys must reach the account BEFORE the reload throws this
+             tab away. The dirty-flag hook would only push after a 4s debounce, so
+             reloading first left the account holding the pre-restore desktop — and
+             the next pull silently undid the restore. */
+          pcPush().finally(()=>setTimeout(()=>location.reload(),1200));
         }},
         {label:"Cancel"}
       ]});
@@ -10985,11 +10989,7 @@ function rScreen(s){
       p+=Math.floor(Math.random()*9)+3;
       if(p>=100){
         p=100; clearInterval(iv);
-        setTimeout(()=>{
-          Object.keys(localStorage).filter(k=>k.startsWith("wc_")).forEach(k=>localStorage.removeItem(k));
-          try{ wcdbClear(); }catch(e){}                 // imported music goes too
-          location.reload();
-        },800);
+        setTimeout(()=>{ factoryResetPC(); },800);
       }
       const e2=$("#rst-pct"); if(e2) e2.textContent=p;
     },300);
@@ -11104,7 +11104,9 @@ async function applyUpdate(){
     if(window.HTML_BUILD) localStorage.setItem("wc_sys_html", window.HTML_BUILD);
   }catch(e){ winDialog({icon:"⚠️",title:"Update failed",msg:"Not enough storage to install the update.<br><small style='color:#9a9a9a'>Free some space (delete large files/images) and try again.</small>"}); return; }
   UPD.available=false; reflectUpdateUI();
-  runUpdateScreen(()=>location.reload());   // reload → bootstrap boots the newly-installed version
+  /* same trap as a restore: the reload discards anything not yet uploaded, so the
+     current desktop goes up before the new version boots */
+  runUpdateScreen(()=>pcPush().finally(()=>location.reload()));
 }
 /* Start ▸ Power menu */
 function showPowerMenu(){
@@ -11132,6 +11134,33 @@ function doRestart(){
   const sd=$("#shutdown"); sd.style.display="flex"; $("#sd-text").textContent="Restarting…";
   /* the reload throws this tab away, so the upload has to finish first */
   pcPush().finally(()=>setTimeout(()=>location.reload(),900));
+}
+
+/* ---- factory reset ----
+   BIOS ▸ Restore Factory Defaults and Settings ▸ Reset this PC both land here.
+
+   It resets ONLY the PC you're currently signed into: files, downloads,
+   settings, infections and that PC's lock password all go back to a fresh
+   install, and the wipe is pushed to your account so it sticks on every device
+   rather than coming back the next time this PC is opened. Your WinClone
+   Account and your other PCs are not touched — deleting a whole PC is the
+   Delete button on the picker, which is a different thing on purpose.
+
+   Before accounts existed this just cleared every wc_ key and reloaded. That
+   silently stopped working once PCs synced: the wipe also removed the pointer
+   saying which PC we were in, so the reset dropped you on the picker, and
+   clicking the PC downloaded everything you'd just erased. */
+async function factoryResetPC(){
+  Object.keys(localStorage)
+    .filter(k=>k.startsWith("wc_") && k!=="wc_acct_pc" && k!=="wc_acct_seen")
+    .forEach(k=>{ try{ localStorage.removeItem(k); }catch(e){} });
+  try{ await wcdbClear(); }catch(e){}          // imported music goes too
+  /* The in-memory copies have to go as well: pcPush() calls saveFS(), which
+     would write the old file system straight back out of memory and quietly
+     undo the wipe we just did. */
+  try{ VFS=defaultFS(); RECYCLE=[]; INFECTIONS=[]; ICONPOS={}; }catch(e){}
+  await pcPush();                              // no-op when signed out / offline
+  location.reload();                           // wc_sys_* went too, so the OS reinstalls itself
 }
 
 /* ---- leaving a PC ----
@@ -11884,11 +11913,7 @@ $("#bios-reset").onclick = ()=>{
   $("#bios").style.display="none";
   const sd=$("#shutdown"); sd.style.display="flex";
   $("#sd-text").textContent="Reinstalling WinClone…";
-  setTimeout(()=>{
-    Object.keys(localStorage).filter(k=>k.startsWith("wc_")).forEach(k=>localStorage.removeItem(k));
-    try{ wcdbClear(); }catch(e){}                       // imported music goes too
-    location.reload();
-  },2200);
+  setTimeout(()=>{ factoryResetPC(); },2200);
 };
 
 /* keyboard: Win-ish shortcuts */
