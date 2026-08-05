@@ -1052,20 +1052,30 @@ async function handleChat(req: Request): Promise<Response> {
     if (r1.ok) return json({ reply: r1.content, model });
     attempts.push(`${model}: ${r1.error}`);
 
-    // "Ok but empty" (as opposed to a network error or a non-2xx from
-    // OpenRouter) means the model spent its whole max_tokens budget on
-    // hidden reasoning tokens and never got to a final answer - this is
-    // what produced the earlier "the model returned no reply" failures.
+    // This used to retry-at-minimal-reasoning only on r1.emptyReply - "ok but
+    // empty" (the model spent its whole max_tokens budget on hidden reasoning
+    // tokens and never got to a final answer). That covered one failure mode
+    // of asking for real reasoning ("low"/"medium"/"high", effort level 3+)
+    // on a free, possibly-queued model, but not the others: the same
+    // reasoning depth can just as easily make the model too *slow* to answer
+    // inside timeoutMs (a plain timeout, not an empty reply) or trip a
+    // provider-side rejection (a non-2xx). Both of those left effort 3+
+    // completely unable to self-heal - with only one configured candidate per
+    // tier, a timed-out first attempt had nowhere to go but cold, unvetted
+    // "discovery" candidates that inherit the exact same untested reasoning
+    // setting. Retrying at minimal reasoning on *any* failure - not just an
+    // empty one - whenever the level asked for more than minimal gives every
+    // effort-3+ request the same real shot at the one reasoning setting
+    // that's confirmed to work (effort 1-2, which already use "minimal").
     // Forcing the lowest *allowed* suppression OpenRouter's API offers
     // ("minimal", not just "low" - see the EFFORT_LEVELS comment for why
-    // "low" alone proved not to be enough) plus a real token bonus
-    // targets the actual mechanism - constrain how much it reasons, and
-    // leave headroom for the answer even if it reasons anyway. Not
-    // "none": that's rejected outright (HTTP 400 "cannot be disabled") on
-    // at least one model this table uses, so it's not a safe thing to
-    // force blindly on a retry - a hard error is worse than this retry
-    // just not helping.
-    if (r1.emptyReply) {
+    // "low" alone proved not to be enough) plus a real token bonus targets
+    // the actual mechanism - constrain how much it reasons, and leave
+    // headroom for the answer even if it reasons anyway. Not "none": that's
+    // rejected outright (HTTP 400 "cannot be disabled") on at least one model
+    // this table uses, so it's not a safe thing to force blindly on a retry -
+    // a hard error is worse than this retry just not helping.
+    if (level && level.reasoning !== "minimal") {
       const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
       if (remaining2 >= 3000) {
         const retryBody = {
@@ -1083,11 +1093,26 @@ async function handleChat(req: Request): Promise<Response> {
   // Every configured candidate failed. Before giving up, ask OpenRouter
   // what's actually free right now and try a few of those - see
   // discoverFreeModels() for why this exists. One attempt each, no
-  // empty-reply retry here: these are unvetted last-resort candidates, and
-  // the goal is bounded latency (still inside CHAT_DEADLINE_MS), not
+  // second retry here: these are unvetted last-resort candidates, and the
+  // goal is bounded latency (still inside CHAT_DEADLINE_MS), not
   // exhaustively debugging a model this server has no prior data on.
+  //
+  // If the request asked for real reasoning (effort 3+), that one attempt is
+  // still made at forced-minimal reasoning, same as the configured-candidate
+  // retry above - a discovered model is, by definition, one this server has
+  // no track record with, so asking an unknown model to reason "high" on its
+  // very first (and only) try here is exactly the untested combination that
+  // was leaving effort 3+ with nothing that could actually succeed once the
+  // configured candidate(s) were exhausted.
   const remainingForDiscovery = CHAT_DEADLINE_MS - (Date.now() - startedAt);
   if (remainingForDiscovery >= 3000) {
+    const discoveryBody = level && level.reasoning !== "minimal"
+      ? {
+        ...requestBody,
+        reasoning: { effort: "minimal" },
+        max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
+      }
+      : requestBody;
     const discovered = (await discoverFreeModels())
       .filter((m) => !models.includes(m))
       .slice(0, FREE_MODEL_DISCOVERY_MAX);
@@ -1097,7 +1122,7 @@ async function handleChat(req: Request): Promise<Response> {
         attempts.push(`${model} (discovered): skipped - out of time budget`);
         break;
       }
-      const r = await callOpenRouter(apiKey, { model, ...requestBody }, Math.min(remaining, CANDIDATE_MAX_MS));
+      const r = await callOpenRouter(apiKey, { model, ...discoveryBody }, Math.min(remaining, CANDIDATE_MAX_MS));
       if (r.ok) return json({ reply: r.content, model, discovered: true });
       attempts.push(`${model} (discovered): ${r.error}`);
     }
