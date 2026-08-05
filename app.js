@@ -1244,7 +1244,7 @@ function buildTerminal(body){
   function enterOrbitMode(){
     orbitMode=true;
     printOrbitWelcome(term);
-    printHtml(`<span class="cyan">🪐 Entering Orbit Code</span> — type a task directly, or /model, /effort, /exit.`);
+    printHtml(`<span class="cyan">🪐 Entering Orbit Code:</span> type a task directly, or /model, /effort, /exit.`);
     orbitFooter.classList.remove("hide");
     updateOrbitStatus();
     orbitInput.value=""; orbitInput.disabled=false; orbitInput.focus();
@@ -1253,7 +1253,7 @@ function buildTerminal(body){
   function exitOrbitMode(){
     orbitMode=false;
     orbitFooter.classList.add("hide");
-    printHtml(`<span class="purple">🪐 Left Orbit Code</span> — back to the regular shell.`);
+    printHtml(`<span class="purple">🪐 Left Orbit Code:</span> back to the regular shell.`);
     prompt();
   }
   orbitInput.addEventListener("keydown", e=>{
@@ -1300,17 +1300,17 @@ function buildTerminal(body){
       }
       if(sub==="effort"){
         const curTier=getOrbitTermTier(), nStr=rest[0];
-        if(!nStr){ print("Effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked — Pulsar is always Quick)":"")); return; }
-        if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) — switch model to change this."); return; }
+        if(!nStr){ print("Effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked, Pulsar is always Quick)":"")); return; }
+        if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick). Switch model to change this."); return; }
         const n=clampOrbitEffort(nStr);
         setOrbitTermEffort(n);
         print("Effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
         return;
       }
       if(sub==="help"){
-        printHtml(`<span class="cyan">/model [pulsar|star|belt]</span> — switch model<br>`+
-          `<span class="cyan">/effort [1-5]</span> — speed vs. depth (or press Tab)<br>`+
-          `<span class="cyan">/exit</span> — back to the regular shell`);
+        printHtml(`<span class="cyan">/model [pulsar|star|belt]</span>: switch model<br>`+
+          `<span class="cyan">/effort [1-5]</span>: speed vs. depth (or press Tab)<br>`+
+          `<span class="cyan">/exit</span>: back to the regular shell`);
         return;
       }
       print("Unknown command '/"+sub+"'. Try /model, /effort, /exit, /help.");
@@ -1334,7 +1334,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit — enter the AI prompt (/model /effort /exit inside)  ·  orbit &lt;task&gt; for a one-off  ·  orbit model / orbit effort also work directly<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit: enter the AI prompt (/model /effort /exit inside)  ·  orbit &lt;task&gt; for a one-off  ·  orbit model / orbit effort also work directly<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "fx": {
         const sub=(args[0]||"").toLowerCase();
         if(!sub||sub==="list"){
@@ -1468,8 +1468,8 @@ function buildTerminal(body){
         }
         if(sub==="effort"){
           const curTier=getOrbitTermTier(), nStr=args[1];
-          if(!nStr){ print("Orbit Code effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked — Pulsar is always Quick)":"")); break; }
-          if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) for fast responses — switch model to change this."); break; }
+          if(!nStr){ print("Orbit Code effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked, Pulsar is always Quick)":"")); break; }
+          if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) for fast responses. Switch model to change this."); break; }
           const n=clampOrbitEffort(nStr);
           setOrbitTermEffort(n);
           print("Orbit Code effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
@@ -10085,7 +10085,7 @@ function printOrbitWelcome(term){
 async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task, setBusy}){
   if(!task){ print('Usage: orbit <task>   |   orbit model [pulsar|star|belt]   |   orbit effort [1-5]'); return; }
   const maxSteps=orbitStepsForEffort(effort);
-  printHtml(`<span class="cyan">🪐 Orbit Code</span> — <b>${esc(ORBIT_TIERS[tier].label)}</b> · effort ${effort}/5 (${esc(ORBIT_EFFORT_LEVELS[effort-1].label)}) · ${esc(task)}`);
+  printHtml(`<span class="cyan">🪐 Orbit Code:</span> <b>${esc(ORBIT_TIERS[tier].label)}</b> · effort ${effort}/5 (${esc(ORBIT_EFFORT_LEVELS[effort-1].label)}) · ${esc(task)}`);
   const messages=[{role:"user", content:task}];
   const sys=orbitCodeSystemPrompt(pathStr(), maxSteps)+"\n\n"+orbitTierBlurb(tier)+"\n\n"+WINCLONE_ENV_DOC;
   let summary="", failed=false;
@@ -10117,7 +10117,7 @@ async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, ta
   }finally{
     if(setBusy) setBusy(false);
     logOrbitActivity(task, !failed);
-    try{ notify({icon:failed?"⚠️":"🪐", title:"Orbit Code", body:(failed?"Needs a look — ":"Finished — ")+task.slice(0,80)+(summary?": "+summary.slice(0,120):"")}); }catch(e){}
+    try{ notify({icon:failed?"⚠️":"🪐", title:"Orbit Code", body:(failed?"Needs a look: ":"Finished: ")+task.slice(0,80)+(summary?": "+summary.slice(0,120):"")}); }catch(e){}
   }
 }
 
