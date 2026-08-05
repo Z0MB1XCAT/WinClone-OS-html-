@@ -9584,7 +9584,9 @@ function loadHistory(){
   try{ const h=JSON.parse(localStorage.getItem(EDGY_HIST_KEY)); if(Array.isArray(h)) return h; }catch(e){}
   return [];
 }
-function saveHistory(list){ try{ localStorage.setItem(EDGY_HIST_KEY, JSON.stringify(list.slice(-300))); }catch(e){} }
+/* Keep the last 100 visits only. History rides along in the cloud snapshot, so
+   the shorter the list the less of the PC's ~5 MB budget it eats. */
+function saveHistory(list){ try{ localStorage.setItem(EDGY_HIST_KEY, JSON.stringify(list.slice(-100))); }catch(e){} }
 
 const EDGY_ZOOM_KEY = "wc_edgy_zoom";
 const EDGY_THEME_KEY = "wc_edgy_theme";
