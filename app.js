@@ -18,8 +18,11 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.9.0";
+const WC_VERSION = "1.9.1";
 const WC_CHANGELOG = {
+  "1.9.1": [
+    "🧭 Macrohard Edgy is now the default browser.",
+  ],
   "1.9.0": [
     "👤 WinClone Accounts. Make an account with an email or your Google login, and your PCs stop living in one browser — sign in from any computer and they're there.",
     "🖥️ Up to three PCs on one account, each with its own name, files, wallpaper, accent colour and lock-screen password. Switch between them from Start ▸ Power ▸ Switch PC.",
@@ -110,6 +113,7 @@ const APPS = {
   terminal:  {title:"Terminal",      icon:"🖥️", w:660, h:420, build:buildTerminal},
   settings:  {title:"Settings",      icon:"⚙️", w:780, h:540, build:buildSettings},
   edge:      {title:"Microsoft Edge",icon:"🌐", w:820, h:560, build:buildEdge},
+  edgy:      {title:"Macrohard Edgy",icon:"🧭", w:960, h:640, build:buildEdgy},
   photos:    {title:"Photos",        icon:"🖼️", w:700, h:520, build:buildPhotos},
   media:     {title:"Media Player",  icon:"🎞️", w:720, h:520, build:buildMedia},
   recycle:   {title:"Recycle Bin",   icon:"🗑️", w:560, h:420, build:buildRecycle},
@@ -137,6 +141,7 @@ const TILE_BG = {
   terminal:"linear-gradient(135deg,#111827,#374151)",
   settings:"linear-gradient(135deg,#475569,#94a3b8)",
   edge:    "linear-gradient(135deg,#0ea5a4,#38bdf8)",
+  edgy:    "linear-gradient(135deg,#5b21b6,#38bdf8)",
   photos:  "linear-gradient(135deg,#7c3aed,#ec4899)",
   media:   "linear-gradient(135deg,#ea580c,#facc15)",
   recycle: "linear-gradient(135deg,#52525b,#a1a1aa)",
@@ -155,11 +160,12 @@ const TILE_BG = {
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
   batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
 };
-const PINNED = ["edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
-const TASKBAR_PINS = ["explorer","edge","notepad","terminal"];
+const PINNED = ["edgy","edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
+const TASKBAR_PINS = ["explorer","edgy","edge","notepad","terminal"];
 const DESKTOP_ICONS = [
   {app:"recycle",  label:"Recycle Bin"},
   {app:"explorer", label:"This PC"},
+  {app:"edgy",     label:"Macrohard Edgy"},
   {app:"edge",     label:"Microsoft Edge"},
   {app:"defender", label:"Cork Defender"},
   {app:"youtube",  label:"YouTube"},
@@ -7721,6 +7727,7 @@ function defaultFS(){ return {
     }},
     "Program Files":{folder:true,children:{
       "Cork Defender":{folder:true,children:{"corkdefender.exe":{icon:"🛡️",exe:true,app:"defender"}}},
+      "Macrohard Edgy":{folder:true,children:{"edgy.exe":{icon:"🧭",exe:true,app:"edgy"}}},
       "WinClone Edge":{folder:true,children:{"edge.exe":{icon:"🌐",exe:true,app:"edge"}}},
     }},
   }}
@@ -9517,6 +9524,661 @@ function buildEdge(body){
   navTo({type:"home"});
 }
 
+/* ---- Macrohard Edgy: the default browser ----
+   Edge (above) is the original, and stays - some sites (and some old habits)
+   still expect it. Edgy is the real one now: typing a search on its home
+   page or address bar shows real, live web results right inside the window,
+   instead of Edge's simulated ones. It points its iframe at a small proxy
+   on a separately-hosted AI backend: that server calls a real search API
+   and hands results back from its own domain, which sets no framing
+   restriction (an actual search engine's results page would refuse to be
+   framed directly). Typed URLs and bookmarks load the same way, straight in
+   a sandboxed iframe - the same technique Edge uses for real sites like
+   Wikipedia - and sites that refuse to be framed (Google, YouTube,
+   Instagram, ...) get a graceful "won't load here" screen with a proxy
+   fallback instead of a dead end.
+
+   Also has: light/dark mode, page zoom, real history, incognito tabs, a tab
+   overflow menu, drag-to-reorder tabs, live favicons, and a collapsible AI
+   sidebar that embeds the same backend's chat assistant. */
+
+/* Edgy's own AI chat app: its own site, its own backend/API key. Edgy frames
+   its chat page as the AI sidebar, and also uses its /search route (a real
+   search API, proxied so results can be framed) for search results, and its
+   /proxy route as a fallback for sites that block framing directly or fail
+   to load - none of these call any AI API, they're all just the same
+   "fetch server-side, serve from a domain that doesn't send a blocking
+   header" trick applied to different things. */
+const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
+const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
+const SITE_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/proxy?url=";
+const FRAME_CHECK_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/frame-check?url=";
+
+/* asks the backend whether a site's own headers (X-Frame-Options / CSP
+   frame-ancestors) refuse framing, for sites edgeBlocked()'s hardcoded
+   list doesn't know about. Fails open (reports "not blocked") on any
+   error/timeout so a flaky check never gets in the way of the normal
+   direct-load/timeout fallback path that already exists regardless. */
+function checkFrameable(u){
+  return fetch(FRAME_CHECK_URL+encodeURIComponent(u), {signal: AbortSignal.timeout(5000)})
+    .then(r=>r.ok ? r.json() : {blocked:false})
+    .then(d=>!!(d && d.blocked))
+    .catch(()=>false);
+}
+
+/* seed bookmarks from the same curated, already-frame-friendly list Edge
+   ships with (EDGE_BOOKMARKS, above), then let the star button grow it.
+   Persisted separately from Edge's own bookmarks. */
+const EDGY_BM_KEY = "wc_edgy_bookmarks";
+function loadBookmarks(){
+  try{
+    const saved = JSON.parse(localStorage.getItem(EDGY_BM_KEY));
+    if(Array.isArray(saved)) return saved;
+  }catch(e){}
+  return EDGE_BOOKMARKS.slice();
+}
+function saveBookmarks(list){ try{ localStorage.setItem(EDGY_BM_KEY, JSON.stringify(list)); }catch(e){} }
+
+const EDGY_HIST_KEY = "wc_edgy_history";
+function loadHistory(){
+  try{ const h=JSON.parse(localStorage.getItem(EDGY_HIST_KEY)); if(Array.isArray(h)) return h; }catch(e){}
+  return [];
+}
+function saveHistory(list){ try{ localStorage.setItem(EDGY_HIST_KEY, JSON.stringify(list.slice(-300))); }catch(e){} }
+
+const EDGY_ZOOM_KEY = "wc_edgy_zoom";
+const EDGY_THEME_KEY = "wc_edgy_theme";
+const EDGY_SIDEBAR_KEY = "wc_edgy_sidebar";
+function loadSidebarState(){
+  try{ const s=JSON.parse(localStorage.getItem(EDGY_SIDEBAR_KEY)); if(s && typeof s==="object") return s; }catch(e){}
+  return {open:false, width:340};
+}
+function saveSidebarState(s){ try{ localStorage.setItem(EDGY_SIDEBAR_KEY, JSON.stringify(s)); }catch(e){} }
+
+/* frame-blocked-site detection is reused straight from Edge's own
+   edgeBlocked()/EDGE_BLOCKED, which already list the giants (Google,
+   YouTube, Facebook, ...) that refuse to be framed. Search results never
+   hit that list at all, since they're framed from Edgy's own proxy domain,
+   not a real search engine's, so there's nothing there for edgeBlocked()
+   to catch. */
+function hostOf(u){ try{ return new URL(u).hostname||u; }catch(e){ return u; } }
+function faviconFor(u){ const h=hostOf(u); return h ? `https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(h)}` : null; }
+
+function buildEdgy(body, winEl){
+  body.innerHTML = `
+    <div class="edgy">
+      <div class="edgy-tabbar">
+        <div class="edgy-tabs"></div>
+        <div class="edgy-tabctrls">
+          <button class="edgy-newtab" title="New tab (Ctrl+T)">+</button>
+          <button class="edgy-privtab" title="New private tab (Ctrl+Shift+N)">🕶</button>
+          <button class="edgy-tablist-btn" title="Show all tabs">▾</button>
+        </div>
+      </div>
+      <div class="edgy-toolbar">
+        <button class="edgy-nav" data-b title="Back">←</button>
+        <button class="edgy-nav" data-f title="Forward">→</button>
+        <button class="edgy-nav" data-r title="Reload">⟳</button>
+        <button class="edgy-nav" data-home title="Home">⌂</button>
+        <button class="edgy-nav" data-hist title="History (Ctrl+H)">🕘</button>
+        <div class="edgy-zoom">
+          <button data-zout title="Zoom out">−</button>
+          <span class="edgy-zoomlabel">100%</span>
+          <button data-zin title="Zoom in">+</button>
+        </div>
+        <div class="edgy-addr"><span class="edgy-lock">🔒</span><input class="edgy-url" spellcheck="false" placeholder="Search the web or enter a web address"></div>
+        <button class="edgy-star" title="Bookmark this page">☆</button>
+        <button class="edgy-nav" data-theme title="Toggle dark mode">🌙</button>
+        <button class="edgy-nav ai" title="Assistant">✨</button>
+      </div>
+      <div class="edgy-bookmarks"></div>
+      <div class="edgy-body">
+        <div class="edgy-mainpane"><div class="edgy-pages"></div></div>
+        <div class="edgy-sidebar">
+          <div class="edgy-sb-drag"></div>
+          <div class="edgy-sb-head"><span>✨ Assistant</span><button class="edgy-sb-close" title="Close">»</button></div>
+          <div class="edgy-sb-body"></div>
+        </div>
+      </div>
+    </div>`;
+
+  const edgyRoot = body.querySelector(".edgy");
+  const themeBtn = body.querySelector("[data-theme]");
+  const tabsEl = body.querySelector(".edgy-tabs");
+  const pagesEl = body.querySelector(".edgy-pages");
+  const urlInput = body.querySelector(".edgy-url");
+  const bmBar = body.querySelector(".edgy-bookmarks");
+  const backBtn = body.querySelector("[data-b]"), fwdBtn = body.querySelector("[data-f]");
+  const starBtn = body.querySelector(".edgy-star");
+  const zoomOutBtn = body.querySelector("[data-zout]"), zoomInBtn = body.querySelector("[data-zin]");
+  const zoomLabel = body.querySelector(".edgy-zoomlabel");
+  const aiBtn = body.querySelector(".edgy-nav.ai");
+  const sidebarEl = body.querySelector(".edgy-sidebar");
+  const sbBody = body.querySelector(".edgy-sb-body");
+  const tablistBtn = body.querySelector(".edgy-tablist-btn");
+
+  let bookmarks = loadBookmarks();
+  let history = loadHistory();
+  let defaultZoom = parseInt(localStorage.getItem(EDGY_ZOOM_KEY),10) || 100;
+  let sidebarState = loadSidebarState();
+  let sidebarLoaded = false;
+  let tabs = [], activeId = null, seq = 0, dragId = null;
+
+  function active(){ return tabs.find(t=>t.id===activeId); }
+
+  /* ---------- bookmarks ---------- */
+  function renderBookmarksBar(){
+    bmBar.innerHTML = "";
+    bookmarks.forEach(b=>{
+      const a = el("a"); a.innerHTML = `<span>${esc(b.icon||"🌐")}</span><span>${esc(b.name)}</span>`;
+      a.onclick = ()=>go(active(), b.url);
+      bmBar.appendChild(a);
+    });
+  }
+  function updateStar(t){
+    if(!t || !t.displayUrl){ starBtn.textContent="☆"; starBtn.disabled=true; return; }
+    starBtn.disabled=false;
+    starBtn.textContent = bookmarks.some(b=>b.url===t.displayUrl) ? "★" : "☆";
+  }
+  starBtn.onclick = ()=>{
+    const t=active(); if(!t || !t.displayUrl) return;
+    const i = bookmarks.findIndex(b=>b.url===t.displayUrl);
+    if(i>=0) bookmarks.splice(i,1);
+    else bookmarks.push({name:t.title||hostOf(t.displayUrl), url:t.displayUrl, icon:"🌐"});
+    saveBookmarks(bookmarks); renderBookmarksBar(); updateStar(t);
+  };
+
+  /* ---------- zoom ---------- */
+  function applyZoom(t){ if(t) t.pageEl.style.zoom = (t.zoom||defaultZoom)+"%"; }
+  function updateZoomLabel(t){ zoomLabel.textContent = (t ? (t.zoom||defaultZoom) : defaultZoom)+"%"; }
+  function setZoom(delta, reset){
+    const t=active(); if(!t) return;
+    t.zoom = reset ? 100 : Math.max(50, Math.min(200, (t.zoom||defaultZoom)+delta));
+    defaultZoom = t.zoom;
+    try{ localStorage.setItem(EDGY_ZOOM_KEY, defaultZoom); }catch(e){}
+    applyZoom(t); updateZoomLabel(t);
+  }
+  zoomOutBtn.onclick = ()=>setZoom(-10);
+  zoomInBtn.onclick = ()=>setZoom(10);
+  zoomLabel.onclick = ()=>setZoom(0, true);
+
+  /* ---------- light / dark mode ---------- */
+  let theme = localStorage.getItem(EDGY_THEME_KEY) === "dark" ? "dark" : "light";
+  function applyTheme(){
+    edgyRoot.classList.toggle("dark", theme==="dark");
+    themeBtn.textContent = theme==="dark" ? "☀️" : "🌙";
+    themeBtn.title = theme==="dark" ? "Switch to light mode" : "Switch to dark mode";
+  }
+  themeBtn.onclick = ()=>{
+    theme = theme==="dark" ? "light" : "dark";
+    try{ localStorage.setItem(EDGY_THEME_KEY, theme); }catch(e){}
+    applyTheme();
+  };
+  applyTheme();
+
+  /* ---------- nav buttons / chrome sync ---------- */
+  function updateNavButtons(t){
+    backBtn.disabled = !(t && t.si>0);
+    fwdBtn.disabled = !(t && t.si<t.stack.length-1);
+  }
+  function syncChrome(t){
+    if(!t || t.id!==activeId) return;
+    urlInput.value = t.displayUrl || "";
+    updateStar(t); updateNavButtons(t); updateZoomLabel(t);
+    notifySidebarOfPage(t);
+  }
+
+  /* ---------- tabs ---------- */
+  function iconEl(t){
+    if(t.favicon){
+      const img = el("img","tico"); img.src = t.favicon;
+      img.onerror = ()=>{ const span=el("span","tico"); span.textContent=t.icon; img.replaceWith(span); };
+      return img;
+    }
+    const span = el("span","tico"); span.textContent = t.icon; return span;
+  }
+  function renderTabs(){
+    tabsEl.innerHTML = "";
+    tabs.forEach(t=>{
+      const row = el("div","edgy-tab"+(t.id===activeId?" active":"")+(t.incognito?" priv":""));
+      row.draggable = true;
+      const ttitle = el("span","ttitle"); ttitle.textContent = t.title;
+      const tclose = el("span","tclose"); tclose.textContent = "✕";
+      row.append(iconEl(t), ttitle, tclose);
+      row.onclick = e=>{ if(e.target===tclose) closeTab(t.id); else switchTab(t.id); };
+      row.addEventListener("dragstart", e=>{ dragId=t.id; e.dataTransfer.effectAllowed="move"; try{e.dataTransfer.setData("text/plain",t.id);}catch(_){} });
+      row.addEventListener("dragover", e=>{ if(dragId) e.preventDefault(); });
+      row.addEventListener("drop", e=>{
+        e.preventDefault();
+        if(!dragId || dragId===t.id) return;
+        const from = tabs.findIndex(x=>x.id===dragId), to = tabs.findIndex(x=>x.id===t.id);
+        if(from<0||to<0) return;
+        const [moved] = tabs.splice(from,1);
+        tabs.splice(to,0,moved);
+        dragId=null; renderTabs();
+      });
+      row.addEventListener("dragend", ()=>{ dragId=null; });
+      tabsEl.appendChild(row);
+    });
+  }
+  tablistBtn.onclick = e=>{
+    e.stopPropagation();
+    const existing = body.querySelector(".edgy-tabmenu"); if(existing){ existing.remove(); return; }
+    const menu = el("div","edgy-tabmenu");
+    tabs.forEach(t=>{
+      const row = el("div","edgy-tabmenu-row");
+      const ic = iconEl(t); row.appendChild(ic);
+      const label = el("span"); label.textContent = (t.incognito?"🕶 ":"")+t.title; row.appendChild(label);
+      row.onclick = ()=>{ switchTab(t.id); menu.remove(); };
+      menu.appendChild(row);
+    });
+    body.querySelector(".edgy-tabbar").appendChild(menu);
+    setTimeout(()=>{
+      const closeMenu = ev=>{ if(!menu.contains(ev.target)){ menu.remove(); document.removeEventListener("mousedown",closeMenu); } };
+      document.addEventListener("mousedown", closeMenu);
+    },0);
+  };
+
+  function newTab(url, incognito){
+    const id = "t"+(++seq);
+    const pageEl = el("div","edgy-page");
+    pagesEl.appendChild(pageEl);
+    const tab = {id, pageEl, stack:[], si:-1, title:incognito?"Private tab":"New tab",
+      icon:incognito?"🕶":"🧭", favicon:null, displayUrl:"", incognito:!!incognito, zoom:defaultZoom,
+      frameWindow:null, load:null};
+    tabs.push(tab);
+    switchTab(id);
+    go(tab, url);
+    return tab;
+  }
+  function closeTab(id){
+    const i = tabs.findIndex(t=>t.id===id); if(i<0) return;
+    tabs[i].pageEl.remove();
+    tabs.splice(i,1);
+    if(!tabs.length){ if(typeof closeWin==="function") closeWin("edgy"); return; }
+    if(activeId===id) switchTab(tabs[Math.max(0,i-1)].id);
+    else renderTabs();
+  }
+  function switchTab(id){
+    activeId = id;
+    tabs.forEach(t=>t.pageEl.classList.toggle("active", t.id===id));
+    renderTabs();
+    syncChrome(active());
+  }
+
+  /* ---------- navigation ---------- */
+  function navTo(t, loc){
+    t.stack = t.stack.slice(0, t.si+1);
+    t.stack.push(loc);
+    t.si = t.stack.length-1;
+    render(t);
+  }
+  function go(t, raw){
+    if(!t) return;
+    const q=(raw||"").trim();
+    const low=q.toLowerCase();
+    if(!q || low==="home"){ navTo(t,{type:"home"}); return; }
+    if(low==="history"){ navTo(t,{type:"history"}); return; }
+    const looksUrl = /^https?:\/\//.test(q) || (/^[^\s]+\.[a-z]{2,}(\/|$|\?|#)/i.test(q) && !/\s/.test(q));
+    if(!looksUrl){
+      /* real, live search results, fetched by Edgy's own AI backend and
+         framed from its own domain (see the file header for why), so this
+         loads right inside the window rather than kicking out to a real
+         browser tab. */
+      navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
+      return;
+    }
+    const u = /^https?:\/\//.test(q) ? q : "https://"+q;
+    const path=u.split("#")[0].split("?")[0], last=path.split("/").pop()||"";
+    if(EDGE_DL_RE.test(last)){ downloadFromWeb(u); return; }
+    navTo(t, {type:"site", u});
+  }
+  function render(t){
+    const loc = t.stack[t.si];
+    if(!loc || loc.type==="home") home(t);
+    else if(loc.type==="history") historyPage(t);
+    else loadSite(t, loc);
+  }
+
+  function home(t){
+    t.frameWindow = null; t.load = null;
+    t.displayUrl = ""; t.title = t.incognito?"Private tab":"New tab"; t.icon = t.incognito?"🕶":"🧭"; t.favicon=null;
+    t.pageEl.className = "edgy-page edgy-home"+(t.id===activeId?" active":"");
+    t.pageEl.innerHTML = `
+      <div class="logo">${t.incognito?"🕶":"🧭"} Macrohard Edgy</div>
+      ${t.incognito?'<div class="priv-sub">Private tab. Sites you visit here won’t be added to History.</div>':""}
+      <input class="edgy-search" placeholder="Search the web or enter a web address">
+      <div class="edgy-shortcuts"></div>`;
+    const search = t.pageEl.querySelector(".edgy-search");
+    search.addEventListener("keydown", e=>{ if(e.key==="Enter" && search.value.trim()) go(t, search.value); });
+    const sc = t.pageEl.querySelector(".edgy-shortcuts");
+    bookmarks.forEach(b=>{
+      const a=el("a"); a.innerHTML = `<span class="gl">${esc(b.icon||"🌐")}</span>${esc(b.name)}`;
+      a.onclick = ()=>go(t, b.url); sc.appendChild(a);
+    });
+    applyZoom(t); renderTabs(); syncChrome(t);
+  }
+
+  function historyPage(t){
+    t.frameWindow = null; t.load = null;
+    t.displayUrl = ""; t.title = "History"; t.icon = "🕘"; t.favicon = null;
+    t.pageEl.className = "edgy-page edgy-history"+(t.id===activeId?" active":"");
+    const rows = history.slice().reverse().map((h,i)=>{
+      const idx = history.length-1-i;
+      return `<div class="edgy-hist-row" data-i="${idx}">
+        <span class="hi-ic">${h.favicon?`<img src="${esc(h.favicon)}">`:"🌐"}</span>
+        <div class="hi-t"><b>${esc(h.title||hostOf(h.url))}</b><small>${esc(h.url)}</small></div>
+        <span class="hi-time">${esc(new Date(h.time).toLocaleString())}</span>
+      </div>`;
+    }).join("");
+    t.pageEl.innerHTML = `<div class="edgy-histwrap">
+      <div class="edgy-histhead"><b>History</b><button class="edgy-btn" data-clear>Clear history</button></div>
+      <div class="edgy-histlist">${rows || '<div class="edgy-histempty">No history yet.</div>'}</div>
+    </div>`;
+    t.pageEl.querySelectorAll(".edgy-hist-row").forEach(row=>{
+      row.onclick = ()=>{ const h=history[+row.dataset.i]; if(h) go(t, h.url); };
+    });
+    const clearBtn = t.pageEl.querySelector("[data-clear]");
+    if(clearBtn) clearBtn.onclick = ()=>{ history = []; saveHistory(history); render(t); };
+    applyZoom(t); renderTabs(); syncChrome(t);
+  }
+
+  /* real page in a sandboxed iframe, same locked-down approach Edge uses.
+     Genuinely fetches the live site, but can't reach anything of WinClone's.
+     Sites already known to block framing (see edgeBlocked) skip straight to
+     the proxy fallback instead of wasting a timeout on an attempt that's
+     certain to fail; anything else still tries loading directly first,
+     since that's faster, cheaper and more fully interactive for every site
+     that doesn't block it, and only falls back to the proxy if it actually
+     times out. */
+  function loadSite(t, loc){
+    const u = loc.u;
+    t.displayUrl = u; t.title = loc.label || hostOf(u); t.icon = loc.icon || "🌐";
+    t.favicon = (loc.icon || t.incognito) ? null : faviconFor(u);
+    if(edgeBlocked(u)){ loadViaProxy(t,loc); return; }
+    t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
+    t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
+      <iframe class="edgy-frame" referrerpolicy="no-referrer"
+        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
+    const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
+    t.frameWindow = frame.contentWindow;
+    const state = t.load = {done:false, timer:null};
+    state.timer = setTimeout(()=>{ if(!state.done){ state.done=true; loadViaProxy(t,loc); } }, 10000);
+    frame.addEventListener("load", ()=>{
+      if(state.done) return; state.done=true; clearTimeout(state.timer); if(load) load.remove(); frame.style.opacity=1;
+      if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+    });
+    /* a site that blocks framing via headers still fires the iframe's own
+       "load" event for the browser's blocked-page placeholder (the same
+       behavior that originally made a DuckDuckGo CAPTCHA wall look like a
+       successful search), so edgeBlocked()'s hardcoded list can't be the
+       only thing catching this. Race a real header check against the
+       direct load: whichever resolves first wins, and a positive block
+       result here pre-empts the eventual "load" firing on the placeholder. */
+    checkFrameable(u).then(blocked=>{
+      if(blocked && !state.done){ state.done=true; clearTimeout(state.timer); loadViaProxy(t,loc); }
+    });
+    frame.src = u;
+    applyZoom(t); renderTabs(); syncChrome(t);
+  }
+  /* fallback for sites that block direct framing or timed out trying: Edgy's
+     AI backend fetches the page server-side and serves it back from its own
+     domain, which sets no blocking header. Works well for viewing public,
+     non-interactive content; won't work for anything needing a real login
+     (cookies are origin-scoped, this proxy never has the real site's
+     session) or heavily JS-driven dynamic data, and some sites will refuse
+     the server-side fetch itself with a bot check the same way DuckDuckGo
+     and a public SearXNG instance did earlier - that's still possible here,
+     just per-site rather than universal. */
+  function loadViaProxy(t, loc){
+    const u = loc.u;
+    t.pageEl.className = "edgy-page edgy-site"+(t.id===activeId?" active":"");
+    t.pageEl.innerHTML = `<div class="edgy-load">Loading ${esc(loc.label||hostOf(u))}…</div>
+      <iframe class="edgy-frame" referrerpolicy="no-referrer"
+        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
+    const frame = t.pageEl.querySelector(".edgy-frame"), load = t.pageEl.querySelector(".edgy-load");
+    t.frameWindow = frame.contentWindow;
+    const state = t.load = {done:false, timer:null};
+    /* a failure the proxy itself reports (bad host, unreachable target,
+       non-HTML content, too large, ...) is still valid HTML that this
+       iframe "loads" successfully - the message listener below jumps
+       straight to showRejected() the moment the proxy's own error-signal
+       script reports in, so this timeout/load pairing only matters for a
+       proxy response that never comes back at all. */
+    state.timer = setTimeout(()=>{ if(!state.done){ state.done=true; showRejected(t,loc); } }, 12000);
+    frame.addEventListener("load", ()=>{
+      if(state.done) return;
+      /* the error-signal script (see /proxy's PROXY_ERROR_SIGNAL) runs
+         synchronously while this document parses, well before this
+         iframe's own "load" fires - but it still has to cross a real
+         cross-origin process boundary via postMessage, and nothing
+         guarantees that IPC lands before "load" does. A short grace
+         window lets a same-tick error signal win that race instead of
+         this handler committing to "success" first and shutting the door
+         on it (state.done, once true, makes the message handler's check
+         a no-op). 250ms is well past any realistic postMessage IPC delay
+         but too brief to be noticeable on a real successful load. */
+      setTimeout(()=>{
+        if(state.done) return;
+        state.done=true; clearTimeout(state.timer); if(load) load.remove(); frame.style.opacity=1;
+        if(!t.incognito){ history.push({url:u, title:t.title, favicon:t.favicon, time:Date.now()}); saveHistory(history); }
+      }, 250);
+    });
+    frame.src = SITE_PROXY_URL+encodeURIComponent(u);
+    applyZoom(t); renderTabs(); syncChrome(t);
+  }
+  function showRejected(t, loc){
+    const u = loc.u;
+    t.frameWindow = null;
+    t.pageEl.className = "edgy-page"+(t.id===activeId?" active":"");
+    t.pageEl.innerHTML = `<div class="edgy-reject">
+      <div class="em">🚧</div>
+      <b>${esc(loc.label||hostOf(u))} won't load here</b>
+      <div class="rj-sub">Neither loading it directly nor the fallback proxy worked, most likely because the destination itself refused the request. Some sites do that to any automated-looking traffic, not just framed ones.</div>
+      <div class="rj-btns">
+        <button class="edgy-btn pri" data-retry>Try again</button>
+        <button class="edgy-btn" data-home>Go home</button>
+      </div>
+      <a class="edgy-openreal" data-real target="_blank" rel="noopener noreferrer" href="${esc(u)}">Open the real page in a new browser tab ↗</a>
+    </div>`;
+    t.pageEl.querySelector("[data-retry]").onclick = ()=>loadViaProxy(t,loc);
+    t.pageEl.querySelector("[data-home]").onclick = ()=>go(t,"home");
+    applyZoom(t); renderTabs(); syncChrome(t);
+  }
+
+  /* "download" a web file into the VFS Downloads folder, exactly like Edge
+     does. Never touches the real disk. */
+  function downloadFromWeb(u){
+    const path=u.split("#")[0].split("?")[0];
+    let fname=decodeURIComponent(path.split("/").pop()||"download").replace(/[\\/:*?"<>|]/g,"_")||"download";
+    const dls=nodeAt([...HOME_PATH,"Downloads"]);
+    if(!dls){ winDialog({icon:"⚠️",title:"Download",msg:"The Downloads folder is missing."}); return; }
+    if(dls.children[fname]){
+      const dot=fname.lastIndexOf("."), b=dot>0?fname.slice(0,dot):fname, ext=dot>0?fname.slice(dot):"";
+      let n=1; while(dls.children[b+" ("+n+")"+ext]) n++; fname=b+" ("+n+")"+ext;
+    }
+    const lo=fname.toLowerCase();
+    const isImg=/\.(png|jpe?g|gif|bmp|webp|svg)$/.test(lo), isVid=/\.(mp4|webm|mkv|avi|mov|m4v)$/.test(lo);
+    winDialog({icon:"⬇️",title:"Downloading…",msg:`Getting <b>${esc(fname)}</b> from ${esc(hostOf(u))}…`});
+    setTimeout(()=>{
+      const item={web:true};
+      if(isImg){ item.icon="🖼️"; item.img=u; }
+      else if(isVid){ item.icon="🎬"; }
+      else { item.icon = lo.endsWith(".exe")||lo.endsWith(".msi")||lo.endsWith(".scr")||lo.endsWith(".bat") ? "⚙️" : "📄"; }
+      dls.children[fname]=item; saveFS(); refreshFX();
+      const ok=isImg||isVid;
+      winDialog({icon:item.icon,title:"Download complete",
+        msg:`<b>${esc(fname)}</b> saved to Downloads.<br><small style="color:#9a9a9a">${ok?"Double-click it to open it.":"Heads up: WinClone won't run files downloaded from the web."}</small>`});
+    },1000);
+  }
+
+  /* ---------- AI sidebar: frames Edgy's own hosted chat assistant. Styled
+     as a native-looking panel (colored header, no address bar, no visible
+     iframe border) rather than a website-in-a-box. The iframe is created
+     once and just hidden/shown after that, so the conversation inside it
+     survives opening and closing the panel. Real sites/hosts that are
+     asleep or slow to cold-start get a generous timeout before falling
+     back to an "open in a new tab" link, the same escape hatch used
+     everywhere else this app frames outside content. */
+  function mountSidebarFrame(){
+    sbBody.innerHTML = `<div class="edgy-sb-load">Loading…</div>
+      <iframe class="edgy-sb-frame" referrerpolicy="no-referrer"
+        sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin"></iframe>`;
+    const frame = sbBody.querySelector(".edgy-sb-frame"), load = sbBody.querySelector(".edgy-sb-load");
+    let done=false;
+    const timer = setTimeout(()=>{ if(!done){ done=true; showSidebarFallback(); } }, 12000);
+    frame.addEventListener("load", ()=>{
+      if(done) return; done=true; clearTimeout(timer); if(load) load.remove(); frame.style.opacity=1;
+      notifySidebarOfPage(active());
+    });
+    frame.src = AI_SIDEBAR_URL;
+  }
+  /* tells the assistant what page is currently showing, so it can answer
+     "what does this page say" - style questions. The assistant itself
+     decides whether/when to actually fetch and use that URL (see its own
+     opt-in toggle); this just keeps it informed of what's on screen. */
+  function notifySidebarOfPage(t){
+    if(!sidebarLoaded || !aiOrigin) return;
+    const frame = sbBody.querySelector(".edgy-sb-frame");
+    if(!frame || !frame.contentWindow) return;
+    try{
+      frame.contentWindow.postMessage({source:"macrohard-edgy", type:"page", url:(t&&t.displayUrl)||null, title:(t&&t.title)||null}, aiOrigin);
+    }catch(e){}
+  }
+  function showSidebarFallback(){
+    sbBody.innerHTML = `<div class="edgy-sb-fallback">
+      <div class="em">🤖</div>
+      <b>Assistant didn't load</b>
+      <div class="rj-sub">It may be waking up from sleep (small hosts do that) or isn't reachable right now.</div>
+      <button class="edgy-btn pri" data-retry>Try again</button>
+      <a class="edgy-openreal" target="_blank" rel="noopener noreferrer" href="${esc(AI_SIDEBAR_URL)}">Open it in a new browser tab ↗</a>
+    </div>`;
+    sbBody.querySelector("[data-retry]").onclick = mountSidebarFrame;
+  }
+  function applySidebarState(){
+    sidebarEl.classList.toggle("open", sidebarState.open);
+    aiBtn.classList.toggle("on", sidebarState.open);
+    sidebarEl.style.width = sidebarState.open ? sidebarState.width+"px" : "0px";
+    if(sidebarState.open && !sidebarLoaded){ sidebarLoaded = true; mountSidebarFrame(); }
+  }
+  function toggleSidebar(open){
+    sidebarState.open = open!=null ? open : !sidebarState.open;
+    saveSidebarState(sidebarState);
+    applySidebarState();
+  }
+  aiBtn.onclick = ()=>toggleSidebar();
+  body.querySelector(".edgy-sb-close").onclick = ()=>toggleSidebar(false);
+  body.querySelector(".edgy-sb-drag").addEventListener("mousedown", e=>{
+    e.preventDefault();
+    const startX = e.clientX, startW = sidebarState.width;
+    const move = ev=>{
+      const maxW = Math.max(260, (winEl?winEl.clientWidth:800) - 300);
+      sidebarState.width = Math.max(260, Math.min(maxW, startW - (ev.clientX-startX)));
+      sidebarEl.style.width = sidebarState.width+"px";
+    };
+    const up = ()=>{ document.removeEventListener("mousemove",move); document.removeEventListener("mouseup",up); saveSidebarState(sidebarState); };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+
+  /* ---------- wire up chrome ---------- */
+  body.querySelector(".edgy-newtab").onclick = ()=>newTab();
+  body.querySelector(".edgy-privtab").onclick = ()=>newTab(null, true);
+  backBtn.onclick = ()=>{ const t=active(); if(t && t.si>0){ t.si--; render(t); } };
+  fwdBtn.onclick  = ()=>{ const t=active(); if(t && t.si<t.stack.length-1){ t.si++; render(t); } };
+  body.querySelector("[data-r]").onclick = ()=>{ const t=active(); if(t) render(t); };
+  body.querySelector("[data-home]").onclick = ()=>go(active(),"home");
+  body.querySelector("[data-hist]").onclick = ()=>go(active(),"history");
+  urlInput.addEventListener("keydown", e=>{ if(e.key==="Enter" && urlInput.value.trim()) go(active(), urlInput.value); });
+  if(winEl) winEl.addEventListener("keydown", e=>{
+    if(!(e.ctrlKey||e.metaKey)) return;
+    if(e.key==="t" && !e.shiftKey){ e.preventDefault(); newTab(); }
+    else if(e.key.toLowerCase()==="n" && e.shiftKey){ e.preventDefault(); newTab(null, true); }
+    else if(e.key==="w"){ e.preventDefault(); closeTab(activeId); }
+    else if(e.key==="l"){ e.preventDefault(); urlInput.focus(); urlInput.select(); }
+    else if(e.key.toLowerCase()==="h"){ e.preventDefault(); go(active(),"history"); }
+    else if(e.key==="="||e.key==="+"){ e.preventDefault(); setZoom(10); }
+    else if(e.key==="-"){ e.preventDefault(); setZoom(-10); }
+    else if(e.key==="0"){ e.preventDefault(); setZoom(0, true); }
+  });
+
+  /* both the /search proxy's page and the general /proxy fallback report
+     clicked links (and, for search, re-searches) up via postMessage instead
+     of navigating on its own, so those stay inside the normal address-bar/
+     history/back-button flow instead of just vanishing into the iframe.
+     Guards on `body` still being attached so a stale listener from a
+     previous, already-closed Edgy window (only one can be open at a time,
+     but the listener would otherwise outlive it) quietly unregisters
+     itself instead of acting on dead state.
+
+     Matching e.source to the specific tab whose iframe it actually is
+     (rather than just trusting e.origin and applying the message to
+     whichever tab happens to be active) matters for two reasons: without
+     it, a message that arrives from a backgrounded tab's still-loaded
+     iframe would hijack navigation on whatever tab the user has since
+     switched to (a real mixup, not just a theoretical one); and since
+     /proxy serves arbitrary third-party HTML with allow-scripts and
+     allow-same-origin at this app's own origin, any nested iframe a
+     malicious proxied page embeds pointed back at that same /proxy path
+     would also satisfy an origin-only check. Requiring e.source to be the
+     exact contentWindow Edgy itself created for that tab's current load
+     rules that out - a nested iframe's postMessage source is its own
+     window, never the outer tab's. */
+  let aiOrigin = null, proxyOrigin = null, proxyPath = null;
+  try{ aiOrigin = new URL(AI_SIDEBAR_URL).origin; }catch(e){}
+  try{ const p=new URL(SEARCH_PROXY_URL); proxyOrigin=p.origin; proxyPath=p.pathname; }catch(e){}
+  window.addEventListener("message", function onMsg(e){
+    if(!document.body.contains(body)){ window.removeEventListener("message", onMsg); return; }
+    if(!aiOrigin || e.origin!==aiOrigin) return;
+    if(!e.data || typeof e.data.source!=="string") return;
+    const t = tabs.find(tb=>tb.frameWindow && tb.frameWindow===e.source);
+    if(!t) return;
+
+    if(e.data.source==="macrohard-edgy-proxy-error"){
+      /* the proxy's own failure pages (bad host, unreachable target,
+         non-HTML content, too large, ...) still load successfully as far
+         as the iframe is concerned - this is /proxy telling Edgy directly
+         that despite that, the load should count as a failure: skip the
+         history write and show the real rejection screen right away
+         instead of waiting out load's own 12s timeout or leaving the raw
+         error text on screen. */
+      if(t.load && !t.load.done){
+        t.load.done = true;
+        if(t.load.timer) clearTimeout(t.load.timer);
+        showRejected(t, t.stack[t.si]);
+      }
+      return;
+    }
+
+    if(typeof e.data.url!=="string") return;
+    let dest;
+    try{ dest = new URL(e.data.url); }catch(err){ return; }
+
+    if(e.data.source==="macrohard-edgy-search"){
+      /* a re-search submitted from the results page itself lands back on
+         Edgy's own /search route; give it the same nice "Search: query"
+         tab title instead of the raw proxy hostname. */
+      const q = (dest.origin===proxyOrigin && dest.pathname===proxyPath) ? dest.searchParams.get("q") : null;
+      if(q) navTo(t, {type:"site", u:SEARCH_PROXY_URL+encodeURIComponent(q), label:"Search: "+q, icon:"🔎"});
+      else navTo(t, {type:"site", u:dest.href});
+      return;
+    }
+
+    if(e.data.source==="macrohard-edgy-proxy"){
+      /* a link clicked inside a proxied page - same download check go()
+         already does for typed URLs, then the normal load pipeline (tries
+         loading it directly first, only re-proxies if that fails too). */
+      const path=dest.href.split("#")[0].split("?")[0], last=path.split("/").pop()||"";
+      if(EDGE_DL_RE.test(last)){ downloadFromWeb(dest.href); return; }
+      navTo(t, {type:"site", u:dest.href});
+    }
+  });
+
+  renderBookmarksBar();
+  applySidebarState();
+  newTab();
+}
+
 /* ---- photos ---- */
 let PH_PENDING=null;
 const PH={loader:null};
@@ -10343,7 +11005,7 @@ $("#startbtn").onclick = ()=>{ renderStartGrid(""); toggleFlyout("#startmenu"); 
 $("#searchbtn").onclick = ()=>{ renderStartGrid(""); toggleFlyout("#startmenu"); setTimeout(()=>$("#start-search").focus(),60); };
 $("#quickbtn").onclick = ()=>{ toggleFlyout("#quick"); $("#wifilist").classList.add("open"); renderWifi(); };
 $("#tray-clock").onclick = ()=>{ renderCalendar(); toggleFlyout("#cal"); };
-$("#widgetsbtn").onclick = ()=>openApp("edge");
+$("#widgetsbtn").onclick = ()=>openApp("edgy");
 if($("#taskviewbtn")) $("#taskviewbtn").onclick = ()=>toggleTaskView();
 $("#notifbtn").onclick = ()=>{ notifUnseen=0; notifBadge(); renderNotif(); toggleFlyout("#notif"); };
 $("#notif-clear").onclick = ()=>{ NOTIFS=[]; saveNotifs(); renderNotif(); notifUnseen=0; notifBadge(); };
