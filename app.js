@@ -127,6 +127,7 @@ const APPS = {
   doom:      {title:"CloneDOOM",     icon:"👹", w:800, h:560, build:buildDoom},
   restore:   {title:"System Restore Points", icon:"🛟", w:680, h:520, build:buildRestore},
   screenfx:  {title:"Screen FX",     icon:"🌀", w:620, h:600, build:buildScreenFX},
+  orbit:     {title:"Orbit",         icon:"🪐", w:640, h:560, build:buildOrbit},
   archive:   {title:"Archive",       icon:"🗜️", w:560, h:420, build:buildArchive, hidden:true},
   pyrun:     {title:"Python",        icon:"🐍", w:660, h:520, build:buildPyRun, hidden:true},
   htmlview:  {title:"HTML Viewer",   icon:"🌐", w:760, h:560, build:buildHtmlView, hidden:true},
@@ -155,18 +156,20 @@ const TILE_BG = {
   doom:    "linear-gradient(135deg,#5c1008,#c62d1f)",
   restore: "linear-gradient(135deg,#0f5c52,#2fb8a0)",
   screenfx:"linear-gradient(135deg,#3b0764,#a855f7)",
+  orbit:   "linear-gradient(135deg,#312e81,#818cf8)",
   pyrun:   "linear-gradient(135deg,#2b5b84,#ffd43b)",
   archive: "linear-gradient(135deg,#6b7280,#d1d5db)",
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
   batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
 };
-const PINNED = ["edgy","edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
+const PINNED = ["edgy","edge","explorer","notepad","orbit","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
 const TASKBAR_PINS = ["explorer","edgy","edge","notepad","terminal"];
 const DESKTOP_ICONS = [
   {app:"recycle",  label:"Recycle Bin"},
   {app:"explorer", label:"This PC"},
   {app:"edgy",     label:"Macrohard Edgy"},
   {app:"edge",     label:"Microsoft Edge"},
+  {app:"orbit",    label:"Orbit"},
   {app:"defender", label:"Cork Defender"},
   {app:"youtube",  label:"YouTube"},
   {app:"paint",    label:"Paint"},
@@ -1189,25 +1192,132 @@ function buildCalc(body){
 const TERM_START=Date.now();
 const TERM_FORTUNES=["A folder in the hand is worth two in the Recycle Bin.","There is no cloud. It's just someone else's WinClone.","rm -rf is not a personality.","Have you tried turning systemwinclone.sys off and on again?","The best code is no code. The second best is this HTML file.","404: motivation not found.","You miss 100% of the packets you don't send."];
 function buildTerminal(body){
-  body.innerHTML = `<div class="term"></div>`;
+  body.innerHTML = `<div class="term-wrap">
+    <div class="term"></div>
+    <div class="orbit-footer hide">
+      <div class="orbit-box"><span class="orbit-box-arrow">›</span><input class="orbit-box-input" autocomplete="off" spellcheck="false" placeholder="Message Orbit Code…"></div>
+      <div class="orbit-hint"><span>/model /effort /exit for shortcuts</span><span class="orbit-hint-status"></span></div>
+    </div>
+  </div>`;
   const term = body.querySelector(".term");
+  const orbitFooter = body.querySelector(".orbit-footer");
+  const orbitInput = orbitFooter.querySelector(".orbit-box-input");
+  const orbitStatusEl = orbitFooter.querySelector(".orbit-hint-status");
   let cwd = [...HOME_PATH];
   const hist=[]; let hi=0;
+  let orbitMode=false;
   const pathStr=()=> "C:\\"+cwd.slice(1).join("\\");
-  const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); };
-  const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); };
+  const print = (t,cls)=>{ const d=el("div",cls||""); d.textContent=t; term.appendChild(d); return d; };
+  const printHtml = h=>{ const d=el("div"); d.innerHTML=h; term.appendChild(d); return d; };
   print(`WinClone Terminal [Version 10.0.26100]\n(c) WinClone. All rights reserved.  Type "help" for commands.\n`);
-  term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); } });
+  term.addEventListener("click",()=>{ if(!getSelection().toString()){ const inps=term.querySelectorAll("input:not([disabled])"); if(inps.length) inps[inps.length-1].focus(); else if(!orbitInput.disabled) orbitInput.focus(); } });
   function prompt(){
+    if(orbitMode) return; // input lives in the persistent Orbit footer instead - see orbitInput's own listener
     const line = el("div","term-input");
-    line.innerHTML = `<span class="green">${esc(pathStr())}></span>`;
+    line.innerHTML = `<span class="purple">${esc(pathStr())}></span>`;
     const inp = el("input"); inp.autocomplete="off"; inp.spellcheck=false;
     line.appendChild(inp); term.appendChild(line); inp.focus();
     inp.addEventListener("keydown", e=>{
-      if(e.key==="Enter"){ const cmd=inp.value; inp.disabled=true; if(cmd.trim()) hist.push(cmd); hi=hist.length; run(cmd.trim()); prompt(); term.scrollTop=term.scrollHeight; }
+      if(e.key==="Enter"){
+        const cmd=inp.value; inp.disabled=true; if(cmd.trim()) hist.push(cmd); hi=hist.length;
+        const cursor=el("span","term-cursor","▌"); line.appendChild(cursor);
+        const r=run(cmd.trim());
+        const advance=()=>{ cursor.remove(); prompt(); term.scrollTop=term.scrollHeight; };
+        if(r && typeof r.then==="function") r.then(advance, advance); else advance();
+      }
       else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; inp.value=hist[hi]||""; } }
       else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; inp.value=hist[hi]||""; } else { hi=hist.length; inp.value=""; } }
     });
+  }
+  /* The enclosed Orbit Code prompt: entered by typing bare "orbit" (see the
+     orbit case in run() below). Unlike the normal shell prompt (a new line
+     appended per command), this is ONE persistent input - a fixed footer
+     below the scrolling log, shown/hidden rather than recreated each turn,
+     so a multi-step conversation never looks like it's stacking up several
+     input boxes. Plain text goes straight to Orbit Code as a task, no
+     "orbit" prefix needed; lines starting with / are slash commands. */
+  function orbitHintText(){
+    const tier=getOrbitTermTier(), locked=tier==="pulsar", eff=locked?1:getOrbitTermEffort();
+    return `${ORBIT_TIERS[tier].label} · Effort ${eff}/5${locked?" (locked)":" (tab to cycle)"}`;
+  }
+  function updateOrbitStatus(){ orbitStatusEl.textContent=orbitHintText(); }
+  function enterOrbitMode(){
+    orbitMode=true;
+    printOrbitWelcome(term);
+    printHtml(`<span class="cyan">🪐 Entering Orbit Code:</span> type a task directly, or /model, /effort, /exit.`);
+    orbitFooter.classList.remove("hide");
+    updateOrbitStatus();
+    orbitInput.value=""; orbitInput.disabled=false; orbitInput.focus();
+    term.scrollTop=term.scrollHeight;
+  }
+  function exitOrbitMode(){
+    orbitMode=false;
+    orbitFooter.classList.add("hide");
+    printHtml(`<span class="purple">🪐 Left Orbit Code:</span> back to the regular shell.`);
+    prompt();
+  }
+  orbitInput.addEventListener("keydown", e=>{
+    if(e.key==="Enter"){
+      const cmd=orbitInput.value.trim();
+      orbitInput.value="";
+      if(!cmd) return;
+      hist.push(cmd); hi=hist.length;
+      orbitInput.disabled=true; orbitFooter.querySelector(".orbit-box").classList.add("busy");
+      print("› "+cmd, "purple");
+      const r=runOrbitRepl(cmd);
+      const advance=()=>{
+        orbitFooter.querySelector(".orbit-box").classList.remove("busy");
+        orbitInput.disabled=false;
+        if(orbitMode){ updateOrbitStatus(); orbitInput.focus(); }
+        term.scrollTop=term.scrollHeight;
+      };
+      if(r && typeof r.then==="function") r.then(advance, advance); else advance();
+    }
+    else if(e.key==="Tab"){
+      e.preventDefault();
+      if(getOrbitTermTier()==="pulsar") return;
+      setOrbitTermEffort((getOrbitTermEffort()%5)+1);
+      updateOrbitStatus();
+    }
+    else if(e.key==="ArrowUp"){ e.preventDefault(); if(hi>0){ hi--; orbitInput.value=hist[hi]||""; } }
+    else if(e.key==="ArrowDown"){ e.preventDefault(); if(hi<hist.length-1){ hi++; orbitInput.value=hist[hi]||""; } else { hi=hist.length; orbitInput.value=""; } }
+  });
+  function runOrbitRepl(cmd){
+    if(!cmd) return;
+    if(cmd[0]==="/"){
+      const parts=cmd.slice(1).split(/\s+/), sub=(parts[0]||"").toLowerCase(), rest=parts.slice(1);
+      if(sub==="exit"||sub==="quit"){ exitOrbitMode(); return; }
+      if(sub==="model"){
+        const t=(rest[0]||"").toLowerCase();
+        if(!t) print("Model: "+ORBIT_TIERS[getOrbitTermTier()].label+"  (pulsar / star / belt)");
+        else if(ORBIT_TIERS[t]){
+          setOrbitTermTier(t);
+          if(t==="pulsar"){ setOrbitTermEffort(1); print("Model → Pulsar (effort locked to 1 · Quick)"); }
+          else print("Model → "+ORBIT_TIERS[t].label);
+        }
+        else print("Unknown model '"+t+"'. Choose: pulsar, star, belt");
+        return;
+      }
+      if(sub==="effort"){
+        const curTier=getOrbitTermTier(), nStr=rest[0];
+        if(!nStr){ print("Effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked, Pulsar is always Quick)":"")); return; }
+        if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick). Switch model to change this."); return; }
+        const n=clampOrbitEffort(nStr);
+        setOrbitTermEffort(n);
+        print("Effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
+        return;
+      }
+      if(sub==="help"){
+        printHtml(`<span class="cyan">/model [pulsar|star|belt]</span>: switch model<br>`+
+          `<span class="cyan">/effort [1-5]</span>: speed vs. depth (or press Tab)<br>`+
+          `<span class="cyan">/exit</span>: back to the regular shell`);
+        return;
+      }
+      print("Unknown command '/"+sub+"'. Try /model, /effort, /exit, /help.");
+      return;
+    }
+    const tier=getOrbitTermTier(), effort=(tier==="pulsar")?1:getOrbitTermEffort();
+    return runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task:cmd, setBusy:b=>term.classList.toggle("orbit-busy", b)});
   }
   function cowsay(t){ t=(t||"moo").slice(0,120); const b="-".repeat(t.length+2);
     return ` ${"_".repeat(t.length+2)}\n< ${t} >\n ${b}\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||`; }
@@ -1224,7 +1334,7 @@ function buildTerminal(body){
     const node=()=>nodeAt(cwd);
     switch(c){
       case "": break;
-      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
+      case "help": printHtml(`<span class="cyan">Files:</span>  dir/ls  cd  pwd  cat/type  mkdir  del/erase  tree  &lt;script&gt;.bat<br><span class="cyan">Python:</span> python &lt;file&gt;.py   (or just type the file name)<br><span class="cyan">Orbit Code:</span> orbit: enter the AI prompt (/model /effort /exit inside)  ·  orbit &lt;task&gt; for a one-off  ·  orbit model / orbit effort also work directly<br><span class="cyan">System:</span> ver  winver  license  whatsnew  date  time  whoami  hostname  ipconfig  neofetch  color  history  cls/clear  shutdown  exit<br><span class="cyan">Apps:</span>   start &lt;app&gt;  calc  notepad  edge  doom  (or any app id)<br><span class="cyan">Screen:</span> fx list  fx &lt;effect&gt;  fx all  fx off<br><span class="cyan">Fun:</span>    echo  cowsay  matrix  winget  fortune  sudo`); break;
       case "fx": {
         const sub=(args[0]||"").toLowerCase();
         if(!sub||sub==="list"){
@@ -1341,6 +1451,32 @@ function buildTerminal(body){
         openPyFile({path:segs.slice(0,-1),name:nm});
         print("Running "+nm+" — see the Python window.");
         break;
+      }
+      case "orbit": case "oc": {
+        if(!args.length){ enterOrbitMode(); break; }
+        const sub=args[0].toLowerCase();
+        if(sub==="model"){
+          const t=(args[1]||"").toLowerCase();
+          if(!t) print("Orbit Code model: "+ORBIT_TIERS[getOrbitTermTier()].label+"  (pulsar / star / belt)");
+          else if(ORBIT_TIERS[t]){
+            setOrbitTermTier(t);
+            if(t==="pulsar"){ setOrbitTermEffort(1); print("Orbit Code model → Pulsar (effort locked to 1 · Quick)"); }
+            else print("Orbit Code model → "+ORBIT_TIERS[t].label);
+          }
+          else print("Unknown model '"+t+"'. Choose: pulsar, star, belt");
+          break;
+        }
+        if(sub==="effort"){
+          const curTier=getOrbitTermTier(), nStr=args[1];
+          if(!nStr){ print("Orbit Code effort: "+getOrbitTermEffort()+"/5"+(curTier==="pulsar"?" (locked, Pulsar is always Quick)":"")); break; }
+          if(curTier==="pulsar"){ print("Pulsar is locked to effort 1 (Quick) for fast responses. Switch model to change this."); break; }
+          const n=clampOrbitEffort(nStr);
+          setOrbitTermEffort(n);
+          print("Orbit Code effort → "+n+"/5 ("+ORBIT_EFFORT_LEVELS[n-1].label+")");
+          break;
+        }
+        const oTier=getOrbitTermTier(), oEffort=(oTier==="pulsar")?1:getOrbitTermEffort();
+        return runOrbitAgentIn({cwd, print, printHtml, pathStr, tier:oTier, effort:oEffort, task:a, setBusy:b=>term.classList.toggle("orbit-busy", b)});
       }
       case "start": case "open": if(APPS[args[0]]) openApp(args[0]); else print("Unknown app: "+(a||"")); break;
       case "exit": closeWin("terminal"); break;
@@ -7729,6 +7865,7 @@ function defaultFS(){ return {
       "Cork Defender":{folder:true,children:{"corkdefender.exe":{icon:"🛡️",exe:true,app:"defender"}}},
       "Macrohard Edgy":{folder:true,children:{"edgy.exe":{icon:"🧭",exe:true,app:"edgy"}}},
       "WinClone Edge":{folder:true,children:{"edge.exe":{icon:"🌐",exe:true,app:"edge"}}},
+      "Orbit":{folder:true,children:{"orbit.exe":{icon:"🪐",exe:true,app:"orbit"}}},
     }},
   }}
 };}
@@ -7764,6 +7901,18 @@ try{
       saveFS();
     }
     localStorage.setItem("wc_pysamples4","1");
+  }
+}catch(e){}
+/* one-time: drop an Orbit shortcut into Program Files on installs that
+   predate the Orbit app (defaultFS only covers brand-new installs) */
+try{
+  if(!localStorage.getItem("wc_orbit_shortcut1")){
+    const _pf=nodeAt(["C:","Program Files"]);
+    if(_pf&&_pf.children&&!_pf.children["Orbit"]){
+      _pf.children["Orbit"]={folder:true,children:{"orbit.exe":{icon:"🪐",exe:true,app:"orbit"}}};
+      saveFS();
+    }
+    localStorage.setItem("wc_orbit_shortcut1","1");
   }
 }catch(e){}
 
@@ -9553,6 +9702,428 @@ const AI_SIDEBAR_URL = "https://fussy-jackrabbit-5064.z0mb1xcat.deno.net";
 const SEARCH_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/search?q=";
 const SITE_PROXY_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/proxy?url=";
 const FRAME_CHECK_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/frame-check?url=";
+
+/* ============================ ORBIT (native AI app + Orbit Code) ============================
+   Orbit is WinClone's own AI surface: a native chat window (the Orbit app)
+   and an agentic "Orbit Code" command in the Terminal. Both talk to the same
+   backend as Edgy's assistant sidebar above (AI_SIDEBAR_URL) via a plain
+   POST to /api/chat - no iframe here, since a terminal can't embed one.
+   The backend picks the model from an optional "tier" field (pulsar/star/
+   belt), an optional "effort" level (1-5, see ORBIT_EFFORT_LEVELS), and an
+   optional "system" prompt override; omitting all three keeps the backend's
+   original default behavior (what Edgy's sidebar still uses). */
+const ORBIT_TIERS = {
+  pulsar:{label:"Pulsar", icon:"💫", desc:"Fastest responses"},
+  star:  {label:"Star",   icon:"⭐", desc:"Advanced chat & writing"},
+  belt:  {label:"Belt",   icon:"🪐", desc:"Coding, data & complex tasks"},
+};
+/* Pulsar exists to answer fast, so its effort is locked to 1 everywhere
+   (client UI *and* re-checked server-side, since client JS is editable). */
+const ORBIT_EFFORT_LEVELS = [
+  {n:1, label:"Quick",    desc:"Fastest, briefest"},
+  {n:2, label:"Fast",     desc:"A little more thought"},
+  {n:3, label:"Balanced", desc:"Normal depth"},
+  {n:4, label:"Thorough", desc:"Careful, weighs edge cases"},
+  {n:5, label:"Deep",     desc:"Slowest - reasons hard and double-checks itself"},
+];
+const ORBIT_CHAT_URL = AI_SIDEBAR_URL.replace(/\/$/, "") + "/api/chat";
+const ORBIT_SYSTEM_PROMPT = "You are Orbit, WinClone's built-in AI assistant. Keep answers concise unless asked for detail.";
+/* The chat app isn't an agent loop like Orbit Code, but it can still do the
+   single most-requested thing a chat-only assistant can't: actually save
+   what it just wrote instead of telling the user to copy it in themselves.
+   One tool call per reply, only when explicitly asked - not a multi-step
+   loop, so this stays a lightweight addition rather than turning the app
+   into a second copy of Orbit Code. */
+const ORBIT_APP_TOOL_PROMPT = `If, and only if, the user explicitly asks you to save, create, or write something as a file (e.g. "put that in Downloads as hello.py", "save this as a file"), reply with ONLY a single JSON object - no prose, no markdown fences: {"action":"write_file","path":"...","content":"..."}. Paths are resolved from C:\\Users\\User (so "Downloads/hello.py" or "Documents/notes.txt" both work). {"action":"read_file","path":"..."}, {"action":"list_dir","path":"..."} and {"action":"mkdir","path":"..."} work the same way if that's what's actually being asked for. For every other message, including just showing code without being asked to save it, reply normally in plain conversational text - never use the JSON form unless a real file operation was requested.`;
+const ORBIT_APP_ALLOWED_ACTIONS = new Set(["write_file", "read_file", "list_dir", "mkdir"]);
+
+/* What every Orbit tier is told about the OS it's embedded in, so code or
+   advice it gives actually fits WinClone instead of assuming a real desktop
+   OS or real CPython. Shared by the Orbit app and Orbit Code so there's one
+   place to keep this accurate as WinClone's own feature set changes. */
+const WINCLONE_ENV_DOC = `You're running inside WinClone: a fan-made desktop OS that's entirely one browser tab (HTML/CSS/JS, no real backend) - a window manager, a persistent virtual file system rooted at C:\\ (folders are {folder:true,children:{...}}, files carry a plain "content" string, all saved in the browser's localStorage), and a set of built-in apps.
+Terminal commands: dir/ls, cd, pwd, cat/type, mkdir, del/erase, tree, <script>.bat, python <file>.py, orbit <task>, orbit model [pulsar|star|belt], orbit effort [1-5], ver, winver, whoami, hostname, ipconfig, neofetch, color, history, cls/clear, shutdown, exit, start <app>, fx list/<effect>/all/off, echo, cowsay, matrix, winget, fortune, sudo.
+Apps (open with "start <id>" or just the id): explorer, notepad, docs, calc, terminal, settings, edge, edgy (the default browser), photos, media, recycle, defender, youtube, paint, taskmgr, mines, snake, python, doom, restore, screenfx, orbit.
+WinClone's Python is NOT real CPython - it's a small custom Python-subset interpreter (sys.version reports "3.x (WinClone mini-Python)"). Core syntax works (functions, classes, loops, comprehensions, f-strings, dict/list/set, try/except, print()/input()), but only these modules exist: math, random, time, sys, wcgame, winclone. There is no pip, no tkinter, no real pygame, no os/requests/numpy/etc - never import anything outside that list, it will fail.
+  - wcgame (import wcgame as g): a small 2D/3D canvas game API. g.init(w,h), g.fill(color), g.rect/circle/line/poly/text, g.flip() (call every frame - also drives input/timing), g.running(), g.pressed("key")/g.mouse_down(), g.push/pop/translate/rotate/scale, plus sprite/animation/tilemap/particle/easing and basic 3D mesh/terrain/camera helpers. Typical shape: g.init(...) once, then "while g.running(): ...draw calls...; g.flip()".
+  - winclone (import winclone): OS integration. winclone.notify(title, body), winclone.user(), winclone.open_app(id_or_path), winclone.ls(path), winclone.read(path), winclone.write(path, text), winclone.new_file(path, text), winclone.append(path, text), winclone.del_file(path), winclone.apps(), winclone.cwd(), winclone.version().
+A "WinClone Python app" is one .py file saved in the virtual filesystem (e.g. under Documents), run via the Terminal (python <file>.py) or the Python app. If asked to write "a WinClone app" or "a Python app for this OS", write it against wcgame/winclone above, not real-world libraries - they don't exist here.`;
+
+function orbitTierBlurb(tier){
+  const others=Object.keys(ORBIT_TIERS).filter(k=>k!==tier).map(k=>`${ORBIT_TIERS[k].label} (${ORBIT_TIERS[k].desc})`).join(" and ");
+  return `You are Orbit's ${ORBIT_TIERS[tier].label} tier (${ORBIT_TIERS[tier].desc}) - one of three tiers built into WinClone. The other two are ${others}. Users pick between tiers themselves; don't suggest they switch unless asked.`;
+}
+
+/* The backend bounds its own OpenRouter fallback loop (see CHAT_DEADLINE_MS
+   server-side) so it can always send back a real response even if
+   OpenRouter itself hangs - this client-side timeout is set comfortably
+   above that, so a genuinely stuck request still fails with a clear
+   message instead of hanging the terminal/app indefinitely. */
+async function orbitChat(messages, opts){
+  opts = opts||{};
+  let res;
+  try{
+    res = await fetch(ORBIT_CHAT_URL, {
+      method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort, mode:opts.mode}),
+      signal: AbortSignal.timeout(180000),
+    });
+  }catch(e){
+    if(e && e.name==="TimeoutError") throw new Error("Orbit's server took too long to answer (3 minutes) - try a lower effort level.");
+    throw new Error("Couldn't reach Orbit's server: "+e);
+  }
+  let data;
+  try{ data = await res.json(); }catch(e){ throw new Error("Orbit's server sent back something unreadable."); }
+  if(data.error) throw new Error(data.error);
+  return data.reply;
+}
+
+function clampOrbitEffort(n){ n=parseInt(n,10); return (n>=1&&n<=5)?n:3; }
+
+const ORBIT_APP_TIER_KEY="wc_orbit_app_tier", ORBIT_TERM_TIER_KEY="wc_orbit_term_tier";
+const ORBIT_APP_EFFORT_KEY="wc_orbit_app_effort", ORBIT_TERM_EFFORT_KEY="wc_orbit_term_effort";
+function getOrbitAppTier(){ try{ const t=localStorage.getItem(ORBIT_APP_TIER_KEY); return ORBIT_TIERS[t]?t:"star"; }catch(e){ return "star"; } }
+function setOrbitAppTier(t){ try{ localStorage.setItem(ORBIT_APP_TIER_KEY, t); }catch(e){} }
+function getOrbitTermTier(){ try{ const t=localStorage.getItem(ORBIT_TERM_TIER_KEY); return ORBIT_TIERS[t]?t:"belt"; }catch(e){ return "belt"; } }
+function setOrbitTermTier(t){ try{ localStorage.setItem(ORBIT_TERM_TIER_KEY, t); }catch(e){} }
+function getOrbitAppEffort(){ try{ return clampOrbitEffort(localStorage.getItem(ORBIT_APP_EFFORT_KEY)); }catch(e){ return 3; } }
+function setOrbitAppEffort(n){ try{ localStorage.setItem(ORBIT_APP_EFFORT_KEY, clampOrbitEffort(n)); }catch(e){} }
+function getOrbitTermEffort(){ try{ return clampOrbitEffort(localStorage.getItem(ORBIT_TERM_EFFORT_KEY)); }catch(e){ return 3; } }
+function setOrbitTermEffort(n){ try{ localStorage.setItem(ORBIT_TERM_EFFORT_KEY, clampOrbitEffort(n)); }catch(e){} }
+
+const ORBIT_CHAT_KEY="wc_orbit_chat";
+function loadOrbitChat(){ try{ const h=JSON.parse(localStorage.getItem(ORBIT_CHAT_KEY)); return Array.isArray(h)?h:[]; }catch(e){ return []; } }
+function saveOrbitChat(list){ try{ localStorage.setItem(ORBIT_CHAT_KEY, JSON.stringify(list.slice(-60))); }catch(e){} }
+
+/* ---- Orbit app: a native chat window (no iframe) ---- */
+function buildOrbit(body){
+  body.innerHTML = `<div class="orbit">
+    <div class="orbit-head">
+      <div class="orbit-tiers">${Object.keys(ORBIT_TIERS).map(k=>
+        `<button class="orbit-tier" data-tier="${k}" title="${esc(ORBIT_TIERS[k].desc)}">${ORBIT_TIERS[k].icon} ${ORBIT_TIERS[k].label}</button>`).join("")}</div>
+      <div class="orbit-effort" title="Effort: how hard Orbit thinks before answering. Higher takes longer but answers better.">
+        <span class="orbit-eff-lbl">Effort</span>
+        ${ORBIT_EFFORT_LEVELS.map(l=>`<button class="orbit-eff" data-eff="${l.n}" title="${esc(l.label)}: ${esc(l.desc)}">${l.n}</button>`).join("")}
+      </div>
+      <button class="orbit-clear" title="Clear chat">🗑️</button>
+    </div>
+    <div class="orbit-log"></div>
+    <form class="orbit-form">
+      <textarea class="orbit-input" rows="1" placeholder="Message Orbit…" spellcheck="false"></textarea>
+      <button type="submit">Send</button>
+    </form>
+  </div>`;
+  const root=body.querySelector(".orbit");
+  const log=root.querySelector(".orbit-log");
+  const form=root.querySelector(".orbit-form");
+  const inputEl=root.querySelector(".orbit-input");
+  const sendBtn=form.querySelector("button[type=submit]");
+  const tierBtns=[...root.querySelectorAll(".orbit-tier")];
+  const effBtns=[...root.querySelectorAll(".orbit-eff")];
+  let tier=getOrbitAppTier();
+  let effort=getOrbitAppEffort();
+  let history=loadOrbitChat();
+
+  function renderEffort(){
+    const locked=tier==="pulsar";
+    effBtns.forEach(b=>{
+      const n=+b.dataset.eff;
+      b.classList.toggle("on", locked?n===1:n===effort);
+      b.classList.toggle("locked", locked);
+      b.disabled=locked && n!==1;
+    });
+  }
+  function setTier(t){
+    tier=t; setOrbitAppTier(t);
+    tierBtns.forEach(b=>b.classList.toggle("on", b.dataset.tier===t));
+    effort = (t==="pulsar") ? 1 : getOrbitAppEffort();
+    renderEffort();
+  }
+  function setEffort(n){
+    if(tier==="pulsar") return;
+    effort=n; setOrbitAppEffort(n); renderEffort();
+  }
+  tierBtns.forEach(b=>b.onclick=()=>setTier(b.dataset.tier));
+  effBtns.forEach(b=>b.onclick=()=>setEffort(+b.dataset.eff));
+  setTier(tier);
+
+  function bubble(role,text){
+    const d=el("div","orbit-msg "+role); d.textContent=text; log.appendChild(d); log.scrollTop=log.scrollHeight; return d;
+  }
+  history.forEach(m=>bubble(m.role==="user"?"user":"bot", m.content));
+  if(!history.length) bubble("bot","Hi, I'm Orbit. Pick a model and an effort level above, then ask me anything.");
+
+  root.querySelector(".orbit-clear").onclick=()=>{
+    history=[]; saveOrbitChat(history); log.innerHTML=""; bubble("bot","Chat cleared.");
+  };
+
+  inputEl.addEventListener("keydown", e=>{
+    if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); form.requestSubmit(); }
+  });
+
+  form.addEventListener("submit", async e=>{
+    e.preventDefault();
+    const text=inputEl.value.trim(); if(!text) return;
+    inputEl.value=""; bubble("user",text);
+    history.push({role:"user",content:text}); saveOrbitChat(history);
+    const typing=bubble("bot typing","Orbit is thinking…");
+    sendBtn.disabled=true;
+    try{
+      const sys=ORBIT_SYSTEM_PROMPT+"\n\n"+orbitTierBlurb(tier)+"\n\n"+ORBIT_APP_TOOL_PROMPT+"\n\n"+WINCLONE_ENV_DOC;
+      const reply = await orbitChat(history, {tier, effort, system:sys});
+      typing.remove();
+      /* Only trusts a reply as a tool call if it's *entirely* valid JSON
+         (no regex-extraction leniency like Orbit Code uses) - the app
+         handles ordinary conversation, including messages that legitimately
+         contain "{...}" snippets (JSON examples, code), so being strict
+         here matters a lot more than it does for Orbit Code's tool-only
+         turns. */
+      let action=null;
+      try{ action=JSON.parse(reply.trim()); }catch(err){}
+      if(action && typeof action==="object" && ORBIT_APP_ALLOWED_ACTIONS.has(action.action)){
+        const result=orbitToolExec(HOME_PATH, action);
+        const summary=result.ok?("📄 "+result.summary):("⚠️ "+result.error);
+        bubble("bot", summary);
+        history.push({role:"assistant", content:"("+summary+")"}); saveOrbitChat(history);
+      }else{
+        bubble("bot", reply);
+        history.push({role:"assistant",content:reply}); saveOrbitChat(history);
+      }
+    }catch(err){
+      typing.remove();
+      bubble("bot", "Error: "+(err.message||err));
+    }finally{
+      sendBtn.disabled=false; inputEl.focus();
+    }
+  });
+}
+
+/* ---- Orbit Code: an agentic coding loop that runs from the Terminal ----
+   The model gets a system prompt describing a tiny tool protocol and
+   replies with one JSON action per turn; this loop executes each action
+   against WinClone's virtual file system and feeds the result back, up to
+   a step cap that scales with effort (both to bound cost against the
+   backend's per-IP rate limit and to stop a confused free model from
+   looping forever). A reply that isn't valid JSON is treated as the
+   model's final answer and printed as-is - free models don't always follow
+   a format perfectly, and failing loudly would be worse than just showing
+   what it said. */
+function orbitStepsForEffort(effort){ return [6,8,10,13,16][Math.max(1,Math.min(5,effort||3))-1]; }
+const ORBIT_MAX_WRITE_CHARS = 200000;
+
+function orbitEnsureDir(segs){
+  let cur = {folder:true, children:VFS};
+  for(const s of segs){
+    if(!cur.children) return null;
+    if(!cur.children[s]) cur.children[s] = {folder:true, children:{}};
+    if(!cur.children[s].folder) return null;
+    cur = cur.children[s];
+  }
+  return cur;
+}
+function orbitToolExec(cwd, action){
+  try{
+    switch(action.action){
+      case "read_file": {
+        const segs=batResolve(cwd, action.path||""), name=segs[segs.length-1];
+        const parent=nodeAt(segs.slice(0,-1));
+        const item=parent&&parent.children&&parent.children[name];
+        if(!item||item.folder) return {ok:false, error:"No such file: "+(action.path||"")};
+        return {ok:true, data:item.content||"", summary:"read "+segs.join("\\")+" ("+(item.content||"").length+" chars)"};
+      }
+      case "write_file": {
+        const segs=batResolve(cwd, action.path||""), name=segs[segs.length-1];
+        const dir=orbitEnsureDir(segs.slice(0,-1));
+        if(!dir||!dir.children) return {ok:false, error:"Can't create path for "+(action.path||"")};
+        if(dir.children[name]&&dir.children[name].folder) return {ok:false, error:"'"+action.path+"' is a folder"};
+        const content=String(action.content??"").slice(0,ORBIT_MAX_WRITE_CHARS);
+        dir.children[name]=Object.assign(dir.children[name]||{icon:glyphFor(name)},{content});
+        saveFS(); refreshFX();
+        return {ok:true, data:{written:content.length}, summary:"wrote "+segs.join("\\")+" ("+content.length+" chars)"};
+      }
+      case "list_dir": {
+        const segs=action.path?batResolve(cwd,action.path):cwd;
+        const n=nodeAt(segs);
+        if(!n||!n.folder) return {ok:false, error:"No such folder: "+(action.path||"(cwd)")};
+        const items=Object.keys(n.children||{}).map(k=>(n.children[k].folder?"[dir] ":"      ")+k);
+        return {ok:true, data:items, summary:"listed "+segs.join("\\")+" ("+items.length+" items)"};
+      }
+      case "mkdir": {
+        const segs=batResolve(cwd, action.path||"");
+        const dir=orbitEnsureDir(segs);
+        if(!dir) return {ok:false, error:"Can't create folder "+(action.path||"")};
+        saveFS(); refreshFX();
+        return {ok:true, data:{}, summary:"created folder "+segs.join("\\")};
+      }
+      case "delete_file": {
+        const r=batDelete(cwd, action.path||"");
+        if(r.err) return {ok:false, error:"Could not delete "+(action.path||"")};
+        refreshFX();
+        return {ok:true, data:{deleted:r.deleted}, summary:"deleted "+(r.deleted||[]).join(", ")};
+      }
+      default:
+        return {ok:false, error:"Unknown action: "+action.action};
+    }
+  }catch(e){
+    return {ok:false, error:String((e&&e.message)||e)};
+  }
+}
+function orbitParseAction(text){
+  const t=(text||"").trim();
+  try{ return JSON.parse(t); }catch(e){}
+  const m=t.match(/\{[\s\S]*\}/);
+  if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
+  return null;
+}
+/* The backend enforces the actual JSON shape via response_format
+   (structured output) whenever mode: "agent" is set - see ORBIT_ACTION_SCHEMA
+   server-side - so this only needs to teach the *semantics* of each action,
+   not police formatting the model would otherwise have to reason about
+   getting right on its own. */
+function orbitCodeSystemPrompt(cwdStr, maxSteps){
+  return `You are Orbit Code, an autonomous coding assistant working inside a virtual Windows-style `+
+    `file system rooted at C:\\. The current directory is ${cwdStr}. `+
+    `Each turn, choose exactly one action: read_file, write_file, list_dir, mkdir, delete_file, or done. `+
+    `Set "note" to one short present-tense sentence saying what this step is doing and why - it's shown to `+
+    `the user as a running log, so make it genuinely informative, not just a restatement of the action name. `+
+    `Set "path" to the target for every action except done - relative to the current directory, or absolute `+
+    `(starting with a drive letter like C:\\). Set "content" to the full file text, only for write_file. `+
+    `Set "message" to a short summary of what you accomplished, only for done. `+
+    `\n\nDefault to writing code to a file via write_file - never put source code inside "message" or any `+
+    `other field, and never just describe code in prose expecting the user to copy it themselves, unless `+
+    `they explicitly asked you to show/print/explain code without saving it. If they named a destination `+
+    `(e.g. "the desktop", "a folder called X"), write there; otherwise write into the current directory `+
+    `given above - that's what "cd into a folder, then run Orbit" means. For anything beyond a single small `+
+    `file, create a project folder first (mkdir) and put the files inside it, rather than dropping several `+
+    `loose files directly into an existing folder like Desktop or Documents. `+
+    `\n\nYou have at most ${maxSteps} tool calls total, so inspect only what's necessary before writing. `+
+    `Always finish with "done" once the task is complete.`;
+}
+
+/* A live-updating status line, in the spirit of how Claude Code shows its
+   own tool calls: a spinner while a step is in flight, then replaced in
+   place with what actually happened (read/wrote/listed/... or an error) -
+   instead of the terminal just sitting there silent between prompts, or
+   only ever showing results after the fact. Needs print() to hand back the
+   line it created, which is why print/printHtml in buildTerminal now
+   return their element instead of just appending it. */
+function orbitSpinner(print, label){
+  const frames=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+  let i=0;
+  const d=print(frames[0]+" "+label, "orbit-spin");
+  const iv=setInterval(()=>{
+    if(!d || !d.isConnected){ clearInterval(iv); return; }
+    i=(i+1)%frames.length; d.textContent=frames[i]+" "+label;
+  }, 90);
+  return {
+    ok(text){ clearInterval(iv); if(d){ d.className="orbit-step-ok"; d.textContent=text; } },
+    fail(text){ clearInterval(iv); if(d){ d.className="orbit-step-fail"; d.textContent=text; } },
+    stop(){ clearInterval(iv); if(d) d.remove(); },
+  };
+}
+
+/* ---- Terminal welcome panel: a small localStorage log of recent Orbit
+   Code tasks, plus the panel itself (purple, dashed border, a drawn
+   ringed-planet mark instead of an emoji so its color is actually under
+   CSS control) shown once per Terminal session, in the spirit of a CLI's
+   own startup screen. ---- */
+const ORBIT_ACTIVITY_KEY="wc_orbit_activity";
+function loadOrbitActivity(){ try{ const a=JSON.parse(localStorage.getItem(ORBIT_ACTIVITY_KEY)); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function logOrbitActivity(task, ok){
+  try{
+    const list=loadOrbitActivity();
+    list.unshift({task:String(task||"").slice(0,60), ok:!!ok, at:Date.now()});
+    localStorage.setItem(ORBIT_ACTIVITY_KEY, JSON.stringify(list.slice(0,5)));
+  }catch(e){}
+}
+/* Chunky pixel-art planet (not a smooth vector shape) - flat 2-row ring band
+   behind the sphere with a short brighter arc redrawn in front of its lower
+   edge, in the spirit of a small blocky CLI mascot rather than a polished
+   icon. One <path> of 1x1 unit squares per color, not one <rect> per pixel -
+   far fewer DOM nodes for the same grid. */
+const ORBIT_PLANET_SVG = `<svg viewBox="0 0 20 13" width="58" height="38" shape-rendering="crispEdges" aria-hidden="true">
+    <path fill="#c9b6ff" d="M0 5h1v1h-1zM1 5h1v1h-1zM2 5h1v1h-1zM3 5h1v1h-1zM4 5h1v1h-1zM5 5h1v1h-1zM6 5h1v1h-1zM7 5h1v1h-1zM8 5h1v1h-1zM9 5h1v1h-1zM10 5h1v1h-1zM11 5h1v1h-1zM12 5h1v1h-1zM13 5h1v1h-1zM14 5h1v1h-1zM15 5h1v1h-1zM16 5h1v1h-1zM17 5h1v1h-1zM18 5h1v1h-1zM19 5h1v1h-1zM5 7h1v1h-1zM6 7h1v1h-1zM7 7h1v1h-1zM8 7h1v1h-1zM9 7h1v1h-1zM10 7h1v1h-1zM11 7h1v1h-1zM12 7h1v1h-1zM13 7h1v1h-1zM14 7h1v1h-1zM15 7h1v1h-1z"/>
+    <path fill="#7a5cc4" d="M0 6h1v1h-1zM1 6h1v1h-1zM2 6h1v1h-1zM3 6h1v1h-1zM4 6h1v1h-1zM5 6h1v1h-1zM6 6h1v1h-1zM7 6h1v1h-1zM8 6h1v1h-1zM9 6h1v1h-1zM10 6h1v1h-1zM11 6h1v1h-1zM12 6h1v1h-1zM13 6h1v1h-1zM14 6h1v1h-1zM15 6h1v1h-1zM16 6h1v1h-1zM17 6h1v1h-1zM18 6h1v1h-1zM19 6h1v1h-1z"/>
+    <path fill="#e4d9ff" d="M6 4h1v1h-1zM6 5h1v1h-1zM7 3h1v1h-1zM7 4h1v1h-1zM8 2h1v1h-1zM8 3h1v1h-1zM8 4h1v1h-1zM9 2h1v1h-1zM9 3h1v1h-1zM10 2h1v1h-1zM11 2h1v1h-1z"/>
+    <path fill="#9b6bff" d="M6 6h1v1h-1zM6 7h1v1h-1zM6 8h1v1h-1zM7 5h1v1h-1zM7 6h1v1h-1zM7 7h1v1h-1zM7 8h1v1h-1zM7 9h1v1h-1zM8 5h1v1h-1zM8 6h1v1h-1zM8 7h1v1h-1zM8 8h1v1h-1zM8 9h1v1h-1zM9 4h1v1h-1zM9 5h1v1h-1zM9 6h1v1h-1zM9 7h1v1h-1zM9 8h1v1h-1zM10 3h1v1h-1zM10 4h1v1h-1zM10 5h1v1h-1zM10 6h1v1h-1zM10 7h1v1h-1zM11 3h1v1h-1zM11 4h1v1h-1zM11 5h1v1h-1zM11 6h1v1h-1zM11 7h1v1h-1zM12 2h1v1h-1zM12 3h1v1h-1zM12 4h1v1h-1zM12 5h1v1h-1zM12 6h1v1h-1zM13 3h1v1h-1zM13 4h1v1h-1zM13 5h1v1h-1zM13 6h1v1h-1zM14 4h1v1h-1zM14 5h1v1h-1z"/>
+    <path fill="#7c4de0" d="M8 10h1v1h-1zM9 9h1v1h-1zM9 10h1v1h-1zM10 8h1v1h-1zM10 9h1v1h-1zM10 10h1v1h-1zM11 8h1v1h-1zM11 9h1v1h-1zM11 10h1v1h-1zM12 7h1v1h-1zM12 8h1v1h-1zM12 9h1v1h-1zM12 10h1v1h-1zM13 7h1v1h-1zM13 8h1v1h-1zM13 9h1v1h-1zM14 6h1v1h-1zM14 7h1v1h-1zM14 8h1v1h-1z"/>
+  </svg>`;
+function printOrbitWelcome(term){
+  const activity=loadOrbitActivity();
+  const activityHtml = activity.length
+    ? activity.map(a=>`<div class="ow-row"><span class="ow-t">${esc(notifTimeAgo(a.at))}</span>${esc(a.task)}${a.ok?"":" ⚠"}</div>`).join("")
+    : `<div class="ow-row ow-dim">No Orbit Code activity yet</div>`;
+  const tier=getOrbitTermTier();
+  const box=el("div","orbit-welcome");
+  /* .term div{white-space:pre-wrap} (further up in styles.css - meant for
+     plain-text print() lines) is inherited by every div in this box, so the
+     indentation below - insignificant markup formatting under normal HTML
+     whitespace rules - would otherwise render as real blank lines. Collapsing
+     inter-tag whitespace before it ever becomes DOM sidesteps that at the
+     source instead of fighting it with :not() selectors and specificity for
+     every new div added here. */
+  box.innerHTML = `
+    <div class="ow-left">
+      <div class="ow-planet-wrap">${ORBIT_PLANET_SVG}</div>
+      <div class="ow-title">Orbit Code</div>
+      <div class="ow-sub">WinClone</div>
+      <div class="ow-greet">Welcome back, ${esc(getUser())}!</div>
+    </div>
+    <div class="ow-right">
+      <div class="ow-section">
+        <div class="ow-h">Recent activity</div>
+        ${activityHtml}
+      </div>
+      <div class="ow-section">
+        <div class="ow-h">Tips</div>
+        <div class="ow-row"><span class="ow-k">orbit</span>enter the AI prompt</div>
+        <div class="ow-row"><span class="ow-k">/model /effort</span>switch tier or depth (inside)</div>
+        <div class="ow-row"><span class="ow-k">orbit &lt;task&gt;</span>run a one-off without entering</div>
+      </div>
+    </div>`.replace(/>\s+</g, "><").trim();
+  term.appendChild(box);
+  term.appendChild(el("div","ow-footer", `orbit to start · currently ${esc(ORBIT_TIERS[tier].label)} · "help" for everything else`));
+}
+
+async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, task, setBusy}){
+  if(!task){ print('Usage: orbit <task>   |   orbit model [pulsar|star|belt]   |   orbit effort [1-5]'); return; }
+  const maxSteps=orbitStepsForEffort(effort);
+  printHtml(`<span class="cyan">🪐 Orbit Code:</span> <b>${esc(ORBIT_TIERS[tier].label)}</b> · effort ${effort}/5 (${esc(ORBIT_EFFORT_LEVELS[effort-1].label)}) · ${esc(task)}`);
+  const messages=[{role:"user", content:task}];
+  const sys=orbitCodeSystemPrompt(pathStr(), maxSteps)+"\n\n"+orbitTierBlurb(tier)+"\n\n"+WINCLONE_ENV_DOC;
+  let summary="", failed=false;
+  if(setBusy) setBusy(true);
+  try{
+    for(let step=1; step<=maxSteps; step++){
+      const spin=orbitSpinner(print, `Thinking… (step ${step}/${maxSteps})`);
+      let reply;
+      try{ reply = await orbitChat(messages, {tier, effort, system:sys, mode:"agent"}); }
+      catch(e){ spin.fail("✗ Orbit error: "+String(e.message||e)); summary=String(e.message||e); failed=true; return; }
+      const action=orbitParseAction(reply);
+      if(!action||!action.action){ spin.stop(); print(reply); summary=reply; return; }
+      spin.stop();
+      /* The spinner can only ever say "thinking" - it's shown before a
+         reply exists, so it can't describe what the model is about to do.
+         The model's own "note" can, once we have it: a real explanation
+         instead of a generic status word, printed as its own line before
+         the mechanical read/wrote/listed result. */
+      if(action.note) printHtml(`<span class="orbit-note">💭 ${esc(action.note)}</span>`);
+      messages.push({role:"assistant", content:JSON.stringify(action)});
+      if(action.action==="done"){ print("✓ "+(action.message||"Done."), "orbit-step-ok"); summary=action.message||"Done."; return; }
+      const result=orbitToolExec(cwd, action);
+      if(result.ok) print("● "+result.summary, "orbit-step-ok");
+      else print("✗ "+result.error, "orbit-step-fail");
+      messages.push({role:"user", content:"Tool result: "+JSON.stringify(result.ok?{ok:true,data:result.data}:{ok:false,error:result.error})});
+    }
+    print(`⚠ Stopped after ${maxSteps} steps without finishing.`, "cyan");
+    summary=`Stopped after ${maxSteps} steps without finishing.`; failed=true;
+  }finally{
+    if(setBusy) setBusy(false);
+    logOrbitActivity(task, !failed);
+    try{ notify({icon:failed?"⚠️":"🪐", title:"Orbit Code", body:(failed?"Needs a look: ":"Finished: ")+task.slice(0,80)+(summary?": "+summary.slice(0,120):"")}); }catch(e){}
+  }
+}
 
 /* asks the backend whether a site's own headers (X-Frame-Options / CSP
    frame-ancestors) refuse framing, for sites edgeBlocked()'s hardcoded
