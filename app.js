@@ -18,8 +18,15 @@
    Bump WC_VERSION every release and add a matching WC_CHANGELOG entry.
    After an update, the new version's changelog is shown once on the next
    sign-in ("What's new"), and `winver` in the Terminal reports the version. */
-const WC_VERSION = "1.9.1";
+const WC_VERSION = "2.0.0";
 const WC_CHANGELOG = {
+  "2.0.0": [
+    "📧 WinClone Mail. Every account gets a real address — the name from the email you signed up with, in front of @winclone.com — and you can mail any other WinClone user. Open it once to pick your address; you don't have to use your real name.",
+    "📬 Mail arrives live. No refreshing: a message lands with a notification and a red badge on the taskbar while you're doing something else.",
+    "📎 Attach a file and it arrives as a real file. Save it to Downloads and it's back to being a .py script, a picture, a text file — whatever it was on their machine. (Imported music is too big to post.)",
+    "☁️ Your inbox belongs to your account, not to a PC, so it's the same on all three and costs none of their storage.",
+    "🚦 Limits, so nobody can bury you: 1000 characters a message, 1 MB a file, 3 mails a minute and 60 an hour.",
+  ],
   "1.9.1": [
     "🧭 Macrohard Edgy is now the default browser.",
   ],
@@ -114,6 +121,7 @@ const APPS = {
   settings:  {title:"Settings",      icon:"⚙️", w:780, h:540, build:buildSettings},
   edge:      {title:"Microsoft Edge",icon:"🌐", w:820, h:560, build:buildEdge},
   edgy:      {title:"Macrohard Edgy",icon:"🧭", w:960, h:640, build:buildEdgy},
+  mail:      {title:"WinClone Mail", icon:"📧", w:900, h:600, build:buildMail},
   photos:    {title:"Photos",        icon:"🖼️", w:700, h:520, build:buildPhotos},
   media:     {title:"Media Player",  icon:"🎞️", w:720, h:520, build:buildMedia},
   recycle:   {title:"Recycle Bin",   icon:"🗑️", w:560, h:420, build:buildRecycle},
@@ -142,6 +150,7 @@ const TILE_BG = {
   settings:"linear-gradient(135deg,#475569,#94a3b8)",
   edge:    "linear-gradient(135deg,#0ea5a4,#38bdf8)",
   edgy:    "linear-gradient(135deg,#5b21b6,#38bdf8)",
+  mail:    "linear-gradient(135deg,#0b4f9e,#3aa0ff)",
   photos:  "linear-gradient(135deg,#7c3aed,#ec4899)",
   media:   "linear-gradient(135deg,#ea580c,#facc15)",
   recycle: "linear-gradient(135deg,#52525b,#a1a1aa)",
@@ -160,13 +169,14 @@ const TILE_BG = {
   htmlview:"linear-gradient(135deg,#c2410c,#fb923c)",
   batch:   "linear-gradient(135deg,#18181b,#3f3f46)",
 };
-const PINNED = ["edgy","edge","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
-const TASKBAR_PINS = ["explorer","edgy","edge","notepad","terminal"];
+const PINNED = ["edgy","edge","mail","explorer","notepad","python","docs","calc","photos","settings","terminal","defender","restore","recycle"];
+const TASKBAR_PINS = ["explorer","edgy","edge","mail","notepad","terminal"];
 const DESKTOP_ICONS = [
   {app:"recycle",  label:"Recycle Bin"},
   {app:"explorer", label:"This PC"},
   {app:"edgy",     label:"Macrohard Edgy"},
   {app:"edge",     label:"Microsoft Edge"},
+  {app:"mail",     label:"WinClone Mail"},
   {app:"defender", label:"Cork Defender"},
   {app:"youtube",  label:"YouTube"},
   {app:"paint",    label:"Paint"},
@@ -11704,10 +11714,503 @@ async function acBoot(){
     }
     $("#login").classList.remove("hide");
     lgReset();
+    /* Mail belongs to the account, so it loads behind the lock screen — the
+       taskbar badge is already right by the time you're through it. */
+    mlInit();
   }catch(e){
     try{ localStorage.removeItem("wc_acct_pc"); }catch(_){}
     await pcOpen();
   }
+}
+
+/* ============================ WINCLONE MAIL ============================
+   Mail belongs to the ACCOUNT, not to a PC. It lives in Supabase and is read
+   live, so it is deliberately absent from the wc_ snapshot: the same inbox
+   follows you onto all three PCs and never spends a byte of their ~5 MB.
+
+   Two tables back it. `profiles` maps an account to the handle in front of
+   @winclone.com and doubles as the address book — any signed-in user can read
+   it, which is how you look somebody up. `mail` holds the messages, and RLS
+   only ever hands you rows where you are the sender or the recipient.
+
+   Attachments do NOT live in the database. A 1 MB file base64'd into a text
+   column would fill the whole 500 MB after ~360 of them, so the bytes go to a
+   private Storage bucket (its own 1 GB quota) and the row keeps only a path. */
+const MAIL_DOMAIN   = "winclone.com";
+const MAIL_BODY_MAX = 1000;
+const MAIL_ATT_MAX  = 1048576;          // 1 MB, also enforced by the bucket
+let MY_PROFILE = null;                  // {id, handle, display_name} — who I am in the address book
+let MAIL_DIR   = [];                    // the address book, cached
+let MAIL_ROWS  = [];                    // every message this account can see
+let MAIL_CH    = null;                  // realtime subscription
+let MAIL_UNREAD = 0;
+let MAIL_REDRAW = null;                 // repaint hook for an open Mail window
+
+const mlAddr  = p => p ? p.handle+"@"+MAIL_DOMAIN : "";
+const mlSize  = n => n<1024 ? n+" B" : n<1048576 ? (n/1024).toFixed(0)+" KB" : (n/1048576).toFixed(1)+" MB";
+function mlSlug(s){
+  return String(s||"").toLowerCase().replace(/[^a-z0-9._-]/g,"")
+         .replace(/^[._-]+/,"").replace(/[._-]+$/,"").slice(0,24);
+}
+/* A friendly name for a message's other end. Falls back to the raw id only if
+   somebody deleted their account mid-conversation. */
+function mlWho(id){
+  if(MY_PROFILE && id===MY_PROFILE.id) return mlAddr(MY_PROFILE);
+  const p=MAIL_DIR.find(x=>x.id===id);
+  return p ? mlAddr(p) : "someone@"+MAIL_DOMAIN;
+}
+function mlWhen(ts){
+  const d=new Date(ts), now=new Date();
+  const sameDay = d.toDateString()===now.toDateString();
+  if(sameDay) return d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  const days=Math.floor((now-d)/86400000);
+  if(days<7) return d.toLocaleDateString([], {weekday:"short"})+" "+d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+  return d.toLocaleDateString([], {day:"numeric",month:"short"});
+}
+
+/* ---- account plumbing ---- */
+async function mlLoadProfile(){
+  if(!SB||!ACCT) return null;
+  try{
+    const {data}=await SB.from("profiles").select("*").eq("id",ACCT.id).maybeSingle();
+    MY_PROFILE=data||null;
+  }catch(e){ MY_PROFILE=null; }
+  return MY_PROFILE;
+}
+/* Claim a handle. The unique index is the referee, not a lookup-then-insert —
+   two people signing up at once would both pass the lookup. On a collision we
+   try the next number down, unless the collision is our own primary key, which
+   just means the row already existed. */
+async function mlClaim(want){
+  if(!SB||!ACCT) return {ok:false,err:"You're offline."};
+  const base=mlSlug(want)||"user";
+  let cand=base.length>=3 ? base : (base+"user").slice(0,6);
+  for(let i=2;i<16;i++){
+    let res;
+    try{ res=await SB.from("profiles").insert({id:ACCT.id,handle:cand}).select().single(); }
+    catch(e){ return {ok:false,err:"Couldn't reach your account."}; }
+    if(!res.error){ MY_PROFILE=res.data; return {ok:true}; }
+    if(res.error.code!=="23505") return {ok:false,err:res.error.message};
+    const mine=await SB.from("profiles").select("*").eq("id",ACCT.id).maybeSingle();
+    if(mine.data){ MY_PROFILE=mine.data; return {ok:true,existed:true}; }
+    cand=(base.slice(0,22)+i);
+  }
+  return {ok:false,err:"Every version of that address is taken. Try a different one."};
+}
+async function mlRename(want){
+  const h=mlSlug(want);
+  if(h.length<3) return {ok:false,err:"An address needs at least 3 characters (letters, numbers, dot, dash, underscore)."};
+  const {data,error}=await SB.from("profiles").update({handle:h}).eq("id",ACCT.id).select().single();
+  if(error) return {ok:false,err:error.code==="23505" ? "That address is already taken." : error.message};
+  MY_PROFILE=data; return {ok:true};
+}
+async function mlLoadDir(){
+  try{
+    const {data}=await SB.from("profiles").select("id,handle,display_name").order("handle");
+    MAIL_DIR=data||[];
+  }catch(e){}
+  return MAIL_DIR;
+}
+async function mlLoad(){
+  if(!SB||!ACCT) return MAIL_ROWS;
+  try{
+    const {data,error}=await SB.from("mail").select("*").order("created_at",{ascending:false}).limit(300);
+    if(error) throw error;
+    MAIL_ROWS=data||[];
+  }catch(e){}
+  mlCountUnread();
+  return MAIL_ROWS;
+}
+function mlCountUnread(){
+  MAIL_UNREAD = ACCT ? MAIL_ROWS.filter(m=>m.to_id===ACCT.id && !m.is_read && !m.del_in).length : 0;
+  mlPaintBadge();
+}
+function mlPaintBadge(){
+  document.querySelectorAll('#tb-apps [data-app="mail"]').forEach(b=>{
+    let s=b.querySelector(".tb-badge");
+    if(MAIL_UNREAD>0){
+      if(!s){ s=el("span","tb-badge"); b.appendChild(s); }
+      s.textContent = MAIL_UNREAD>99 ? "99+" : String(MAIL_UNREAD);
+    }else if(s) s.remove();
+  });
+}
+/* Live delivery. The filter is server-side, so we're only woken for our own mail. */
+function mlWatch(){
+  if(!SB||!ACCT||MAIL_CH) return;
+  try{
+    MAIL_CH=SB.channel("mail-"+ACCT.id)
+      .on("postgres_changes",
+          {event:"INSERT",schema:"public",table:"mail",filter:"to_id=eq."+ACCT.id},
+          async p=>{
+            const m=p.new;
+            if(MAIL_ROWS.some(x=>x.id===m.id)) return;
+            MAIL_ROWS.unshift(m);
+            if(!MAIL_DIR.some(x=>x.id===m.from_id)) await mlLoadDir();
+            mlCountUnread();
+            notify({icon:"📬",title:"New mail from "+mlWho(m.from_id),body:m.subject||"(no subject)"});
+            if(MAIL_REDRAW) try{ MAIL_REDRAW(); }catch(e){}
+          })
+      .subscribe();
+  }catch(e){}
+}
+async function mlInit(){
+  if(!SB||!ACCT) return;
+  await mlLoadProfile();
+  await mlLoadDir();
+  await mlLoad();
+  mlWatch();
+}
+
+/* ---- sending ---- */
+/* The rate limits are database triggers, so they come back as insert errors.
+   Turn them into something a human can act on — and never clear the compose
+   window on failure, or a bounced message is a lost one. */
+function mlErr(e){
+  const m=String((e&&(e.message||e.error_description))||"");
+  if(m.indexOf("MAIL_BURST_LIMIT")>=0)  return "You're sending too fast — the limit is 3 a minute. Wait a moment, your message is still here.";
+  if(m.indexOf("MAIL_RATE_LIMIT")>=0)   return "That's 60 mails this hour, which is the limit. Try again later.";
+  if(m.indexOf("MAIL_ATTACH_LIMIT")>=0) return "You've sent 10 files this hour, which is the limit. Send it without the attachment, or try again later.";
+  if(m.indexOf("check constraint")>=0)  return "That message is longer than the 1000-character limit.";
+  if(m.indexOf("row-level security")>=0 || m.indexOf("foreign key")>=0)
+    return "That address doesn't exist any more — the account may have been deleted.";
+  if(/fetch|network|timeout|offline/i.test(m))
+    return "Couldn't reach your account. Check your connection — the message is still here.";
+  /* Anything unplanned still shows its real text, because a vague "something
+     went wrong" is useless when it's you reading it. It just gets a sentence
+     in front so it doesn't read like the app broke on your behalf. */
+  return m ? "Couldn't send that — the server said: "+m : "Couldn't send that.";
+}
+/* An attachment is a serialized file system node, so anything you can make in
+   WinClone survives the trip — a .py script arrives as a runnable .py script.
+   Imported music is the exception: the audio lives in IndexedDB, not in the
+   node, so all that would arrive is a pointer to a song they don't have. */
+async function mlUpload(name,node){
+  const payload=JSON.stringify({v:1,name,node});
+  const size=payload.length;
+  if(size>MAIL_ATT_MAX) return {ok:false,err:"That file is "+mlSize(size)+" once packed, and the limit is 1 MB."};
+  const path=ACCT.id+"/"+Date.now()+"-"+Math.random().toString(36).slice(2,8)+".wcf";
+  try{
+    const {error}=await SB.storage.from("mail").upload(path,new Blob([payload],{type:"application/json"}),{contentType:"application/json"});
+    if(error) throw error;
+  }catch(e){ return {ok:false,err:"Couldn't upload the file: "+((e&&e.message)||"unknown error")}; }
+  return {ok:true,path,size};
+}
+async function mlSend(o){
+  if(!SB||!ACCT) return {ok:false,err:"You're offline — mail needs your account."};
+  const row={from_id:ACCT.id,to_id:o.to_id,
+             subject:String(o.subject||"").slice(0,120),
+             body:String(o.body||"").slice(0,MAIL_BODY_MAX)};
+  if(o.att){ row.att_name=o.att.name.slice(0,64); row.att_path=o.att.path; row.att_size=o.att.size; }
+  const {data,error}=await SB.from("mail").insert(row).select().single();
+  if(error) return {ok:false,err:mlErr(error)};
+  MAIL_ROWS.unshift(data);
+  return {ok:true,row:data};
+}
+async function mlFlag(m,patch){
+  Object.assign(m,patch);
+  mlCountUnread();
+  try{ await SB.from("mail").update(patch).eq("id",m.id); }catch(e){}
+}
+/* Deleting is one-sided: your copy goes, theirs doesn't. Once both ends have
+   binned it nobody can ever read it again, so the row (and its file) go for real. */
+async function mlDelete(m){
+  const mine = m.to_id===ACCT.id ? {del_in:true} : {del_out:true};
+  await mlFlag(m,mine);
+  if(m.del_in && m.del_out) await mlPurge(m);
+}
+async function mlPurge(m){
+  try{ await SB.from("mail").delete().eq("id",m.id); }catch(e){}
+  if(m.att_path && m.from_id===ACCT.id){ try{ await SB.storage.from("mail").remove([m.att_path]); }catch(e){} }
+  MAIL_ROWS=MAIL_ROWS.filter(x=>x.id!==m.id);
+  mlCountUnread();
+}
+async function mlSaveAttachment(m){
+  let pack;
+  try{
+    const {data,error}=await SB.storage.from("mail").download(m.att_path);
+    if(error) throw error;
+    pack=JSON.parse(await data.text());
+  }catch(e){
+    winDialog({icon:"⚠️",title:"Couldn't open the file",msg:"The attachment couldn't be downloaded. The sender may have deleted it."});
+    return;
+  }
+  const dl=nodeAt([...HOME_PATH,"Downloads"]);
+  if(!dl){ winDialog({icon:"⚠️",title:"No Downloads folder",msg:"Couldn't find C:\\Users\\User\\Downloads to save it into."}); return; }
+  const base=pack.name||m.att_name||"attachment";
+  let name=base, i=1;
+  while(dl.children[name]){
+    i++;
+    const dot=base.lastIndexOf(".");
+    name = dot>0 ? base.slice(0,dot)+" ("+i+")"+base.slice(dot) : base+" ("+i+")";
+  }
+  dl.children[name]=pack.node;
+  saveFS(); try{ renderDesktopIcons(); }catch(e){}
+  notify({icon:"📥",title:"Saved to Downloads",body:name});
+}
+
+/* ---- picking a file to attach ---- */
+function mlPickFile(cb){
+  const files=[];
+  (function walk(node,path){
+    Object.keys(node.children||{}).forEach(k=>{
+      const it=node.children[k];
+      if(it.folder) walk(it,path+k+"\\");
+      else if(!it.sys) files.push({name:k,path:path+k,node:it});
+    });
+  })({children:VFS},"");
+  const d=winDialog({icon:"📎",title:"Attach a file",
+    msg:`<div class="ml-pick">${files.length?"":"<div class='ml-pick-empty'>No files to attach.</div>"}</div>`,
+    buttons:[{label:"Cancel"}]});
+  const box=d.querySelector(".ml-pick");
+  files.forEach(f=>{
+    const row=el("div","ml-pick-row",
+      `<span class="mp-ic">${f.node.icon||"📄"}</span>
+       <div class="mp-meta"><b>${esc(f.name)}</b><small>${esc(f.path)}</small></div>`);
+    row.onclick=()=>{
+      if(f.node.audio){
+        winDialog({icon:"🎵",title:"Music can't be mailed",
+          msg:"Imported songs are kept in this browser's larger store, not in the file itself — all that would arrive is a pointer to a track they don't have."});
+        return;
+      }
+      d.remove(); cb(f);
+    };
+    box.appendChild(row);
+  });
+}
+
+/* ---- the app ---- */
+function buildMail(body,win){
+  let folder="inbox", openId=null, composing=null;
+
+  const mine    = ()=>MAIL_ROWS.filter(m=>!(m.to_id===ACCT.id?m.del_in:m.del_out));
+  const inbox   = ()=>mine().filter(m=>m.to_id===ACCT.id);
+  const sent    = ()=>mine().filter(m=>m.from_id===ACCT.id && m.to_id!==ACCT.id);
+  const starred = ()=>mine().filter(m=>m.starred);
+  const trash   = ()=>MAIL_ROWS.filter(m=>(m.to_id===ACCT.id?m.del_in:m.del_out));
+  const FOLDERS={inbox:{icon:"📥",label:"Inbox",get:inbox},
+                 starred:{icon:"⭐",label:"Starred",get:starred},
+                 sent:{icon:"📤",label:"Sent",get:sent},
+                 trash:{icon:"🗑️",label:"Trash",get:trash}};
+
+  /* Signed out or offline: mail is the one thing that genuinely can't work locally. */
+  if(!SB||!ACCT){
+    body.innerHTML=`<div class="ml-blocked">
+      <div class="ml-bic">📪</div><b>Mail needs your WinClone account</b>
+      <span>You're running this PC offline, so there's nobody to deliver to.
+      Sign in from Start ▸ Power ▸ Sign out of WinClone and mail comes back.</span></div>`;
+    return;
+  }
+
+  const draw=async()=>{
+    if(!document.body.contains(body)){ MAIL_REDRAW=null; return; }
+    if(!MY_PROFILE){ drawClaim(); return; }
+    body.innerHTML=`<div class="ml">
+      <div class="ml-side">
+        <button class="ml-new">✉️ New mail</button>
+        <div class="ml-folders"></div>
+        <div class="ml-me">
+          <small>Your address</small>
+          <b class="ml-addr" title="Click to change">${esc(mlAddr(MY_PROFILE))}</b>
+        </div>
+      </div>
+      <div class="ml-list"></div>
+      <div class="ml-read"></div>
+    </div>`;
+    const fl=body.querySelector(".ml-folders");
+    Object.keys(FOLDERS).forEach(k=>{
+      const f=FOLDERS[k];
+      const n=k==="inbox" ? inbox().filter(m=>!m.is_read).length : 0;
+      const b=el("button","ml-fold"+(folder===k?" on":""),
+        `<span>${f.icon}</span><b>${f.label}</b>${n?`<i>${n}</i>`:""}`);
+      b.onclick=()=>{ folder=k; openId=null; draw(); };
+      fl.appendChild(b);
+    });
+    body.querySelector(".ml-new").onclick=()=>openCompose({});
+    body.querySelector(".ml-addr").onclick=()=>{
+      inputDialog({title:"Change your mail address",ok:"Save",value:MY_PROFILE.handle,
+        cb:async v=>{
+          const r=await mlRename(v);
+          if(!r.ok) winDialog({icon:"⚠️",title:"Couldn't change it",msg:esc(r.err)});
+          else { await mlLoadDir(); draw(); notify({icon:"📧",title:"Address changed",body:mlAddr(MY_PROFILE)}); }
+        }});
+    };
+    drawList(); drawRead();
+  };
+
+  const drawList=()=>{
+    const list=body.querySelector(".ml-list"); if(!list) return;
+    const rows=FOLDERS[folder].get();
+    list.innerHTML=`<div class="ml-lhead">${FOLDERS[folder].icon} ${FOLDERS[folder].label}
+      <span>${rows.length}</span></div>`;
+    if(!rows.length){
+      list.insertAdjacentHTML("beforeend",
+        `<div class="ml-empty">Nothing in ${esc(FOLDERS[folder].label.toLowerCase())}.</div>`);
+      return;
+    }
+    rows.forEach(m=>{
+      const out=m.from_id===ACCT.id && folder!=="inbox";
+      const unread=m.to_id===ACCT.id && !m.is_read;
+      const row=el("div","ml-row"+(openId===m.id?" on":"")+(unread?" unread":""),
+        `<div class="ml-rtop">
+           <b>${esc(out?"To "+mlWho(m.to_id):mlWho(m.from_id))}</b>
+           <small>${esc(mlWhen(m.created_at))}</small>
+         </div>
+         <div class="ml-rsub">${m.starred?"⭐ ":""}${m.att_path?"📎 ":""}${esc(m.subject||"(no subject)")}</div>
+         <div class="ml-rpre">${esc((m.body||"").slice(0,90))}</div>`);
+      row.onclick=()=>{
+        openId=m.id;
+        if(m.to_id===ACCT.id && !m.is_read) mlFlag(m,{is_read:true});
+        draw();
+      };
+      list.appendChild(row);
+    });
+  };
+
+  const drawRead=()=>{
+    const pane=body.querySelector(".ml-read"); if(!pane) return;
+    const m=MAIL_ROWS.find(x=>x.id===openId);
+    if(!m){
+      pane.innerHTML=`<div class="ml-none"><div class="ml-bic">📬</div>
+        <span>Pick a message to read it.</span></div>`;
+      return;
+    }
+    pane.innerHTML=`<div class="ml-msg">
+      <div class="ml-mhead">
+        <h2>${esc(m.subject||"(no subject)")}</h2>
+        <div class="ml-mmeta">
+          <span><b>From</b> ${esc(mlWho(m.from_id))}</span>
+          <span><b>To</b> ${esc(mlWho(m.to_id))}</span>
+          <span>${esc(new Date(m.created_at).toLocaleString())}</span>
+        </div>
+        <div class="ml-macts"></div>
+      </div>
+      <div class="ml-mbody">${esc(m.body||"")}</div>
+      ${m.att_path?`<div class="ml-att">
+        <span class="ml-aic">📎</span>
+        <div class="ml-ameta"><b>${esc(m.att_name||"attachment")}</b><small>${esc(mlSize(m.att_size||0))}</small></div>
+        <button class="ml-abtn">Save to Downloads</button></div>`:""}
+    </div>`;
+    const acts=pane.querySelector(".ml-macts");
+    const mk=(label,fn,cls)=>{ const b=el("button","ml-act"+(cls?" "+cls:""),label); b.onclick=fn; acts.appendChild(b); };
+    if(m.from_id!==ACCT.id) mk("↩️ Reply",()=>openCompose({
+      to:mlWho(m.from_id),
+      subject:/^re:/i.test(m.subject||"")?m.subject:"Re: "+(m.subject||"")
+    }));
+    mk(m.starred?"⭐ Starred":"☆ Star",()=>{ mlFlag(m,{starred:!m.starred}); draw(); });
+    if(folder==="trash"){
+      mk("🔥 Delete forever",()=>{
+        winDialog({icon:"🔥",title:"Delete forever",
+          msg:"This removes your copy for good. The other person keeps theirs unless they've deleted it too.",
+          buttons:[{label:"Delete forever",primary:true,action:async()=>{ await mlPurge(m); openId=null; draw(); }},{label:"Cancel"}]});
+      },"warn");
+    }else{
+      mk("🗑️ Delete",async()=>{ await mlDelete(m); openId=null; draw(); });
+    }
+    const ab=pane.querySelector(".ml-abtn");
+    if(ab) ab.onclick=async()=>{ ab.disabled=true; ab.textContent="Saving…"; await mlSaveAttachment(m); ab.disabled=false; ab.textContent="Save to Downloads"; };
+  };
+
+  /* First run: you get your email's name by default, but you can change it
+     before it's locked in — plenty of people don't want their real gmail
+     name visible to everyone in the address book. */
+  const drawClaim=()=>{
+    const guess=mlSlug((ACCT.email||"").split("@")[0])||"user";
+    body.innerHTML=`<div class="ml-claim">
+      <div class="ml-bic">📧</div>
+      <b>Set up WinClone Mail</b>
+      <span>Pick the name that goes in front of the @. This is what other
+      WinClone users will see, so it doesn't have to be your real one.</span>
+      <div class="ml-crow"><input class="ml-cin" maxlength="24" value="${esc(guess)}"><span>@${MAIL_DOMAIN}</span></div>
+      <div class="ml-cerr"></div>
+      <button class="ml-cgo">Create my address</button>
+    </div>`;
+    const inp=body.querySelector(".ml-cin"), err=body.querySelector(".ml-cerr"), go=body.querySelector(".ml-cgo");
+    go.onclick=async()=>{
+      const v=mlSlug(inp.value);
+      if(v.length<3){ err.textContent="At least 3 characters — letters, numbers, dot, dash or underscore."; return; }
+      go.disabled=true; go.textContent="Creating…"; err.textContent="";
+      const r=await mlClaim(v);
+      go.disabled=false; go.textContent="Create my address";
+      if(!r.ok){ err.textContent=r.err; return; }
+      await mlLoadDir(); await mlLoad();
+      notify({icon:"📧",title:"Mail is ready",body:"You are "+mlAddr(MY_PROFILE)});
+      draw();
+    };
+    inp.onkeydown=e=>{ if(e.key==="Enter") go.click(); };
+  };
+
+  const openCompose=(pre)=>{
+    if(composing) composing.remove();
+    const dlId="mldir"+Math.random().toString(36).slice(2,7);
+    const pane=el("div","ml-comp",`
+      <div class="ml-chead">New message<button class="ml-cx">✕</button></div>
+      <label>To</label>
+      <input class="ml-cto" list="${dlId}" placeholder="someone@${MAIL_DOMAIN}" value="${esc(pre.to||"")}">
+      <datalist id="${dlId}">${MAIL_DIR.map(p=>`<option value="${esc(mlAddr(p))}">`).join("")}</datalist>
+      <label>Subject</label>
+      <input class="ml-csub" maxlength="120" value="${esc(pre.subject||"")}">
+      <label>Message <i class="ml-count">0 / ${MAIL_BODY_MAX}</i></label>
+      <textarea class="ml-cbody" maxlength="${MAIL_BODY_MAX}"></textarea>
+      <div class="ml-cfile"></div>
+      <div class="ml-cerr2"></div>
+      <div class="ml-cfoot">
+        <button class="ml-cattach">📎 Attach</button>
+        <button class="ml-csend">Send</button>
+      </div>`);
+    body.querySelector(".ml").appendChild(pane);
+    composing=pane;
+    const to=pane.querySelector(".ml-cto"), sub=pane.querySelector(".ml-csub"),
+          bd=pane.querySelector(".ml-cbody"), cnt=pane.querySelector(".ml-count"),
+          err=pane.querySelector(".ml-cerr2"), fileBox=pane.querySelector(".ml-cfile"),
+          send=pane.querySelector(".ml-csend");
+    let picked=null;
+    bd.oninput=()=>{ cnt.textContent=bd.value.length+" / "+MAIL_BODY_MAX;
+                     cnt.classList.toggle("full",bd.value.length>=MAIL_BODY_MAX); };
+    pane.querySelector(".ml-cx").onclick=()=>{ pane.remove(); composing=null; };
+    pane.querySelector(".ml-cattach").onclick=()=>mlPickFile(f=>{
+      picked=f;
+      fileBox.innerHTML=`<span class="ml-fic">${f.node.icon||"📄"}</span>
+        <b>${esc(f.name)}</b><button class="ml-fx">✕</button>`;
+      fileBox.querySelector(".ml-fx").onclick=()=>{ picked=null; fileBox.innerHTML=""; };
+    });
+    send.onclick=async()=>{
+      err.textContent="";
+      const want=mlSlug(String(to.value).split("@")[0]);
+      const target=MAIL_DIR.find(p=>p.handle===want);
+      if(!target){ err.textContent="No WinClone user has that address. Check the spelling — the list drops down as you type."; return; }
+      if(!bd.value.trim() && !picked){ err.textContent="The message is empty."; return; }
+      /* maxlength stops typing and pasting but not text dropped into the box,
+         and mlSend would quietly cut the overflow off. Refuse instead — losing
+         the end of somebody's message without telling them is worse. */
+      if(bd.value.length>MAIL_BODY_MAX){
+        err.textContent="That message is "+bd.value.length+" characters and the limit is "+MAIL_BODY_MAX+". Trim it and send again.";
+        return;
+      }
+      send.disabled=true; send.textContent="Sending…";
+      let att=null;
+      if(picked){
+        const up=await mlUpload(picked.name,picked.node);
+        if(!up.ok){ err.textContent=up.err; send.disabled=false; send.textContent="Send"; return; }
+        att={name:picked.name,path:up.path,size:up.size};
+      }
+      const r=await mlSend({to_id:target.id,subject:sub.value,body:bd.value,att});
+      send.disabled=false; send.textContent="Send";
+      if(!r.ok){ err.textContent=r.err; return; }     // draft stays put on failure
+      pane.remove(); composing=null;
+      notify({icon:"📤",title:"Mail sent",body:"To "+mlAddr(target)});
+      folder="sent"; openId=r.row.id; draw();
+    };
+    (pre.to?sub:to).focus();
+  };
+
+  MAIL_REDRAW=()=>{ if(!composing) draw(); else { drawList(); mlPaintBadge(); } };
+  (async()=>{
+    if(!MY_PROFILE) await mlLoadProfile();
+    if(!MAIL_DIR.length) await mlLoadDir();
+    if(!MAIL_ROWS.length) await mlLoad();
+    mlWatch();
+    draw();
+  })();
 }
 
 /* ============================ LOCK SCREEN / PASSWORD ============================
