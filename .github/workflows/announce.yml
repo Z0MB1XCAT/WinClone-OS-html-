@@ -1,0 +1,71 @@
+name: Announce update to Discord
+
+on:
+  push:
+    branches: [main]
+    paths: ['app.js']
+  workflow_dispatch:
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Read version and changelog
+        id: read
+        run: |
+          node -e '
+            const fs = require("fs"), cp = require("child_process");
+            function parse(src){
+              const ver = (src.match(/WC_VERSION\s*=\s*"([^"]+)"/) || [])[1] || null;
+              const lit = (src.match(/const WC_CHANGELOG = \{[\s\S]*?\n\};/) || [])[0];
+              let log = {};
+              if (lit) { try { log = eval("(" + lit.replace(/^const WC_CHANGELOG = /, "").replace(/;$/, "") + ")"); } catch (e) {} }
+              return { ver, log };
+            }
+            const now = parse(fs.readFileSync("app.js", "utf8"));
+            let before = null;
+            try { before = parse(cp.execSync("git show HEAD~1:app.js", { encoding: "utf8" })).ver; } catch (e) {}
+            const changed = now.ver && now.ver !== before;
+            const notes = (now.log[now.ver] || []).join("\n\n");
+            const out = process.env.GITHUB_OUTPUT;
+            fs.appendFileSync(out, "changed=" + (changed ? "yes" : "no") + "\n");
+            fs.appendFileSync(out, "version=" + (now.ver || "") + "\n");
+            fs.appendFileSync(out, "notes<<WCEOF\n" + notes + "\nWCEOF\n");
+            console.log("previous:", before, "→ current:", now.ver, "| announcing:", changed);
+          '
+
+      - name: Post to Discord
+        if: steps.read.outputs.changed == 'yes'
+        env:
+          HOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ROLE: ${{ secrets.DISCORD_ROLE_ID }}
+          VERSION: ${{ steps.read.outputs.version }}
+          NOTES: ${{ steps.read.outputs.notes }}
+        run: |
+          node -e '
+            const notes = process.env.NOTES || "";
+            const role  = process.env.ROLE;
+            const payload = {
+              content: (role ? "<@&" + role + "> " : "") +
+                       "WinClone version " + process.env.VERSION + " has released! whats new?",
+              embeds: [{
+                title: "WinClone " + process.env.VERSION,
+                description: notes.slice(0, 4000),
+                color: 0x0078d7,
+                url: "https://turkballbredissus.github.io/WinClone-OS-html-/"
+              }],
+              allowed_mentions: { parse: [], roles: role ? [role] : [] }
+            };
+            fetch(process.env.HOOK, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            }).then(r => {
+              if (!r.ok) return r.text().then(t => { throw new Error(r.status + " " + t); });
+              console.log("posted");
+            }).catch(e => { console.error(e.message); process.exit(1); });
+          '
