@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Bing Flight Simulator — sandbox harness</title>
+<!--
+  Reproduces WinClone's HTML Viewer exactly, and it is the only environment that
+  tells the truth about what the simulator can do.
+
+  WinClone (app.js:10692) does:
+      <iframe class="hv-frame" sandbox="allow-scripts allow-modals allow-popups">
+      f.srcdoc = html;
+
+  Two details matter and are easy to get wrong:
+
+  1. srcdoc, NOT src. Pointing src at a same-origin file gives the frame a real
+     origin, so localStorage works, and you would develop happily against
+     capabilities that vanish the moment the thing is imported for real. srcdoc
+     under this sandbox list yields an opaque origin, which is the whole point.
+
+  2. The sandbox list has no allow-same-origin, no allow-pointer-lock and no
+     allowfullscreen. That is not an oversight to work around — it is the
+     contract the simulator is built to.
+
+  Serve, don't file://:  python3 -m http.server 8000
+      http://localhost:8000/flightsim/sandbox.html
+-->
+<style>
+  html,body{margin:0;height:100%;background:#1b1f25;color:#c9d3dd;
+    font:13px Consolas,"DejaVu Sans Mono",monospace}
+  header{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#252b33;
+    border-bottom:1px solid #333b45;flex-wrap:wrap}
+  button{font:inherit;font-size:12px;background:#333b45;color:#c9d3dd;border:1px solid #434d59;
+    border-radius:3px;padding:4px 10px;cursor:pointer}
+  button:hover{background:#3d4650}
+  button.on{background:#2d6fb5;border-color:#3d84cf;color:#fff}
+  #size{margin-left:auto;color:#8b97a3;font-size:11px}
+  #wrap{padding:18px;display:flex;justify-content:center}
+  /* mirrors WinClone: the window body, minus the ~34px HTML Viewer chrome bar */
+  #shell{background:#dfe3e8;border:1px solid #c4c9cf;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+  #bar{height:34px;display:flex;align-items:center;padding:0 12px;color:#333;font-size:11px}
+  iframe{display:block;border:0;width:100%;background:#fff}
+</style>
+<body>
+<header>
+  <span>viewport</span>
+  <button data-w="760"  data-h="526" class="on">760×560 (default)</button>
+  <button data-w="1024" data-h="734">1024×768</button>
+  <button data-w="1440" data-h="866">1440×900</button>
+  <button data-w="0"    data-h="0">maximised</button>
+  <button id="reload">reload</button>
+  <button id="selftest">reload with ?selftest=1</button>
+  <span id="size">measuring…</span>
+</header>
+<div id="wrap">
+  <div id="shell">
+    <div id="bar">🌐 file:///C:/…/BingFlightSimulator.html</div>
+    <iframe id="f" sandbox="allow-scripts allow-modals allow-popups"></iframe>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var f = document.getElementById("f"), shell = document.getElementById("shell"),
+      wrap = document.getElementById("wrap"), sizeEl = document.getElementById("size"),
+      html = null, query = "";
+
+  function setSize(w, h) {
+    if (!w) {
+      shell.style.width = "100%";
+      f.style.height = (wrap.clientHeight - 34 - 2) + "px";
+    } else {
+      shell.style.width = w + "px";
+      f.style.height = h + "px";
+    }
+  }
+
+  function boot() {
+    if (html == null) return;
+    /* A srcdoc document has no query string, and history.replaceState throws in
+       an opaque origin — so parameters ride in on a global the shell also reads. */
+    var doc = query
+      ? html.replace('<meta charset="utf-8">',
+          '<meta charset="utf-8">\n<script>window.__BFS_PARAMS__=' +
+          JSON.stringify(query) + "<\/script>")
+      : html;
+    f.srcdoc = doc;
+  }
+
+  fetch("BingFlightSimulator.html", { cache: "no-store" })
+    .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); })
+    .then(function (t) {
+      html = t;
+      var bytes = new TextEncoder().encode(t).length;
+      sizeEl.textContent =
+        (bytes / 1024).toFixed(1) + " KB file · " +
+        (JSON.stringify(t).length / 1024).toFixed(1) + " KB JSON-escaped (what WinClone pays)";
+      boot();
+    })
+    .catch(function (e) {
+      sizeEl.textContent = "could not load build: " + e.message + " — run: node flightsim/build.mjs";
+    });
+
+  [].forEach.call(document.querySelectorAll("button[data-w]"), function (b) {
+    b.onclick = function () {
+      document.querySelectorAll("button[data-w]").forEach(function (o) { o.classList.remove("on"); });
+      b.classList.add("on");
+      setSize(+b.dataset.w, +b.dataset.h);
+    };
+  });
+  document.getElementById("reload").onclick = function () { query = ""; boot(); };
+  document.getElementById("selftest").onclick = function () { query = "?selftest=1"; boot(); };
+
+  setSize(760, 526);
+  addEventListener("resize", function () {
+    var on = document.querySelector("button[data-w].on");
+    setSize(+on.dataset.w, +on.dataset.h);
+  });
+})();
+</script>
+</body>
+</html>

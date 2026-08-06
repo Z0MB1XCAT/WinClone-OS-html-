@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bing Flight Simulator — dev</title>
+<!--
+  Development loader. Reads manifest.json and injects one <script> per source
+  file, in the same order build.mjs concatenates them. No build step, real
+  file/line stack traces, edit-and-refresh.
+
+  Serve it, don't open it from file:// — the manifest fetch needs http:
+      python3 -m http.server 8000        then  http://localhost:8000/flightsim/dev.html
+
+  This is the 99% loop, but it is NOT the truth: dev.html runs same-origin, so
+  localStorage works and pointer lock is available here when they are not in
+  WinClone. Check every change against sandbox.html before believing it.
+-->
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#05070c;
+    font-family:Consolas,"DejaVu Sans Mono",monospace;color:#c8d2dd;
+    -webkit-user-select:none;user-select:none;touch-action:none}
+  #stage{position:absolute;inset:0}
+  #gl{display:block;width:100%;height:100%;background:#05070c}
+  #ovl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;background:#05070c;text-align:center;padding:24px;
+    box-sizing:border-box;z-index:10}
+  #ovl.gone{display:none}
+  .bfs-logo{font-size:26px;letter-spacing:.34em;color:#e8eef5;font-weight:700}
+  .bfs-logo small{display:block;font-size:11px;letter-spacing:.22em;color:#5c9ad6;
+    margin-top:7px;font-weight:400}
+  #msg{font-size:12px;color:#7d8b99;max-width:46ch;line-height:1.65}
+  #go{margin-top:6px;padding:9px 26px;font:inherit;font-size:13px;letter-spacing:.1em;
+    color:#05070c;background:#5c9ad6;border:0;border-radius:2px;cursor:pointer}
+  #go[disabled]{background:#2b3644;color:#66727f;cursor:default}
+  .pill{position:absolute;left:8px;bottom:8px;font-size:10px;color:#6c7a88;
+    background:rgba(6,10,16,.72);padding:3px 8px;border-radius:2px;z-index:5;display:none}
+  .devtag{position:absolute;right:8px;bottom:8px;font-size:10px;color:#8a6d3b;
+    background:rgba(6,10,16,.72);padding:3px 8px;border-radius:2px;z-index:6}
+</style>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div class="pill" id="pill"></div>
+  <div class="devtag">DEV — same-origin, not the real sandbox</div>
+  <div id="ovl">
+    <div class="bfs-logo">BING<small>FLIGHT SIMULATOR</small></div>
+    <div id="msg">Loading modules…</div>
+    <button id="go" disabled>CLICK TO START</button>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var msg = document.getElementById("msg");
+  function inject(src) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = src; s.async = false;
+      s.onload = res;
+      s.onerror = function () { rej(new Error("failed to load " + src)); };
+      document.head.appendChild(s);
+    });
+  }
+  fetch("manifest.json", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (m) {
+      window.BFS = window.BFS || {};
+      return m.files.reduce(function (chain, f) {
+        return chain.then(function () {
+          msg.textContent = "Loading " + f.p + "…";
+          return inject("src/" + f.p);
+        });
+      }, Promise.resolve());
+    })
+    .then(function () {
+      return window.BFS.main({
+        canvas: document.getElementById("gl"),
+        overlay: document.getElementById("ovl"),
+        message: msg,
+        button: document.getElementById("go"),
+        pill: document.getElementById("pill"),
+        params: new URLSearchParams(location.search)
+      });
+    })
+    .catch(function (e) {
+      msg.style.color = "#e0574a";
+      msg.textContent = e && e.stack ? e.stack : String(e);
+      console.error(e);
+    });
+})();
+</script>
+</body>
+</html>

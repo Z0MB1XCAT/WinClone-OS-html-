@@ -1,0 +1,20 @@
+{
+  "name": "Bing Flight Simulator",
+  "phase": 0,
+  "namespace": "BFS",
+  "limits": {
+    "linesWarn": 700,
+    "linesFail": 900,
+    "jsonEscapedFail": 450000,
+    "seedDemBytesFail": 82000
+  },
+  "files": [
+    { "p": "core/util.js",    "why": "Scalar math, filters, PRNG, and the single safeStorage shim" },
+    { "p": "core/vecmat.js",  "why": "Float64 vec3/mat4/quat with out-params, no hot-path allocation" },
+    { "p": "core/geo.js",     "why": "WGS84 geodetic/ECEF/ENU, rebasable origin, slippy-tile math" },
+    { "p": "core/clock.js",   "why": "Fixed-step accumulator, dt clamping, visibility pause, watchdog" },
+    { "p": "core/state.js",   "why": "The sim state tree; owns the truth/adr split" },
+    { "p": "ui/selftest.js",  "why": "Boot-time assertions about the sandbox we actually run in" },
+    { "p": "main.js",         "why": "BFS.main entry point: wiring, the loop, and the boot overlay" }
+  ]
+}

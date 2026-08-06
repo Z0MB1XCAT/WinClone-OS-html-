@@ -1,0 +1,1001 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bing Flight Simulator</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#05070c;
+    font-family:Consolas,"DejaVu Sans Mono",monospace;color:#c8d2dd;
+    -webkit-user-select:none;user-select:none;touch-action:none}
+  #stage{position:absolute;inset:0}
+  #gl{display:block;width:100%;height:100%;background:#05070c}
+  #ovl{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;background:#05070c;text-align:center;padding:24px;
+    box-sizing:border-box;z-index:10}
+  #ovl.gone{display:none}
+  .bfs-logo{font-size:26px;letter-spacing:.34em;color:#e8eef5;font-weight:700}
+  .bfs-logo small{display:block;font-size:11px;letter-spacing:.22em;color:#5c9ad6;
+    margin-top:7px;font-weight:400}
+  #msg{font-size:12px;color:#7d8b99;max-width:46ch;line-height:1.65}
+  #err{font-size:12px;color:#e0574a;max-width:60ch;line-height:1.6;white-space:pre-wrap;
+    text-align:left;display:none}
+  #go{margin-top:6px;padding:9px 26px;font:inherit;font-size:13px;letter-spacing:.1em;
+    color:#05070c;background:#5c9ad6;border:0;border-radius:2px;cursor:pointer}
+  #go:hover{background:#7ab0e4}
+  #go[disabled]{background:#2b3644;color:#66727f;cursor:default}
+  #bar{width:230px;height:2px;background:#1a2029;overflow:hidden}
+  #bar i{display:block;height:100%;width:0;background:#5c9ad6;transition:width .18s}
+  .pill{position:absolute;left:8px;bottom:8px;font-size:10px;color:#6c7a88;
+    background:rgba(6,10,16,.72);padding:3px 8px;border-radius:2px;z-index:5;display:none}
+</style>
+<body>
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div class="pill" id="pill"></div>
+  <div id="ovl">
+    <div class="bfs-logo">BING<small>FLIGHT SIMULATOR</small></div>
+    <div id="bar"><i></i></div>
+    <div id="msg">Loading…</div>
+    <div id="err"></div>
+    <button id="go" disabled>CLICK TO START</button>
+  </div>
+</div>
+<script>
+/*! Bing Flight Simulator — © 2026. Runs inside WinClone. Built 2026-08-06. */
+(function(){"use strict";
+var BFS=(window.BFS=window.BFS||{});
+/*core/util.js*/
+BFS.Util = (function () {
+"use strict";
+var TAU = Math.PI * 2, DEG = Math.PI / 180, RAD = 180 / Math.PI;
+function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function invLerp(a, b, v) { return b === a ? 0 : (v - a) / (b - a); }
+function smoothstep(e0, e1, x) { var t = clamp(invLerp(e0, e1, x), 0, 1); return t * t * (3 - 2 * t); }
+function sign(v) { return v < 0 ? -1 : v > 0 ? 1 : 0; }
+function wrapPi(a) { a = (a + Math.PI) % TAU; if (a < 0) a += TAU; return a - Math.PI; }
+function wrap2Pi(a) { a %= TAU; return a < 0 ? a + TAU : a; }
+function wrap360(d) { d %= 360; return d < 0 ? d + 360 : d; }
+function rateLimit(cur, target, rate, dt) {
+var d = target - cur, m = rate * dt;
+return d > m ? cur + m : d < -m ? cur - m : target;
+}
+function lag(cur, target, tau, dt) {
+if (tau <= 0) return target;
+return target + (cur - target) * Math.exp(-dt / tau);
+}
+function lut(table, x) {
+var n = table.length;
+if (x <= table[0][0]) return table[0][1];
+if (x >= table[n - 1][0]) return table[n - 1][1];
+var lo = 0, hi = n - 1;
+while (hi - lo > 1) { var mid = (lo + hi) >> 1; if (table[mid][0] > x) hi = mid; else lo = mid; }
+var a = table[lo], b = table[hi];
+return a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0]);
+}
+function rng(seed) {
+var a = seed >>> 0;
+return function () {
+a = (a + 0x6D2B79F5) >>> 0;
+var t = Math.imul(a ^ (a >>> 15), 1 | a);
+t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+}
+function Ring(n) {
+this.buf = new Float64Array(n); this.n = n; this.i = 0; this.count = 0;
+}
+Ring.prototype.push = function (v) {
+this.buf[this.i] = v; this.i = (this.i + 1) % this.n;
+if (this.count < this.n) this.count++;
+};
+Ring.prototype.mean = function () {
+if (!this.count) return 0;
+var s = 0; for (var i = 0; i < this.count; i++) s += this.buf[i];
+return s / this.count;
+};
+Ring.prototype.max = function () {
+var m = -Infinity; for (var i = 0; i < this.count; i++) if (this.buf[i] > m) m = this.buf[i];
+return this.count ? m : 0;
+};
+var safeStorage = (function () {
+var backing = null, kind = "memory", mem = new Map();
+try {
+var probe = window.localStorage;
+probe.setItem("__bfs_probe__", "1");
+probe.removeItem("__bfs_probe__");
+backing = probe; kind = "localStorage";
+} catch (e) { backing = null; kind = "memory"; }
+return {
+kind: kind,
+persistent: kind === "localStorage",
+get: function (k, dflt) {
+try {
+var v = backing ? backing.getItem(k) : (mem.has(k) ? mem.get(k) : null);
+return v == null ? (dflt === undefined ? null : dflt) : v;
+} catch (e) { return dflt === undefined ? null : dflt; }
+},
+set: function (k, v) {
+try { if (backing) backing.setItem(k, String(v)); else mem.set(k, String(v)); return true; }
+catch (e) { mem.set(k, String(v)); return false; }
+},
+getJSON: function (k, dflt) {
+var raw = this.get(k, null);
+if (raw == null) return dflt;
+try { return JSON.parse(raw); } catch (e) { return dflt; }
+},
+setJSON: function (k, v) { return this.set(k, JSON.stringify(v)); }
+};
+})();
+function fmtBytes(n) {
+if (n < 1024) return n + " B";
+if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+return (n / 1048576).toFixed(1) + " MB";
+}
+return {
+TAU: TAU, DEG: DEG, RAD: RAD,
+clamp: clamp, lerp: lerp, invLerp: invLerp, smoothstep: smoothstep, sign: sign,
+wrapPi: wrapPi, wrap2Pi: wrap2Pi, wrap360: wrap360,
+rateLimit: rateLimit, lag: lag, lut: lut,
+rng: rng, Ring: Ring,
+safeStorage: safeStorage, fmtBytes: fmtBytes
+};
+})();
+/*core/vecmat.js*/
+BFS.V = (function () {
+"use strict";
+function v3(x, y, z) { var a = new Float64Array(3); a[0] = x || 0; a[1] = y || 0; a[2] = z || 0; return a; }
+function set3(o, x, y, z) { o[0] = x; o[1] = y; o[2] = z; return o; }
+function copy3(o, a) { o[0] = a[0]; o[1] = a[1]; o[2] = a[2]; return o; }
+function add3(o, a, b) { o[0] = a[0] + b[0]; o[1] = a[1] + b[1]; o[2] = a[2] + b[2]; return o; }
+function sub3(o, a, b) { o[0] = a[0] - b[0]; o[1] = a[1] - b[1]; o[2] = a[2] - b[2]; return o; }
+function scale3(o, a, s) { o[0] = a[0] * s; o[1] = a[1] * s; o[2] = a[2] * s; return o; }
+function addScaled3(o, a, b, s) { o[0] = a[0] + b[0] * s; o[1] = a[1] + b[1] * s; o[2] = a[2] + b[2] * s; return o; }
+function dot3(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function len3(a) { return Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); }
+function len3sq(a) { return a[0] * a[0] + a[1] * a[1] + a[2] * a[2]; }
+function cross3(o, a, b) {
+var x = a[1] * b[2] - a[2] * b[1],
+y = a[2] * b[0] - a[0] * b[2],
+z = a[0] * b[1] - a[1] * b[0];
+o[0] = x; o[1] = y; o[2] = z; return o;
+}
+function norm3(o, a) {
+var l = len3(a);
+if (l < 1e-12) { o[0] = 0; o[1] = 0; o[2] = 0; return o; }
+var s = 1 / l; o[0] = a[0] * s; o[1] = a[1] * s; o[2] = a[2] * s; return o;
+}
+function lerp3(o, a, b, t) {
+o[0] = a[0] + (b[0] - a[0]) * t;
+o[1] = a[1] + (b[1] - a[1]) * t;
+o[2] = a[2] + (b[2] - a[2]) * t;
+return o;
+}
+function quat() { var q = new Float64Array(4); q[0] = 1; return q; }
+function qset(o, w, x, y, z) { o[0] = w; o[1] = x; o[2] = y; o[3] = z; return o; }
+function qcopy(o, q) { o[0] = q[0]; o[1] = q[1]; o[2] = q[2]; o[3] = q[3]; return o; }
+function qmul(o, a, b) {
+var aw = a[0], ax = a[1], ay = a[2], az = a[3],
+bw = b[0], bx = b[1], by = b[2], bz = b[3];
+o[0] = aw * bw - ax * bx - ay * by - az * bz;
+o[1] = aw * bx + ax * bw + ay * bz - az * by;
+o[2] = aw * by - ax * bz + ay * bw + az * bx;
+o[3] = aw * bz + ax * by - ay * bx + az * bw;
+return o;
+}
+function qnorm(o, q) {
+var l = Math.sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+if (l < 1e-12) return qset(o, 1, 0, 0, 0);
+var s = 1 / l; o[0] = q[0] * s; o[1] = q[1] * s; o[2] = q[2] * s; o[3] = q[3] * s; return o;
+}
+function qconj(o, q) { o[0] = q[0]; o[1] = -q[1]; o[2] = -q[2]; o[3] = -q[3]; return o; }
+function qrot(o, q, v) {
+var w = q[0], x = q[1], y = q[2], z = q[3],
+vx = v[0], vy = v[1], vz = v[2];
+var tx = 2 * (y * vz - z * vy),
+ty = 2 * (z * vx - x * vz),
+tz = 2 * (x * vy - y * vx);
+o[0] = vx + w * tx + (y * tz - z * ty);
+o[1] = vy + w * ty + (z * tx - x * tz);
+o[2] = vz + w * tz + (x * ty - y * tx);
+return o;
+}
+function qrotInv(o, q, v) {
+var w = -q[0], x = q[1], y = q[2], z = q[3],
+vx = v[0], vy = v[1], vz = v[2];
+var tx = 2 * (y * vz - z * vy),
+ty = 2 * (z * vx - x * vz),
+tz = 2 * (x * vy - y * vx);
+o[0] = vx + w * tx + (y * tz - z * ty);
+o[1] = vy + w * ty + (z * tx - x * tz);
+o[2] = vz + w * tz + (x * ty - y * tx);
+return o;
+}
+function qIntegrate(o, q, omega, dt) {
+var hx = omega[0] * dt * 0.5, hy = omega[1] * dt * 0.5, hz = omega[2] * dt * 0.5;
+var w = q[0], x = q[1], y = q[2], z = q[3];
+o[0] = w + (-x * hx - y * hy - z * hz);
+o[1] = x + (w * hx + y * hz - z * hy);
+o[2] = y + (w * hy - x * hz + z * hx);
+o[3] = z + (w * hz + x * hy - y * hx);
+return qnorm(o, o);
+}
+function qSlerp(o, a, b, t) {
+var d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3], s = 1;
+if (d < 0) { d = -d; s = -1; }
+if (d > 0.9995) {
+for (var i = 0; i < 4; i++) o[i] = a[i] + (b[i] * s - a[i]) * t;
+return qnorm(o, o);
+}
+var th = Math.acos(d), st = Math.sin(th),
+wa = Math.sin((1 - t) * th) / st, wb = Math.sin(t * th) / st * s;
+for (var j = 0; j < 4; j++) o[j] = a[j] * wa + b[j] * wb;
+return o;
+}
+function qFromEuler(o, roll, pitch, yaw) {
+var cr = Math.cos(roll * 0.5), sr = Math.sin(roll * 0.5),
+cp = Math.cos(pitch * 0.5), sp = Math.sin(pitch * 0.5),
+cy = Math.cos(yaw * 0.5), sy = Math.sin(yaw * 0.5);
+o[0] = cr * cp * cy + sr * sp * sy;
+o[1] = sr * cp * cy - cr * sp * sy;
+o[2] = cr * sp * cy + sr * cp * sy;
+o[3] = cr * cp * sy - sr * sp * cy;
+return o;
+}
+function qToEuler(o, q) {
+var w = q[0], x = q[1], y = q[2], z = q[3];
+o[0] = Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y));
+var s = 2 * (w * y - z * x);
+o[1] = Math.asin(s < -1 ? -1 : s > 1 ? 1 : s);
+o[2] = Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z));
+return o;
+}
+function mat4() {
+var m = new Float64Array(16);
+m[0] = m[5] = m[10] = m[15] = 1;
+return m;
+}
+function mIdent(o) {
+o.fill(0); o[0] = o[5] = o[10] = o[15] = 1; return o;
+}
+function mMul(o, a, b) {
+for (var c = 0; c < 4; c++) {
+var b0 = b[c * 4], b1 = b[c * 4 + 1], b2 = b[c * 4 + 2], b3 = b[c * 4 + 3];
+o[c * 4]     = a[0] * b0 + a[4] * b1 + a[8]  * b2 + a[12] * b3;
+o[c * 4 + 1] = a[1] * b0 + a[5] * b1 + a[9]  * b2 + a[13] * b3;
+o[c * 4 + 2] = a[2] * b0 + a[6] * b1 + a[10] * b2 + a[14] * b3;
+o[c * 4 + 3] = a[3] * b0 + a[7] * b1 + a[11] * b2 + a[15] * b3;
+}
+return o;
+}
+function mTranslate(o, x, y, z) { mIdent(o); o[12] = x; o[13] = y; o[14] = z; return o; }
+function mScale(o, x, y, z) { mIdent(o); o[0] = x; o[5] = y; o[10] = z; return o; }
+function mFromQuat(o, q, tx, ty, tz) {
+var w = q[0], x = q[1], y = q[2], z = q[3];
+var x2 = x + x, y2 = y + y, z2 = z + z;
+var xx = x * x2, xy = x * y2, xz = x * z2,
+yy = y * y2, yz = y * z2, zz = z * z2,
+wx = w * x2, wy = w * y2, wz = w * z2;
+o[0] = 1 - (yy + zz); o[1] = xy + wz;       o[2] = xz - wy;       o[3] = 0;
+o[4] = xy - wz;       o[5] = 1 - (xx + zz); o[6] = yz + wx;       o[7] = 0;
+o[8] = xz + wy;       o[9] = yz - wx;       o[10] = 1 - (xx + yy); o[11] = 0;
+o[12] = tx || 0;      o[13] = ty || 0;      o[14] = tz || 0;       o[15] = 1;
+return o;
+}
+function mPerspective(o, fovY, aspect, near, far) {
+var f = 1 / Math.tan(fovY * 0.5);
+o.fill(0);
+o[0] = f / aspect; o[5] = f; o[11] = -1;
+o[10] = (far + near) / (near - far);
+o[14] = (2 * far * near) / (near - far);
+return o;
+}
+function mLookAt(o, eye, target, up) {
+var fx = target[0] - eye[0], fy = target[1] - eye[1], fz = target[2] - eye[2];
+var rl = 1 / Math.hypot(fx, fy, fz); fx *= rl; fy *= rl; fz *= rl;
+var sx = fy * up[2] - fz * up[1],
+sy = fz * up[0] - fx * up[2],
+sz = fx * up[1] - fy * up[0];
+var sl = Math.hypot(sx, sy, sz); if (sl < 1e-9) sl = 1;
+sx /= sl; sy /= sl; sz /= sl;
+var ux = sy * fz - sz * fy, uy = sz * fx - sx * fz, uz = sx * fy - sy * fx;
+o[0] = sx; o[4] = sy; o[8] = sz;  o[12] = -(sx * eye[0] + sy * eye[1] + sz * eye[2]);
+o[1] = ux; o[5] = uy; o[9] = uz;  o[13] = -(ux * eye[0] + uy * eye[1] + uz * eye[2]);
+o[2] = -fx; o[6] = -fy; o[10] = -fz; o[14] = (fx * eye[0] + fy * eye[1] + fz * eye[2]);
+o[3] = 0; o[7] = 0; o[11] = 0; o[15] = 1;
+return o;
+}
+function toF32(out32, m) { for (var i = 0; i < m.length; i++) out32[i] = m[i]; return out32; }
+return {
+v3: v3, set3: set3, copy3: copy3, add3: add3, sub3: sub3, scale3: scale3,
+addScaled3: addScaled3, dot3: dot3, cross3: cross3, norm3: norm3, lerp3: lerp3,
+len3: len3, len3sq: len3sq,
+quat: quat, qset: qset, qcopy: qcopy, qmul: qmul, qnorm: qnorm, qconj: qconj,
+qrot: qrot, qrotInv: qrotInv, qIntegrate: qIntegrate, qSlerp: qSlerp,
+qFromEuler: qFromEuler, qToEuler: qToEuler,
+mat4: mat4, mIdent: mIdent, mMul: mMul, mTranslate: mTranslate, mScale: mScale,
+mFromQuat: mFromQuat, mPerspective: mPerspective, mLookAt: mLookAt, toF32: toF32
+};
+})();
+/*core/geo.js*/
+BFS.Geo = (function () {
+"use strict";
+var U = BFS.Util, V = BFS.V;
+var A = 6378137.0;
+var F = 1 / 298.257223563;
+var E2 = F * (2 - F);
+var B = A * (1 - F);
+var REBASE_M = 5000;
+function geodeticToEcef(out, latDeg, lonDeg, h) {
+var lat = latDeg * U.DEG, lon = lonDeg * U.DEG;
+var sLat = Math.sin(lat), cLat = Math.cos(lat);
+var N = A / Math.sqrt(1 - E2 * sLat * sLat);
+out[0] = (N + h) * cLat * Math.cos(lon);
+out[1] = (N + h) * cLat * Math.sin(lon);
+out[2] = (N * (1 - E2) + h) * sLat;
+return out;
+}
+function ecefToGeodetic(out, x, y, z) {
+var p = Math.hypot(x, y);
+var th = Math.atan2(z * A, p * B);
+var st = Math.sin(th), ct = Math.cos(th);
+var ep2 = (A * A - B * B) / (B * B);
+var lat = Math.atan2(z + ep2 * B * st * st * st, p - E2 * A * ct * ct * ct);
+var lon = Math.atan2(y, x);
+var sLat = Math.sin(lat);
+var N = A / Math.sqrt(1 - E2 * sLat * sLat);
+out[0] = lat * U.RAD;
+out[1] = lon * U.RAD;
+out[2] = p / Math.cos(lat) - N;
+return out;
+}
+function Frame(latDeg, lonDeg, h) {
+this.ecef = new Float64Array(3);
+this.lat = 0; this.lon = 0; this.h = 0;
+this._m = new Float64Array(9);
+this.setOrigin(latDeg || 0, lonDeg || 0, h || 0);
+}
+Frame.prototype.setOrigin = function (latDeg, lonDeg, h) {
+this.lat = latDeg; this.lon = lonDeg; this.h = h;
+geodeticToEcef(this.ecef, latDeg, lonDeg, h);
+var lat = latDeg * U.DEG, lon = lonDeg * U.DEG;
+var sLat = Math.sin(lat), cLat = Math.cos(lat),
+sLon = Math.sin(lon), cLon = Math.cos(lon);
+var m = this._m;
+m[0] = -sLon;         m[1] = cLon;          m[2] = 0;
+m[3] = -sLat * cLon;  m[4] = -sLat * sLon;  m[5] = cLat;
+m[6] = cLat * cLon;   m[7] = cLat * sLon;   m[8] = sLat;
+return this;
+};
+Frame.prototype.geodeticToEnu = function (out, latDeg, lonDeg, h) {
+var e = _tmpEcef;
+geodeticToEcef(e, latDeg, lonDeg, h);
+var dx = e[0] - this.ecef[0], dy = e[1] - this.ecef[1], dz = e[2] - this.ecef[2];
+var m = this._m;
+out[0] = m[0] * dx + m[1] * dy + m[2] * dz;
+out[1] = m[3] * dx + m[4] * dy + m[5] * dz;
+out[2] = m[6] * dx + m[7] * dy + m[8] * dz;
+return out;
+};
+Frame.prototype.enuToGeodetic = function (out, e, n, u) {
+var m = this._m;
+var x = this.ecef[0] + m[0] * e + m[3] * n + m[6] * u;
+var y = this.ecef[1] + m[1] * e + m[4] * n + m[7] * u;
+var z = this.ecef[2] + m[2] * e + m[5] * n + m[8] * u;
+return ecefToGeodetic(out, x, y, z);
+};
+Frame.prototype.offsetOf = function (out, other) {
+var dx = other.ecef[0] - this.ecef[0],
+dy = other.ecef[1] - this.ecef[1],
+dz = other.ecef[2] - this.ecef[2];
+var m = this._m;
+out[0] = m[0] * dx + m[1] * dy + m[2] * dz;
+out[1] = m[3] * dx + m[4] * dy + m[5] * dz;
+out[2] = m[6] * dx + m[7] * dy + m[8] * dz;
+return out;
+};
+var _tmpEcef = new Float64Array(3);
+function distance(lat1, lon1, lat2, lon2) {
+var R = 6371008.8;
+var p1 = lat1 * U.DEG, p2 = lat2 * U.DEG;
+var dp = (lat2 - lat1) * U.DEG, dl = (lon2 - lon1) * U.DEG;
+var a = Math.sin(dp / 2) * Math.sin(dp / 2) +
+Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) * Math.sin(dl / 2);
+return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function bearing(lat1, lon1, lat2, lon2) {
+var p1 = lat1 * U.DEG, p2 = lat2 * U.DEG, dl = (lon2 - lon1) * U.DEG;
+var y = Math.sin(dl) * Math.cos(p2);
+var x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+return U.wrap360(Math.atan2(y, x) * U.RAD);
+}
+function destination(out, lat, lon, bearingDeg, distM) {
+var R = 6371008.8, d = distM / R;
+var p1 = lat * U.DEG, l1 = lon * U.DEG, b = bearingDeg * U.DEG;
+var sp = Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b);
+var p2 = Math.asin(Math.min(1, Math.max(-1, sp)));
+var l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1),
+Math.cos(d) - Math.sin(p1) * sp);
+out[0] = p2 * U.RAD;
+out[1] = ((l2 * U.RAD + 540) % 360) - 180;
+return out;
+}
+function lonToTileX(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
+function latToTileY(lat, z) {
+var r = lat * U.DEG;
+return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z);
+}
+function tileXToLon(x, z) { return x / Math.pow(2, z) * 360 - 180; }
+function tileYToLat(y, z) {
+var n = Math.PI - 2 * Math.PI * y / Math.pow(2, z);
+return U.RAD * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+function metresPerPixel(lat, z, tileSize) {
+return Math.cos(lat * U.DEG) * 2 * Math.PI * A / ((tileSize || 256) * Math.pow(2, z));
+}
+function decodeTerrarium(r, g, b) { return (r * 256 + g + b / 256) - 32768; }
+function magVarUK(lat, lon) {
+return -0.30 + 0.145 * (lat - 51.4) - 0.62 * (lon + 3.34);
+}
+return {
+A: A, F: F, E2: E2, REBASE_M: REBASE_M,
+geodeticToEcef: geodeticToEcef, ecefToGeodetic: ecefToGeodetic,
+Frame: Frame,
+distance: distance, bearing: bearing, destination: destination,
+lonToTileX: lonToTileX, latToTileY: latToTileY,
+tileXToLon: tileXToLon, tileYToLat: tileYToLat,
+metresPerPixel: metresPerPixel,
+decodeTerrarium: decodeTerrarium, magVarUK: magVarUK
+};
+})();
+/*core/clock.js*/
+BFS.Clock = (function () {
+"use strict";
+var U = BFS.Util;
+var SIM_HZ = 120;
+var STEP = 1 / SIM_HZ;
+var MAX_SUBSTEPS = 8;
+var DT_CLAMP = 0.1;
+function Clock() {
+this.step = STEP;
+this.simHz = SIM_HZ;
+this.t = 0;
+this.frame = 0;
+this.tick = 0;
+this.accum = 0;
+this.alpha = 0;
+this.paused = false;
+this.pauseReason = "";
+this.rate = 1;
+this.dropped = 0;
+this.lastWall = 0;
+this.frameMs = new U.Ring(90);
+this.stepMs = new U.Ring(90);
+this.fps = 0;
+this.load = 0;
+this._fpsAccum = 0;
+this._fpsFrames = 0;
+this._bound = false;
+}
+Clock.prototype.bindVisibility = function (onChange) {
+if (this._bound) return;
+this._bound = true;
+var self = this;
+document.addEventListener("visibilitychange", function () {
+if (document.hidden) self.pause("hidden");
+else if (self.pauseReason === "hidden") self.resume();
+if (onChange) onChange(self);
+});
+window.addEventListener("blur", function () {
+if (!self.paused) { self.pause("blur"); if (onChange) onChange(self); }
+});
+window.addEventListener("focus", function () {
+if (self.pauseReason === "blur") { self.resume(); if (onChange) onChange(self); }
+});
+};
+Clock.prototype.pause = function (reason) {
+this.paused = true;
+this.pauseReason = reason || "user";
+this.accum = 0;
+};
+Clock.prototype.resume = function () {
+this.paused = false;
+this.pauseReason = "";
+this.lastWall = 0;
+this.accum = 0;
+};
+Clock.prototype.togglePause = function () {
+if (this.paused) this.resume(); else this.pause("user");
+return this.paused;
+};
+Clock.prototype.beginFrame = function (wallMs) {
+this.frame++;
+if (!this.lastWall) { this.lastWall = wallMs; return 0; }
+var dt = (wallMs - this.lastWall) / 1000;
+this.lastWall = wallMs;
+this.frameMs.push(dt * 1000);
+this._fpsAccum += dt; this._fpsFrames++;
+if (this._fpsAccum >= 0.5) {
+this.fps = this._fpsFrames / this._fpsAccum;
+this._fpsAccum = 0; this._fpsFrames = 0;
+}
+this.load = this.frameMs.mean() / 16.67;
+if (dt < 0) dt = 0;
+if (dt > DT_CLAMP) dt = DT_CLAMP;
+if (this.paused) { this.alpha = 0; return 0; }
+this.accum += dt * this.rate;
+var steps = Math.floor(this.accum / this.step);
+if (steps > MAX_SUBSTEPS) {
+this.dropped += (steps - MAX_SUBSTEPS) * this.step;
+this.accum = MAX_SUBSTEPS * this.step;
+steps = MAX_SUBSTEPS;
+}
+this.accum -= steps * this.step;
+this.alpha = this.accum / this.step;
+return steps;
+};
+Clock.prototype.advance = function () {
+this.t += this.step;
+this.tick++;
+};
+Clock.prototype.every = function (n, offset) { return (this.tick % n) === (offset || 0); };
+Clock.prototype.is30Hz = function () { return (this.tick & 3) === 0; };
+Clock.prototype.is10Hz = function () { return (this.tick % 12) === 6; };
+return { Clock: Clock, SIM_HZ: SIM_HZ, STEP: STEP, MAX_SUBSTEPS: MAX_SUBSTEPS, DT_CLAMP: DT_CLAMP };
+})();
+/*core/state.js*/
+BFS.State = (function () {
+"use strict";
+var V = BFS.V;
+var PHASE = {
+ELEC_PWR: 1, FIRST_ENG_START: 2, FIRST_ENG_TO_PWR: 3, ABOVE_80KT: 4,
+LIFTOFF: 5, CLIMB: 6, CRUISE: 7, DESCENT: 8, APPROACH: 9, TOUCHDOWN: 10
+};
+function create() {
+var s = {
+t: 0,
+phase: PHASE.ELEC_PWR,
+preset: "cold",
+ctl: {
+stick: [0, 0],
+pedals: 0,
+tiller: 0,
+brakeL: 0, brakeR: 0,
+parkBrake: true,
+thrust: [0, 0],
+flapLever: 0,
+speedbrake: 0,
+gearLever: 1,
+sw: {}
+},
+truth: {
+geo: new Float64Array(3),
+enu: new Float64Array(3),
+vBody: new Float64Array(3),
+vEnu: new Float64Array(3),
+quat: V.quat(),
+omega: new Float64Array(3),
+accel: new Float64Array(3),
+agl: 0,
+onGround: true,
+crashed: false
+},
+env: {
+rho: 1.225, T: 288.15, p: 101325, a: 340.29,
+qnh: 1013.25, oat: 15,
+wind: new Float64Array(3),
+turb: new Float64Array(3),
+sunDir: new Float64Array(3)
+},
+mass: {
+m: 60000, zfw: 55000, gw: 60000,
+cg: new Float64Array(3),
+cgPctMac: 27,
+I: new Float64Array(9),
+fuel: { left: 0, right: 0, centre: 0, total: 0 }
+},
+sys: {
+elec: null, hyd: null, fuel: null, pneu: null, apu: null,
+eng: [engineState(), engineState()],
+gear: {
+lever: 1, pos: [1, 1, 1],
+stroke: [0, 0, 0],
+wow: [true, true, true],
+brakeTemp: [40, 40, 40, 40],
+autobrake: 0
+}
+},
+adr: {
+ias: 0, tas: 0, gs: 0, mach: 0,
+altBaro: 0, altStd: 0, ralt: 0,
+pitch: 0, roll: 0, hdgTrue: 0, hdgMag: 0, trk: 0,
+vs: 0, fpa: 0, aoa: 0, slip: 0,
+valid: { adr1: false, adr2: false, ir1: false, ir2: false }
+},
+cmd: {
+law: "direct",
+surfaces: { elev: 0, ail: 0, rud: 0, ths: 0 },
+thrust: [0, 0],
+prot: {}
+},
+surf: {
+elev: 0, ailL: 0, ailR: 0, rud: 0, ths: 0,
+spoiler: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+flap: 0, slat: 0,
+flapTarget: 0, slatTarget: 0
+},
+aero: {
+F: new Float64Array(3), M: new Float64Array(3),
+alpha: 0, beta: 0, q: 0, load: 1,
+strips: null
+},
+fcu: { spd: 250, hdg: 0, alt: 5000, vs: 0, spdMode: "sel", hdgMode: "sel", altMode: "sel" },
+fma: { thr: "", vert: "", lat: "", appr: "", ap: 0, fd: false, athr: false },
+ecam: { alerts: [], sdPage: "DOOR", masterCaution: false, masterWarning: false },
+nd: { mode: "ARC", range: 40 },
+fms: { plan: [], active: 0 },
+ui: { paused: false, view: "forward", pill: "", notices: [] }
+};
+V.qset(s.truth.quat, 1, 0, 0, 0);
+return s;
+}
+function engineState() {
+return {
+n1: 0, n2: 0, egt: 15, ff: 0, thrust: 0,
+master: false, running: false, starter: false, ignition: false,
+revDeploy: 0, oilPsi: 0, oilTemp: 15,
+n1Cmd: 0, mode: "off"
+};
+}
+function placeAt(s, latDeg, lonDeg, altM, hdgTrueDeg) {
+s.truth.geo[0] = latDeg;
+s.truth.geo[1] = lonDeg;
+s.truth.geo[2] = altM;
+V.set3(s.truth.vBody, 0, 0, 0);
+V.set3(s.truth.vEnu, 0, 0, 0);
+V.set3(s.truth.omega, 0, 0, 0);
+V.qFromEuler(s.truth.quat, 0, 0, -hdgTrueDeg * BFS.Util.DEG);
+s.truth.onGround = true;
+s.truth.crashed = false;
+return s;
+}
+return { create: create, placeAt: placeAt, PHASE: PHASE };
+})();
+/*ui/selftest.js*/
+BFS.SelfTest = (function () {
+"use strict";
+function check(name, fn, expect) {
+var r;
+try { r = { ok: true, value: fn() }; }
+catch (e) { r = { ok: false, value: String(e && e.name || e) }; }
+return { name: name, threw: !r.ok, value: r.value, expect: expect };
+}
+function probeWorker() {
+return new Promise(function (resolve) {
+var url, w;
+var done = function (v) {
+if (!url) return;
+try { w && w.terminate(); URL.revokeObjectURL(url); } catch (e) {  }
+url = null;
+resolve(v);
+};
+try {
+url = URL.createObjectURL(new Blob(
+["self.onmessage=function(e){self.postMessage(e.data*2)}"],
+{ type: "text/javascript" }));
+w = new Worker(url);
+w.onmessage = function (e) {
+done({ name: "Worker(blob:)", threw: false,
+value: e.data === 42 ? "constructed and round-tripped" : "replied oddly",
+expect: "usable here — but the terrain decoder must still work without it" });
+};
+w.onerror = function () {
+done({ name: "Worker(blob:)", threw: true, value: "script failed to run",
+expect: "decode stays on the main thread" });
+};
+w.postMessage(21);
+setTimeout(function () {
+done({ name: "Worker(blob:)", threw: true, value: "constructed but never replied",
+expect: "decode stays on the main thread" });
+}, 1200);
+} catch (e) {
+done({ name: "Worker(blob:)", threw: true, value: String(e.name || e),
+expect: "decode stays on the main thread" });
+}
+});
+}
+function run() {
+var results = [];
+results.push(check("localStorage", function () {
+window.localStorage.setItem("__bfs__", "1");
+window.localStorage.removeItem("__bfs__");
+return "readable and writable";
+}, "should THROW under WinClone (opaque origin)"));
+results.push(check("indexedDB", function () {
+if (!window.indexedDB) return "absent";
+window.indexedDB.open("__bfs__");
+return "openable";
+}, "should THROW or be absent under WinClone"));
+results.push(check("pointer lock", function () {
+return document.body.requestPointerLock ? "API present" : "API absent";
+}, "API may exist but the request is denied — never rely on it"));
+results.push(check("fullscreen", function () {
+return document.fullscreenEnabled ? "enabled" : "disabled";
+}, "should be DISABLED — no allowfullscreen on the iframe"));
+results.push(check("origin", function () {
+return String(window.origin || location.origin);
+}, '"null" under WinClone'));
+results.push(check("DecompressionStream", function () {
+if (typeof DecompressionStream !== "function") throw new Error("missing");
+return "available";
+}, "REQUIRED — the payload is gzipped"));
+results.push(check("fetch cross-origin", function () {
+return typeof fetch === "function" ? "available" : "missing";
+}, "REQUIRED for terrain, though the sim flies without it"));
+results.push(check("createImageBitmap", function () {
+return typeof createImageBitmap === "function" ? "available" : "missing";
+}, "REQUIRED — off-thread PNG decode for elevation tiles"));
+results.push(check("OffscreenCanvas", function () {
+return typeof OffscreenCanvas === "function" ? "available" : "missing";
+}, "preferred; a plain canvas is the fallback"));
+results.push(check("WebGL2", function () {
+var c = document.createElement("canvas");
+var gl = c.getContext("webgl2", { antialias: false });
+if (!gl) throw new Error("no context");
+var dbg = gl.getExtension("WEBGL_debug_renderer_info");
+var name = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : "renderer hidden";
+return name + " | max texture " + gl.getParameter(gl.MAX_TEXTURE_SIZE);
+}, "REQUIRED"));
+results.push(check("devicePixelRatio", function () {
+return String(window.devicePixelRatio) + " @ " +
+window.innerWidth + "x" + window.innerHeight;
+}, "informational — 760x526 is the default WinClone window body"));
+return results;
+}
+function runAsync() {
+var results = run();
+return probeWorker().then(function (w) {
+results.splice(2, 0, w);
+return results;
+});
+}
+function render(results, into) {
+var opaque = results.find(function (r) { return r.name === "origin"; });
+var isSandboxed = opaque && opaque.value === "null";
+var storage = results.find(function (r) { return r.name === "localStorage"; });
+var rows = results.map(function (r) {
+var mark = r.threw ? "THREW" : "ok";
+var colour = r.threw ? "#d9a441" : "#7fb069";
+return '<tr><td style="color:#8b97a3;padding:2px 12px 2px 0">' + r.name +
+'</td><td style="color:' + colour + ';padding-right:12px">' + mark +
+'</td><td style="color:#c8d2dd">' + String(r.value).slice(0, 90) +
+'</td><td style="color:#5c6875;padding-left:12px">' + r.expect + "</td></tr>";
+}).join("");
+var verdict = isSandboxed
+? '<div style="color:#7fb069">Opaque origin confirmed — this is the real WinClone environment.</div>'
+: '<div style="color:#d9a441">Origin is <b>' + (opaque ? opaque.value : "?") +
+"</b>, not <b>null</b>. This is NOT the sandbox WinClone uses.<br>" +
+"Results below are from a more permissive environment. Use sandbox.html " +
+"before trusting anything about storage, workers or pointer lock.</div>";
+if (!storage.threw && isSandboxed) {
+verdict += '<div style="color:#e0574a;margin-top:6px">localStorage is writable in an ' +
+"opaque origin, which should be impossible. The harness is wrong.</div>";
+}
+into.innerHTML =
+'<div style="text-align:left;font-size:11px;line-height:1.6;max-width:100%;overflow:auto">' +
+'<div style="font-size:14px;letter-spacing:.2em;color:#e8eef5;margin-bottom:10px">' +
+"BING FLIGHT SIMULATOR — SELF TEST</div>" + verdict +
+'<table style="margin-top:12px;border-collapse:collapse">' + rows + "</table></div>";
+}
+return { run: run, runAsync: runAsync, probeWorker: probeWorker, render: render };
+})();
+/*main.js*/
+BFS.main = function (host) {
+"use strict";
+var U = BFS.Util, V = BFS.V, Geo = BFS.Geo;
+var params = host.params || new URLSearchParams("");
+var overlay = host.overlay, message = host.message, button = host.button;
+if (params.get("selftest")) {
+return BFS.SelfTest.runAsync().then(function (r) { BFS.SelfTest.render(r, overlay); });
+}
+var canvas = host.canvas;
+var gl = canvas.getContext("webgl2", {
+alpha: false,
+antialias: false,
+depth: true,
+stencil: false,
+powerPreference: "high-performance",
+preserveDrawingBuffer: false,
+failIfMajorPerformanceCaveat: false
+});
+if (!gl) {
+message.textContent = "This browser could not create a WebGL2 context, which " +
+"Bing Flight Simulator needs. Try a different browser, or check that hardware " +
+"acceleration is enabled.";
+button.style.display = "none";
+return Promise.resolve();
+}
+var renderScale = 1;
+var viewW = 1, viewH = 1;
+function resize() {
+var w = canvas.clientWidth | 0, h = canvas.clientHeight | 0;
+if (!w || !h) return false;
+var dpr = Math.min(window.devicePixelRatio || 1, 2) * renderScale;
+var bw = Math.max(1, Math.round(w * dpr)), bh = Math.max(1, Math.round(h * dpr));
+if (canvas.width !== bw || canvas.height !== bh) {
+canvas.width = bw; canvas.height = bh;
+}
+viewW = bw; viewH = bh;
+return true;
+}
+if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
+else window.addEventListener("resize", resize);
+var clock = new BFS.Clock.Clock();
+var sim = BFS.State.create();
+var SPAWN = { lat: 51.396702, lon: -3.343330, alt: 67.1, hdg: 30 };
+BFS.State.placeAt(sim, SPAWN.lat, SPAWN.lon, SPAWN.alt, SPAWN.hdg);
+var frame = new Geo.Frame(SPAWN.lat, SPAWN.lon, SPAWN.alt);
+var rebases = 0;
+function updateFrame() {
+frame.geodeticToEnu(sim.truth.enu, sim.truth.geo[0], sim.truth.geo[1], sim.truth.geo[2]);
+var d = Math.hypot(sim.truth.enu[0], sim.truth.enu[1]);
+if (d > Geo.REBASE_M) {
+frame.setOrigin(sim.truth.geo[0], sim.truth.geo[1], frame.h);
+frame.geodeticToEnu(sim.truth.enu, sim.truth.geo[0], sim.truth.geo[1], sim.truth.geo[2]);
+rebases++;
+}
+}
+updateFrame();
+var keys = Object.create(null);
+function isOurs(e) { return !e.ctrlKey && !e.altKey && !e.metaKey; }
+window.addEventListener("keydown", function (e) {
+if (!isOurs(e)) return;
+keys[e.code] = true;
+if (e.code === "KeyP") clock.togglePause();
+if (e.code === "F8") { frame.setOrigin(sim.truth.geo[0], sim.truth.geo[1], frame.h); rebases++; }
+if (e.code === "Backquote") debugOn = !debugOn;
+if (e.code === "Space" || e.code.slice(0, 5) === "Arrow") e.preventDefault();
+});
+window.addEventListener("keyup", function (e) { keys[e.code] = false; });
+var debugOn = params.get("debug") !== "0";
+var hud = document.createElement("div");
+hud.style.cssText =
+"position:absolute;left:8px;top:8px;z-index:6;font:11px/1.55 Consolas,monospace;" +
+"color:#9fb0c0;background:rgba(6,10,16,.66);padding:7px 10px;border-radius:2px;" +
+"white-space:pre;pointer-events:none";
+canvas.parentNode.appendChild(hud);
+var pill = host.pill;
+function notice(text) {
+if (!pill) return;
+pill.textContent = text;
+pill.style.display = text ? "block" : "none";
+}
+if (!U.safeStorage.persistent) {
+notice("No persistent storage in this window — settings and progress are not saved");
+}
+var running = false;
+function stepSim() {
+sim.t = clock.t;
+updateFrame();
+}
+function render() {
+gl.viewport(0, 0, viewW, viewH);
+gl.clearColor(0.055, 0.075, 0.105, 1);
+gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+}
+function tuneQuality() {
+if (clock.load > 1.35 && renderScale > 0.5) { renderScale = Math.max(0.5, renderScale - 0.1); resize(); }
+else if (clock.load < 0.7 && renderScale < 1) { renderScale = Math.min(1, renderScale + 0.05); resize(); }
+}
+function drawHud() {
+if (!debugOn) { hud.style.display = "none"; return; }
+hud.style.display = "block";
+var g = sim.truth.geo, e = sim.truth.enu;
+hud.textContent =
+"BING FLIGHT SIMULATOR — phase 0 skeleton\n" +
+"fps    " + clock.fps.toFixed(0).padStart(5) +
+"   frame " + clock.frameMs.mean().toFixed(1) + " ms" +
+"   load " + (clock.load * 100).toFixed(0) + "%\n" +
+"sim t  " + clock.t.toFixed(1).padStart(5) + " s" +
+"   tick " + clock.tick + "   dropped " + clock.dropped.toFixed(2) + " s\n" +
+"scale  " + renderScale.toFixed(2) + "   buffer " + viewW + "x" + viewH +
+"   dpr " + (window.devicePixelRatio || 1) + "\n" +
+"pos    " + g[0].toFixed(6) + ", " + g[1].toFixed(6) + "  " + g[2].toFixed(1) + " m\n" +
+"enu    " + e[0].toFixed(1) + ", " + e[1].toFixed(1) + ", " + e[2].toFixed(1) +
+"   |xy| " + Math.hypot(e[0], e[1]).toFixed(1) + " m   rebases " + rebases + "\n" +
+"origin " + (window.origin === "null" ? "opaque (real sandbox)" : String(window.origin)) +
+"   storage " + U.safeStorage.kind + "\n" +
+(clock.paused ? "PAUSED (" + clock.pauseReason + ")   " : "") +
+"P pause  ` hud  F8 force rebase";
+}
+function loop(wallMs) {
+requestAnimationFrame(loop);
+if (!resize()) return;
+var steps = clock.beginFrame(wallMs);
+for (var i = 0; i < steps; i++) { clock.advance(); stepSim(); }
+tuneQuality();
+render();
+drawHud();
+}
+message.innerHTML =
+"Phase 0 — engine skeleton.<br>" +
+"Clock, state tree, geodetic frame and WebGL2 context are up.";
+button.disabled = false;
+button.textContent = "CLICK TO START";
+return new Promise(function (resolve) {
+button.addEventListener("click", function start() {
+if (running) return;
+running = true;
+overlay.classList.add("gone");
+canvas.tabIndex = 0;
+canvas.focus();
+clock.bindVisibility(function (c) {
+notice(c.paused ? "Paused — " + c.pauseReason : "");
+});
+resize();
+requestAnimationFrame(loop);
+resolve();
+});
+});
+};
+})();
+</script>
+<script>
+/* Bing Flight Simulator — boot loader.
+   The simulator is shipped as one gzip+base64 blob because this page is opened
+   inside WinClone's HTML Viewer, whose sandbox gives us an opaque origin: the
+   file lives in localStorage as a JSON string, and base64 is the only encoding
+   that costs nothing to JSON-escape. See flightsim/README.md. */
+(function () {
+  "use strict";
+  var ovl = document.getElementById("ovl"),
+      msg = document.getElementById("msg"),
+      err = document.getElementById("err"),
+      go  = document.getElementById("go"),
+      bar = document.querySelector("#bar i");
+
+  function step(pct, text) { bar.style.width = pct + "%"; if (text) msg.textContent = text; }
+  function fail(what, e) {
+    msg.textContent = "Bing Flight Simulator could not start.";
+    err.style.display = "block";
+    err.textContent = what + "\n\n" + (e && e.stack ? e.stack : e) +
+      "\n\nIf this build is the compressed one, try BingFlightSimulator.debug.html instead.";
+    go.style.display = "none";
+  }
+
+  var PAYLOAD_B64 = "";   /* build.mjs substitutes; empty in debug builds, where
+                                     the source is already present as a plain <script> */
+
+  function load() {
+    if (window.BFS && typeof window.BFS.main === "function") return Promise.resolve();
+    if (typeof DecompressionStream !== "function")
+      return Promise.reject(new Error("DecompressionStream('gzip') is unavailable in this browser."));
+    var bin = atob(PAYLOAD_B64), n = bin.length, bytes = new Uint8Array(n);
+    for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+    return new Response(
+      new Response(bytes).body.pipeThrough(new DecompressionStream("gzip"))
+    ).text().then(function (src) {
+      /* Indirect construction keeps the simulator out of this closure's scope and
+         gives DevTools a named, breakpointable script with real line numbers. */
+      (new Function(src + "\n//# sourceURL=BingFlightSim.js"))();
+      if (!window.BFS || typeof window.BFS.main !== "function")
+        throw new Error("payload evaluated but BFS.main is missing");
+    });
+  }
+
+  step(15, "Decompressing…");
+  load().then(function () {
+    step(55, "Initialising…");
+    step(100, "");
+    return window.BFS.main({
+      canvas: document.getElementById("gl"),
+      overlay: ovl, message: msg, button: go, pill: document.getElementById("pill"),
+      /* srcdoc documents have no query string; the sandbox harness and the debug
+         build pass parameters through a global instead. */
+      params: new URLSearchParams(window.__BFS_PARAMS__ || location.search)
+    });
+  }).catch(function (e) { fail("Startup failed.", e); });
+})();
+</script>
+</body>
+</html>
