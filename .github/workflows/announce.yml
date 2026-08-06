@@ -39,7 +39,7 @@ jobs:
           '
 
       - name: Post to Discord
-        if: steps.read.outputs.changed == 'yes'
+        if: steps.read.outputs.changed == 'yes' || github.event_name == 'workflow_dispatch'
         env:
           HOOK: ${{ secrets.DISCORDWEBHOOK }}
           ROLE: ${{ secrets.DISCORDROLEID }}
