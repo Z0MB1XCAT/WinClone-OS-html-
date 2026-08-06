@@ -41,8 +41,8 @@ jobs:
       - name: Post to Discord
         if: steps.read.outputs.changed == 'yes'
         env:
-          HOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          ROLE: ${{ secrets.DISCORD_ROLE_ID }}
+          HOOK: ${{ secrets.DISCORDWEBHOOK }}
+          ROLE: ${{ secrets.DISCORDROLEID }}
           VERSION: ${{ steps.read.outputs.version }}
           NOTES: ${{ steps.read.outputs.notes }}
         run: |
