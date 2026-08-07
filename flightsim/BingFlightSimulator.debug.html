@@ -890,6 +890,7 @@ n: new Float64Array([nx, ny, nz]),
 t: new Float64Array([1, 0, 0]),
 sp: new Float64Array([0, 1, 0]),
 sweep: sweep || 0,
+mAxis: new Float64Array(3),
 incidence: 0,
 tc: 0.12,
 ctl: null, ctlFrac: 0, ctlSign: 1,
@@ -897,10 +898,19 @@ flapFrac: 0, slatFrac: 0,
 spoiler: -1,
 sep: 1,
 gamma: 0,
+alphaInd: 0,
 alpha: 0, cl: 0, cd: 0, lift: 0,
 kind: "wing", side: 0
 };
 if (opts) for (var k in opts) if (opts.hasOwnProperty(k)) s[k] = opts[k];
+setMomentAxis(s);
+return s;
+}
+function setMomentAxis(s) {
+var t = s.t, n = s.n;
+s.mAxis[0] = t[1] * n[2] - t[2] * n[1];
+s.mAxis[1] = t[2] * n[0] - t[0] * n[2];
+s.mAxis[2] = t[0] * n[1] - t[1] * n[0];
 return s;
 }
 function buildStrips() {
@@ -922,6 +932,9 @@ var n = [-Math.sin(twist),
 var s = makeStrip([x, y, z], c, c * dy, n[0], n[1], n[2], C.sweepQC, {
 incidence: twist, tc: C.wingTc, kind: "wing", side: side
 });
+var e0 = side * eta0 * semi, e1 = side * eta1 * semi;
+s._yL = Math.min(e0, e1);
+s._yR = Math.max(e0, e1);
 s.sp[0] = 0; s.sp[1] = side; s.sp[2] = 0;
 if (eta < 0.70) { s.flapFrac = 0.28; }
 s.slatFrac = eta > 0.08 ? 0.16 : 0;
@@ -1092,6 +1105,8 @@ var CL_ALPHA = 5.7;
 var ALPHA_SEP = 15.5 * U.DEG;
 var SEP_BLEND = 1.9 * U.DEG;
 var M_CRIT0 = 0.76;
+var RELAX = 0.18;
+var FOWLER_ARM = 0.50;
 function Aero() {
 this.strips = A.buildStrips();
 this.wingL = [];
@@ -1101,6 +1116,9 @@ var s = this.strips[i];
 if (s.kind === "wing") (s.side < 0 ? this.wingL : this.wingR).push(s);
 }
 this.nWing = this.wingL.length;
+this.wing = this.strips.filter(function (s) { return s.kind === "wing"; })
+.sort(function (a, b) { return a.r[1] - b.r[1]; });
+this._K = buildInfluence(this.wing);
 this._v = new Float64Array(3);
 this._wr = new Float64Array(3);
 this._f = new Float64Array(3);
@@ -1112,8 +1130,20 @@ this._tmp = new Float64Array(3);
 this.downwash = 0;
 this.wingSep = 0;
 }
-function inducedAngle(s) {
-return U.clamp(s.cl / (Math.PI * C.aspect), -0.30, 0.30);
+function buildInfluence(wing) {
+var n = wing.length;
+var K = new Float64Array(n * n);
+for (var i = 0; i < n; i++) {
+var yi = wing[i].r[1];
+for (var j = 0; j < n; j++) {
+var yl = wing[j]._yL, yr = wing[j]._yR;
+var dL = yi - yl, dR = yi - yr;
+if (Math.abs(dL) < 1e-4) dL = dL < 0 ? -1e-4 : 1e-4;
+if (Math.abs(dR) < 1e-4) dR = dR < 0 ? -1e-4 : 1e-4;
+K[i * n + j] = (1 / (4 * Math.PI)) * (1 / dL - 1 / dR);
+}
+}
+return K;
 }
 function channelDeflection(surf, s) {
 if (!s.ctl) return 0;
@@ -1185,12 +1215,41 @@ s._u = un; s._w = wn;
 s._vx = vx; s._vy = vy; s._vz = vz;
 s._q = 0.5 * rho * (un * un + wn * wn);
 s.alphaGeo = Math.atan2(wn, un);
+var cfg = 0, camber = 0;
+if (s.kind === "wing") {
+if (s.flapFrac > 0 && surf.flap > 0.01)
+camber += tauC(s.flapFrac) * surf.flap * U.DEG * 0.72;
+if (s.slatFrac > 0 && surf.slat > 0.01)
+camber += tauC(s.slatFrac) * surf.slat * U.DEG * 0.28;
+cfg += camber;
+} else if (s.kind === "ht") {
+cfg += surf.ths - this.downwash;
 }
-for (i = 0; i < n; i++) {
-s = strips[i];
-if (s.kind === "wing") s.alphaInd = inducedAngle(s);
-else s.alphaInd = 0;
+var defl = channelDeflection(surf, s);
+if (defl) cfg += tauC(s.ctlFrac) * defl * s.ctlSign;
+s._defl = defl;
+s._camber = camber;
+s.alphaCfg = s.alphaGeo + cfg;
 }
+var wing = this.wing, nw = wing.length, K = this._K;
+for (var iter = 0; iter < 2; iter++) {
+for (i = 0; i < nw; i++) {
+s = wing[i];
+var dw = 0, row = i * nw;
+for (var j = 0; j < nw; j++) dw += K[row + j] * wing[j].gamma;
+var Vs = Math.hypot(s._u, s._w);
+var target = Vs > 2 ? U.clamp(dw / Vs, -0.35, 0.35) : 0;
+if (geBase < C.span) {
+var h = Math.max(0.05, geBase - (s.r[2] - cg[2]));
+var hb = h / C.span;
+var sigma = (1 - 1.32 * hb) / (1.05 + 7.4 * hb);
+target *= (1 - U.clamp(sigma, 0, 0.80));
+}
+s.alphaInd = s.alphaInd + (target - s.alphaInd) * RELAX;
+s.gamma = 0.5 * Vs * s.c * CL_ALPHA * (s.alphaCfg - s.alphaInd) * s.sep;
+}
+}
+for (i = 0; i < n; i++) if (strips[i].kind !== "wing") strips[i].alphaInd = 0;
 var Fx = 0, Fy = 0, Fz = 0, Mx = 0, My = 0, Mz = 0;
 var sepSum = 0, sepCount = 0;
 var wingAlphaSum = 0, wingAlphaCount = 0;
@@ -1198,20 +1257,8 @@ for (i = 0; i < n; i++) {
 s = strips[i];
 var speed2 = Math.hypot(s._u, s._w);
 if (speed2 < 0.05 || s._q < 1e-4) { s.lift = 0; s.cl = 0; s.cd = 0; continue; }
-var alpha = s.alphaGeo;
-if (s.kind === "wing") {
-alpha -= (s.alphaInd || 0);
-if (s.flapFrac > 0 && surf.flap > 0.01)
-alpha += tauC(s.flapFrac) * surf.flap * U.DEG * 0.72;
-if (s.slatFrac > 0 && surf.slat > 0.01)
-alpha += tauC(s.slatFrac) * surf.slat * U.DEG * 0.28;
-} else if (s.kind === "ht") {
-alpha -= this.downwash;
-alpha += surf.ths;
-}
-var defl = channelDeflection(surf, s);
-if (defl) alpha += tauC(s.ctlFrac) * defl * s.ctlSign;
-var alphaStall = ALPHA_SEP;
+var alpha = s.alphaCfg - s.alphaInd;
+var alphaStall = ALPHA_SEP + (s._camber || 0) * 0.75;
 if (s.slatFrac > 0 && surf.slat > 0.01) alphaStall += surf.slat * U.DEG * 0.30;
 if (s.kind === "fuse" || s.kind === "nacelle") alphaStall = 8 * U.DEG;
 var reattach = s.sep > 0.5 ? 0 : 2 * U.DEG;
@@ -1225,11 +1272,6 @@ var sa = Math.sin(alpha), sa2 = sa * sa;
 cl = 1.1 * sa2 * (alpha < 0 ? -1 : 1);
 cd = 0.008 + 1.1 * sa2 * Math.abs(sa);
 }
-if (s.kind === "wing" && geBase < C.span) {
-var hb = Math.max(0.02, (geBase - (s.r[2] - cg[2])) / C.span);
-var ge = (1 - 1.32 * hb) / (1.05 + 7.4 * hb);
-if (ge > 0) s.alphaInd = (s.alphaInd || 0) * (1 - U.clamp(ge, 0, 0.75));
-}
 if (s.spoiler >= 0) {
 var sd = surf.spoiler[s.spoiler] || 0;
 if (sd > 0.01) {
@@ -1238,7 +1280,7 @@ cl *= (1 - 0.85 * f);
 cd += 1.1 * f * f;
 }
 }
-var cdi = (s.kind === "wing") ? cl * (s.alphaInd || 0) : 0;
+var cdi = (s.kind === "wing") ? cl * s.alphaInd : 0;
 var q = s._q, S = s.S;
 var lift = q * S * cl;
 var drag = q * S * (cd + Math.abs(cdi));
@@ -1254,7 +1296,18 @@ var rx2 = s.r[0] - cg[0], ry2 = s.r[1] - cg[1], rz2 = s.r[2] - cg[2];
 Mx += ry2 * fz - rz2 * fy;
 My += rz2 * fx - rx2 * fz;
 Mz += rx2 * fy - ry2 * fx;
+var cm = 0;
+if (s._camber > 0) cm -= FOWLER_ARM * CL_ALPHA * s._camber;
+if (s._defl && s.ctlFrac > 0)
+cm -= 0.42 * tauC(s.ctlFrac) * s._defl * s.ctlSign;
+if (cm !== 0) {
+var mm = q * S * s.c * cm * s.sep;
+Mx += mm * s.mAxis[0];
+My += mm * s.mAxis[1];
+Mz += mm * s.mAxis[2];
+}
 s.alpha = alpha; s.cl = cl; s.cd = cd; s.lift = lift;
+s._fx = fx; s._fy = fy; s._fz = fz;
 if (s.kind === "wing") {
 sepSum += 1 - s.sep; sepCount++;
 wingAlphaSum += alpha; wingAlphaCount++;
@@ -1691,6 +1744,154 @@ t.onGround = anyWow;
 t.agl = Math.max(0, minAgl === 1e9 ? this.groundUnder(sim, C.gear[1].pos, this._tmp) : minAgl);
 };
 return { Gear: Gear };
+})();
+/*sim/trim.js*/
+BFS.Trim = (function () {
+"use strict";
+var U = BFS.Util, V = BFS.V, C = BFS.A320.C;
+function residuals(ctx, x) {
+var alpha = x[0], ths = x[1], thrustFrac = x[2];
+var sim = ctx.sim, aero = ctx.aero;
+var V0 = ctx.speed;
+sim.truth.vBody[0] = V0 * Math.cos(alpha);
+sim.truth.vBody[1] = 0;
+sim.truth.vBody[2] = V0 * Math.sin(alpha);
+sim.surf.ths = U.clamp(ths, C.thsMin, C.thsMax);
+sim.surf.elev = 0;
+for (var i = 0; i < ctx.settle; i++) aero.update(sim, 1 / 120);
+var thrust = 2 * BFS.Engine.thrustOf(
+C.n1Idle + U.clamp(thrustFrac, 0, 1.2) * (100 - C.n1Idle),
+V0 / sim.env.a, sim.env.rho);
+var pitch = alpha + ctx.gamma;
+var W = sim.mass.m * 9.80665;
+var Wx = -W * Math.sin(pitch);
+var Wz = W * Math.cos(pitch);
+var Mthrust = (C.engPos[0][2] - sim.mass.cg[2]) * thrust;
+return [
+sim.aero.F[2] + Wz,
+sim.aero.F[0] + Wx + thrust,
+sim.aero.M[1] + Mthrust
+];
+}
+function solve(opts) {
+var sim = BFS.State.create();
+sim.mass.payload = U.clamp((opts.mass || 60000) - C.oew - 4000, 0, 25000);
+sim.mass.fuel.left = sim.mass.fuel.right = 2000;
+BFS.MassBalance.update(sim);
+sim.mass.m = opts.mass || 60000;
+var atm = { T: 0, p: 0, rho: 0, a: 0 };
+BFS.Atmos.isa(atm, opts.alt || 0, 0);
+sim.env.rho = atm.rho; sim.env.p = atm.p; sim.env.T = atm.T; sim.env.a = atm.a;
+sim.truth.geo[2] = opts.alt || 0;
+sim.truth.agl = opts.agl !== undefined ? opts.agl : 5000;
+sim.surf.flap = opts.flap || 0;
+sim.surf.slat = opts.slat || 0;
+sim.ctl.gearLever = opts.gear || 0;
+for (var g = 0; g < 3; g++) sim.sys.gear.pos[g] = opts.gear || 0;
+var ctx = {
+sim: sim, aero: new BFS.Aero.Aero(),
+speed: opts.speed, gamma: opts.gamma || 0,
+settle: opts.settle || 90
+};
+var x = [opts.alpha0 !== undefined ? opts.alpha0 : 3 * U.DEG,
+opts.ths0 !== undefined ? opts.ths0 : -2 * U.DEG,
+0.5];
+var r = residuals(ctx, x);
+var W = sim.mass.m * 9.80665;
+var scale = [W, W, W * C.mac];
+for (var iter = 0; iter < opts.iterations || iter < 24; iter++) {
+var J = [];
+var h = [0.4 * U.DEG, 0.4 * U.DEG, 0.02];
+for (var k = 0; k < 3; k++) {
+var xk = x.slice();
+xk[k] += h[k];
+var rk = residuals(ctx, xk);
+J.push([(rk[0] - r[0]) / h[k], (rk[1] - r[1]) / h[k], (rk[2] - r[2]) / h[k]]);
+}
+var A = [
+[J[0][0], J[1][0], J[2][0]],
+[J[0][1], J[1][1], J[2][1]],
+[J[0][2], J[1][2], J[2][2]]
+];
+var dx = solve3(A, [-r[0], -r[1], -r[2]]);
+if (!dx) break;
+var damp = iter < 3 ? 0.55 : 0.9;
+x[0] = U.clamp(x[0] + dx[0] * damp, -12 * U.DEG, 24 * U.DEG);
+x[1] = U.clamp(x[1] + dx[1] * damp, C.thsMin, C.thsMax);
+x[2] = U.clamp(x[2] + dx[2] * damp, 0, 1.15);
+r = residuals(ctx, x);
+var err = Math.abs(r[0] / scale[0]) + Math.abs(r[1] / scale[1]) +
+Math.abs(r[2] / scale[2]);
+if (err < 1e-4) break;
+}
+var errFinal = Math.abs(r[0] / scale[0]) + Math.abs(r[1] / scale[1]) +
+Math.abs(r[2] / scale[2]);
+var thrust = 2 * BFS.Engine.thrustOf(
+C.n1Idle + U.clamp(x[2], 0, 1.2) * (100 - C.n1Idle),
+opts.speed / sim.env.a, sim.env.rho);
+return {
+alpha: x[0], ths: x[1], thrustFrac: x[2],
+pitch: x[0] + (opts.gamma || 0),
+thrust: thrust, thrustPerEngine: thrust / 2,
+converged: errFinal < 5e-3,
+residual: errFinal,
+CL: -sim.aero.F[2] / (0.5 * sim.env.rho * opts.speed * opts.speed * C.wingArea),
+sim: sim, aero: ctx.aero
+};
+}
+function solve3(A, b) {
+var M = [A[0].concat(b[0]), A[1].concat(b[1]), A[2].concat(b[2])];
+for (var col = 0; col < 3; col++) {
+var piv = col;
+for (var r2 = col + 1; r2 < 3; r2++)
+if (Math.abs(M[r2][col]) > Math.abs(M[piv][col])) piv = r2;
+if (Math.abs(M[piv][col]) < 1e-12) return null;
+var tmp = M[col]; M[col] = M[piv]; M[piv] = tmp;
+for (var r3 = 0; r3 < 3; r3++) {
+if (r3 === col) continue;
+var f = M[r3][col] / M[col][col];
+for (var c2 = col; c2 < 4; c2++) M[r3][c2] -= f * M[col][c2];
+}
+}
+return [M[0][3] / M[0][0], M[1][3] / M[1][1], M[2][3] / M[2][2]];
+}
+function maxLift(opts) {
+var sim = BFS.State.create();
+sim.mass.payload = U.clamp((opts.mass || 60000) - C.oew - 4000, 0, 25000);
+sim.mass.fuel.left = sim.mass.fuel.right = 2000;
+BFS.MassBalance.update(sim);
+sim.mass.m = opts.mass || 60000;
+var atm = { T: 0, p: 0, rho: 0, a: 0 };
+BFS.Atmos.isa(atm, opts.alt || 0, 0);
+sim.env.rho = atm.rho; sim.env.p = atm.p; sim.env.T = atm.T; sim.env.a = atm.a;
+sim.truth.agl = opts.agl !== undefined ? opts.agl : 3000;
+sim.surf.flap = opts.flap || 0;
+sim.surf.slat = opts.slat || 0;
+var aero = new BFS.Aero.Aero();
+var speed = opts.probeSpeed || 70;
+var best = 0, bestAlpha = 0;
+for (var deg = -2; deg <= 24; deg += 0.5) {
+var a = deg * U.DEG;
+sim.truth.vBody[0] = speed * Math.cos(a);
+sim.truth.vBody[1] = 0;
+sim.truth.vBody[2] = speed * Math.sin(a);
+for (var k = 0; k < 110; k++) aero.update(sim, 1 / 120);
+var q = 0.5 * atm.rho * speed * speed;
+var CL = (sim.aero.F[0] * Math.sin(a) - sim.aero.F[2] * Math.cos(a)) /
+(q * C.wingArea);
+if (CL > best) { best = CL; bestAlpha = a; }
+}
+return { CLmax: best, alphaMax: bestAlpha, rho: atm.rho };
+}
+function stallSpeed(opts) {
+var m = opts.mass || 60000;
+var r = maxLift(opts);
+if (r.CLmax <= 0.05) return NaN;
+var v = Math.sqrt(2 * m * 9.80665 / (r.rho * C.wingArea * r.CLmax));
+var r2 = maxLift(Object.assign({}, opts, { probeSpeed: v }));
+return Math.sqrt(2 * m * 9.80665 / (r2.rho * C.wingArea * r2.CLmax));
+}
+return { solve: solve, stallSpeed: stallSpeed, maxLift: maxLift, residuals: residuals };
 })();
 /*terrain/heightfield.js*/
 BFS.Height = (function () {
@@ -4419,12 +4620,20 @@ sim.ctl.parkBrake = false;
 sim.ctl.gearLever = 1;
 sim.ctl.flapLever = 4;
 sim.surf.flap = 35; sim.surf.slat = 27;
-var vapp = 70, path = -3 * U.DEG, body = 4.5 * U.DEG;
+BFS.MassBalance.init(sim, { fuel: 5200, payload: 13500 });
+var vs = BFS.Trim.stallSpeed({ mass: sim.mass.m, alt: thr.elev,
+flap: 35, slat: 27 });
+var vapp = vs * 1.23;
+var tr = BFS.Trim.solve({
+mass: sim.mass.m, alt: thr.elev + 244, speed: vapp, gamma: -3 * U.DEG,
+flap: 35, slat: 27, gear: 1, settle: 120
+});
+var body = tr.pitch;
 V.qFromEuler(sim.truth.quat, 0, body, crs * U.DEG);
-V.set3(sim.truth.vBody, vapp * Math.cos(body - path), 0,
-vapp * Math.sin(body - path));
-sim.ctl.thrust[0] = sim.ctl.thrust[1] = 0.52;
-fctl.thsTrim = -7.5 * U.DEG;
+V.set3(sim.truth.vBody, vapp * Math.cos(tr.alpha), 0,
+vapp * Math.sin(tr.alpha));
+sim.ctl.thrust[0] = sim.ctl.thrust[1] = U.clamp(tr.thrustFrac, 0, 1);
+fctl.thsTrim = tr.ths;
 } else {
 var s = E.spawn("7");
 BFS.State.placeAt(sim, s.lat, s.lon, s.elev + 3.05, s.hdg);

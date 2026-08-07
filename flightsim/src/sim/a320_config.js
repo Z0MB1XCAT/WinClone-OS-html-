@@ -177,6 +177,11 @@ BFS.A320 = (function () {
       t: new Float64Array([1, 0, 0]),
       sp: new Float64Array([0, 1, 0]),
       sweep: sweep || 0,
+      /* The axis the section's own pitching moment acts about: perpendicular to
+         both the chord and the lift normal. For a wing or tailplane strip this
+         comes out along +y whichever side it is on, and for the fin along +z,
+         so one expression serves every surface. */
+      mAxis: new Float64Array(3),
       incidence: 0,
       tc: 0.12,
       ctl: null, ctlFrac: 0, ctlSign: 1,
@@ -187,10 +192,24 @@ BFS.A320 = (function () {
          indication read full scale until the first time air moves over it. */
       sep: 1,
       gamma: 0,               // circulation, seeded from the previous tick
+      /* Must be initialised. Left undefined it becomes NaN on the first
+         relaxation step, and `NaN || 0` is 0 — so every downstream guard of that
+         shape silently discarded the entire lifting-line contribution while
+         every test still passed on geometry alone. */
+      alphaInd: 0,
       alpha: 0, cl: 0, cd: 0, lift: 0,
       kind: "wing", side: 0
     };
     if (opts) for (var k in opts) if (opts.hasOwnProperty(k)) s[k] = opts[k];
+    setMomentAxis(s);
+    return s;
+  }
+
+  function setMomentAxis(s) {
+    var t = s.t, n = s.n;
+    s.mAxis[0] = t[1] * n[2] - t[2] * n[1];
+    s.mAxis[1] = t[2] * n[0] - t[0] * n[2];
+    s.mAxis[2] = t[0] * n[1] - t[1] * n[0];
     return s;
   }
 
@@ -235,6 +254,12 @@ BFS.A320 = (function () {
         var s = makeStrip([x, y, z], c, c * dy, n[0], n[1], n[2], C.sweepQC, {
           incidence: twist, tc: C.wingTc, kind: "wing", side: side
         });
+        /* Spanwise edges, ordered left-to-right regardless of which wing this
+           is. The lifting-line solve sheds a trailing vortex from each edge, so
+           these are load-bearing geometry rather than bookkeeping. */
+        var e0 = side * eta0 * semi, e1 = side * eta1 * semi;
+        s._yL = Math.min(e0, e1);
+        s._yR = Math.max(e0, e1);
         s.sp[0] = 0; s.sp[1] = side; s.sp[2] = 0;
 
         /* High-lift devices run to about 70% of span; ailerons live outboard. */

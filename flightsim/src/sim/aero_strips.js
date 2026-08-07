@@ -40,6 +40,24 @@ BFS.Aero = (function () {
   var ALPHA_SEP = 15.5 * U.DEG;
   var SEP_BLEND = 1.9 * U.DEG; // sigmoid width of the stall break
   var M_CRIT0 = 0.76;
+  /* Relaxation factor for the lifting-line iteration. Chosen so the error
+     multiplier stays well inside unity for every chord on this wing, from the
+     six-metre root to the 1.7-metre tip. See the solve in update(). */
+  var RELAX = 0.18;
+
+  /* How far aft of the quarter chord a deflected flap carries the lift it adds,
+   * as a fraction of chord. This single number decides whether the aeroplane
+   * pitches nose-up or nose-down when the flaps run out, and the balance is
+   * genuinely fine: the nose-down couple it produces is opposed by the tail
+   * losing lift to the increased downwash, and by the flap lift itself acting
+   * slightly forward of the centre of gravity on a swept wing. At 0.38 those
+   * three terms cancelled to within a few kN·m and the aeroplane came out
+   * pitching the wrong way.
+   *
+   * Half a chord is where a fully extended Fowler actually carries it — the
+   * flap translates aft on its track before it rotates, so its own quarter
+   * chord ends up around there. */
+  var FOWLER_ARM = 0.50;
 
   function Aero() {
     this.strips = A.buildStrips();
@@ -50,6 +68,11 @@ BFS.Aero = (function () {
       if (s.kind === "wing") (s.side < 0 ? this.wingL : this.wingR).push(s);
     }
     this.nWing = this.wingL.length;
+    /* One list of every wing strip, ordered across the span from the left tip
+       to the right, which is the ordering the influence matrix assumes. */
+    this.wing = this.strips.filter(function (s) { return s.kind === "wing"; })
+                           .sort(function (a, b) { return a.r[1] - b.r[1]; });
+    this._K = buildInfluence(this.wing);
 
     this._v = new Float64Array(3);
     this._wr = new Float64Array(3);
@@ -65,34 +88,46 @@ BFS.Aero = (function () {
 
   /* --------------------------------------------------------- lifting line
    *
-   * Induced angle at strip i is the downwash from every other strip's trailing
-   * vorticity. Precomputing the influence matrix once makes the per-tick cost a
-   * couple of matrix-vector products, which is nothing.
+   * Each wing strip carries a bound vortex of strength Gamma at its quarter
+   * chord, shedding a pair of semi-infinite trailing vortices from its two
+   * EDGES — one of strength +Gamma, one of -Gamma. The downwash at strip i is
+   * the sum over every strip's pair:
    *
-   * It gives induced drag as the actual backward tilt of each strip's lift
-   * vector rather than a CL^2/(pi e AR) fudge, and it makes the wing drop at the
-   * stall because the strip that separates first sheds its share of the load
-   * onto its neighbours. That is the Phase 2 model, and it is not what runs
-   * here yet.
+   *     w_i = (1/4pi) * SUM_j Gamma_j * [ 1/(y_i - yL_j) - 1/(y_i - yR_j) ]
    *
-   * A first attempt at it summed the influence of each strip's circulation
-   * directly. That is not lifting-line theory — the downwash integral is over
-   * the SPANWISE DERIVATIVE of circulation, not circulation itself — and the
-   * error is not subtle once measured: feeding the matrix a perfectly symmetric
-   * elliptic loading came back with a mean induced angle of -0.05 on one wing
-   * and -2.89 on the other. A symmetric wing was being told it had a sixty-fold
-   * asymmetry in downwash, which the aeroplane faithfully turned into a steady
-   * roll and yaw in dead calm air.
+   * The edges are the whole point, and getting that wrong was the Phase 1 bug:
+   * an earlier version put a single vortex at each strip's CENTRE, which is not
+   * lifting-line theory at all — the downwash integral is over the spanwise
+   * derivative of circulation, and a horseshoe's trailing pair is precisely the
+   * discrete form of that derivative. The single-vortex version returned a
+   * sixty-fold asymmetry when fed a perfectly symmetric elliptic loading, and
+   * the aeroplane rolled and yawed in still air. The formulation below is
+   * symmetric for symmetric loading by construction, which tools/aero_test.mjs
+   * checks numerically rather than taking on trust.
    *
-   * So Phase 1 uses the elliptic result instead: a_ind = cl / (pi * AR). It is
-   * symmetric by construction, unconditionally stable, gives induced drag of the
-   * right magnitude, and still redistributes when a flap or an aileron moves —
-   * because it is driven by each strip's own local lift. What it does not give
-   * is the spanwise coupling between strips, which is what makes a wing drop at
-   * the stall. That arrives with the proper vortex solve in Phase 2, and this
-   * function is the seam it drops into. */
-  function inducedAngle(s) {
-    return U.clamp(s.cl / (Math.PI * C.aspect), -0.30, 0.30);
+   * What this buys, beyond not being wrong: induced drag as the genuine backward
+   * tilt of each strip's lift vector rather than a CL^2/(pi e AR) fudge; the
+   * spanwise loading redistributing correctly when a flap or an aileron moves,
+   * which is where adverse yaw comes from; and a wing that drops at the stall,
+   * because the strip that separates first sheds its share of the load onto its
+   * neighbours and pushes them over too. */
+  function buildInfluence(wing) {
+    var n = wing.length;
+    var K = new Float64Array(n * n);
+    for (var i = 0; i < n; i++) {
+      var yi = wing[i].r[1];
+      for (var j = 0; j < n; j++) {
+        var yl = wing[j]._yL, yr = wing[j]._yR;
+        var dL = yi - yl, dR = yi - yr;
+        /* The control point sits at its own strip's centre, so neither
+           denominator can vanish; a floor guards the neighbours' edges against
+           a near-singular kernel when strips are unevenly spaced. */
+        if (Math.abs(dL) < 1e-4) dL = dL < 0 ? -1e-4 : 1e-4;
+        if (Math.abs(dR) < 1e-4) dR = dR < 0 ? -1e-4 : 1e-4;
+        K[i * n + j] = (1 / (4 * Math.PI)) * (1 / dL - 1 / dR);
+      }
+    }
+    return K;
   }
 
   /* Deflection of a control channel for one strip, in radians. */
@@ -227,16 +262,82 @@ BFS.Aero = (function () {
       s._vx = vx; s._vy = vy; s._vz = vz;
       s._q = 0.5 * rho * (un * un + wn * wn);
       s.alphaGeo = Math.atan2(wn, un);
+
+      /* Everything the configuration adds to this strip's incidence, resolved
+         here rather than in the force pass so the lifting-line solve can see it.
+         Flaps and slats change the effective camber of the strips they sit on
+         and nothing else — the nose-down pitch change on flap extension is then
+         a consequence of the load moving on the inboard wing, not a scripted
+         trim shift. */
+      var cfg = 0, camber = 0;
+      if (s.kind === "wing") {
+        if (s.flapFrac > 0 && surf.flap > 0.01)
+          camber += tauC(s.flapFrac) * surf.flap * U.DEG * 0.72;
+        if (s.slatFrac > 0 && surf.slat > 0.01)
+          camber += tauC(s.slatFrac) * surf.slat * U.DEG * 0.28;
+        cfg += camber;
+      } else if (s.kind === "ht") {
+        /* Wing downwash, lagged by the time the air takes to reach the tail,
+           plus the trimmable stabiliser's own incidence. */
+        cfg += surf.ths - this.downwash;
+      }
+      var defl = channelDeflection(surf, s);
+      if (defl) cfg += tauC(s.ctlFrac) * defl * s.ctlSign;
+      s._defl = defl;
+      s._camber = camber;
+      s.alphaCfg = s.alphaGeo + cfg;
     }
 
-    /* ---- pass 2: induced angle ----
-       Seeded from the previous tick's section lift. At 120 Hz the state barely
-       moves between ticks, so a single fixed-point step is fully converged. */
-    for (i = 0; i < n; i++) {
-      s = strips[i];
-      if (s.kind === "wing") s.alphaInd = inducedAngle(s);
-      else s.alphaInd = 0;
+    /* ---- pass 2: the lifting-line solve ----
+     *
+     * Prandtl's equation is implicit — the circulation depends on the downwash
+     * which depends on the circulation — and it CANNOT be iterated naively.
+     * The loop gain is the self-influence times the section slope times the
+     * chord, which for this wing is between two and six: substituting
+     * repeatedly does not converge on the answer, it runs away from it. Left
+     * unrelaxed the wing settled at minus three and a half degrees of incidence
+     * in level flight and reported itself stalled, with a drag coefficient of
+     * 0.42.
+     *
+     * Under-relaxation fixes it: step only part of the way each time, so the
+     * error multiplier |1 - w(1 + gain)| stays under one across the whole range
+     * of chords on the wing. Two relaxed passes per tick, carried across ticks,
+     * converges within a fraction of a second of real time — and since the
+     * state barely moves at 120 Hz, it is effectively always converged. */
+    var wing = this.wing, nw = wing.length, K = this._K;
+    for (var iter = 0; iter < 2; iter++) {
+      for (i = 0; i < nw; i++) {
+        s = wing[i];
+        var dw = 0, row = i * nw;
+        for (var j = 0; j < nw; j++) dw += K[row + j] * wing[j].gamma;
+        var Vs = Math.hypot(s._u, s._w);
+        var target = Vs > 2 ? U.clamp(dw / Vs, -0.35, 0.35) : 0;
+
+        /* Ground effect, applied HERE — because that is what ground effect is.
+         *
+         * The ground's image vortex cancels part of the downwash, so the induced
+         * angle falls and with it the induced drag. Applying it anywhere else is
+         * decoration; an earlier version scaled alphaInd after the forces had
+         * already been computed from it, so it did precisely nothing.
+         *
+         * Per strip rather than per aeroplane, using each strip's own height, so
+         * a banked flare correctly loses the effect on the high wing first. */
+        if (geBase < C.span) {
+          var h = Math.max(0.05, geBase - (s.r[2] - cg[2]));
+          var hb = h / C.span;
+          var sigma = (1 - 1.32 * hb) / (1.05 + 7.4 * hb);
+          target *= (1 - U.clamp(sigma, 0, 0.80));
+        }
+
+        s.alphaInd = s.alphaInd + (target - s.alphaInd) * RELAX;
+        /* Circulation from the effective incidence. Carrying the separated
+           state matters at the stall: a strip that has let go sheds its
+           circulation, and its neighbours pick up the downwash change on the
+           next pass. That is the mechanism behind a wing dropping. */
+        s.gamma = 0.5 * Vs * s.c * CL_ALPHA * (s.alphaCfg - s.alphaInd) * s.sep;
+      }
     }
+    for (i = 0; i < n; i++) if (strips[i].kind !== "wing") strips[i].alphaInd = 0;
 
     /* ---- pass 3 and 4: section forces, accumulate ---- */
     var Fx = 0, Fy = 0, Fz = 0, Mx = 0, My = 0, Mz = 0;
@@ -248,36 +349,25 @@ BFS.Aero = (function () {
       var speed2 = Math.hypot(s._u, s._w);
       if (speed2 < 0.05 || s._q < 1e-4) { s.lift = 0; s.cl = 0; s.cd = 0; continue; }
 
-      var alpha = s.alphaGeo;
-
-      if (s.kind === "wing") {
-        alpha -= (s.alphaInd || 0);
-
-        /* Flaps and slats change the effective camber, chord and stall angle of
-           the strips they sit on — nothing else. The nose-down pitch change on
-           flap extension is then a consequence of the load moving aft on the
-           inboard wing, not a scripted trim shift. */
-        if (s.flapFrac > 0 && surf.flap > 0.01)
-          alpha += tauC(s.flapFrac) * surf.flap * U.DEG * 0.72;
-        if (s.slatFrac > 0 && surf.slat > 0.01)
-          alpha += tauC(s.slatFrac) * surf.slat * U.DEG * 0.28;
-      } else if (s.kind === "ht") {
-        /* Downwash from the wing, lagged by the time the air takes to get
-           there, plus the tailplane's own incidence from the trimmable
-           stabiliser. */
-        alpha -= this.downwash;
-        alpha += surf.ths;
-      }
-
-      var defl = channelDeflection(surf, s);
-      if (defl) alpha += tauC(s.ctlFrac) * defl * s.ctlSign;
+      /* The incidence the section actually sees: geometry plus configuration,
+         less the downwash the rest of the wing induces on it. */
+      var alpha = s.alphaCfg - s.alphaInd;
 
       /* Separation state, lagged. A wing does not stall instantly: the
          separation point creeps forward over a few chord lengths of travel.
          Modelling that as a first-order lag with hysteresis is what produces
          buffet before the break and a stall that stays stalled until you
          genuinely unload it. */
-      var alphaStall = ALPHA_SEP;
+      /* The stalling incidence has to move with the camber the flaps add.
+       *
+       * A deflected flap is modelled here as extra effective incidence, which is
+       * right for lift — but if the stall angle stays put, a flapped section
+       * reads sixteen degrees of camber as sixteen degrees of incidence and
+       * declares itself separated while the aeroplane is sitting at three
+       * degrees on final approach. A flapped wing does stall earlier in
+       * geometric terms, just nowhere near that much, so most of the camber is
+       * credited back. */
+      var alphaStall = ALPHA_SEP + (s._camber || 0) * 0.75;
       if (s.slatFrac > 0 && surf.slat > 0.01) alphaStall += surf.slat * U.DEG * 0.30;
       if (s.kind === "fuse" || s.kind === "nacelle") alphaStall = 8 * U.DEG;
 
@@ -308,16 +398,6 @@ BFS.Aero = (function () {
         cd = 0.008 + 1.1 * sa2 * Math.abs(sa);
       }
 
-      /* Ground effect, per strip. Wieselsberger: the induced drag of a wing near
-         the ground is reduced because the image vortex cancels part of the
-         downwash. Computing it per strip rather than per aircraft is what makes
-         a crosswind flare behave. */
-      if (s.kind === "wing" && geBase < C.span) {
-        var hb = Math.max(0.02, (geBase - (s.r[2] - cg[2])) / C.span);
-        var ge = (1 - 1.32 * hb) / (1.05 + 7.4 * hb);
-        if (ge > 0) s.alphaInd = (s.alphaInd || 0) * (1 - U.clamp(ge, 0, 0.75));
-      }
-
       /* Spoilers destroy lift and add drag on their own strips. Roll spoilers,
          ground spoilers and speedbrake are all the same mechanism. */
       if (s.spoiler >= 0) {
@@ -331,7 +411,7 @@ BFS.Aero = (function () {
 
       /* Induced drag as the backward tilt of the lift vector — the physically
          honest form, and the reason no efficiency factor appears anywhere. */
-      var cdi = (s.kind === "wing") ? cl * (s.alphaInd || 0) : 0;
+      var cdi = (s.kind === "wing") ? cl * s.alphaInd : 0;
 
       var q = s._q, S = s.S;
       var lift = q * S * cl;
@@ -369,7 +449,36 @@ BFS.Aero = (function () {
       My += rz2 * fx - rx2 * fz;
       Mz += rx2 * fy - ry2 * fx;
 
+      /* The section's own pitching moment about its quarter chord.
+       *
+       * A plain section has essentially none there — that is what the quarter
+       * chord is for. A DEFLECTED one does: pushing a flap down is a large
+       * increase in camber, and camber produces a strong nose-down couple that
+       * no amount of lift bookkeeping will reproduce, because it does not come
+       * from where the lift acts but from how the pressure is distributed along
+       * the chord.
+       *
+       * Without this the aeroplane pitches the wrong way when the flaps run
+       * out, and needs the wrong stabiliser setting to trim in the approach
+       * configuration. */
+      var cm = 0;
+      /* Scaled by the lift the camber ADDS, not by the deflection, because the
+         mechanism is where that extra lift acts: a Fowler flap carries its
+         increment roughly a third of a chord aft of the quarter chord, and the
+         resulting couple is what a pilot feels as the nose dropping when the
+         flaps run out. */
+      if (s._camber > 0) cm -= FOWLER_ARM * CL_ALPHA * s._camber;
+      if (s._defl && s.ctlFrac > 0)
+        cm -= 0.42 * tauC(s.ctlFrac) * s._defl * s.ctlSign;
+      if (cm !== 0) {
+        var mm = q * S * s.c * cm * s.sep;
+        Mx += mm * s.mAxis[0];
+        My += mm * s.mAxis[1];
+        Mz += mm * s.mAxis[2];
+      }
+
       s.alpha = alpha; s.cl = cl; s.cd = cd; s.lift = lift;
+      s._fx = fx; s._fy = fy; s._fz = fz;
 
       if (s.kind === "wing") {
         sepSum += 1 - s.sep; sepCount++;

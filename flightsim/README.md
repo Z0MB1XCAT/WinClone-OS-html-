@@ -6,20 +6,28 @@ An Airbus A320 simulator that runs inside WinClone — real terrain elevation, a
 It is **imported into WinClone, not built into it.** Nothing in `index.html`,
 `app.js` or `styles.css` is modified. Everything lives in this directory.
 
-> **Status: phase 1 of 5 — it flies.** Real Cardiff terrain, EGFF with its
+> **Status: phase 2 of 5 — it flies, and the numbers are checked.** Real Cardiff terrain, EGFF with its
 > markings and lighting, an A320 with a 3D cockpit and exterior, blade-element
 > aerodynamics, oleo gear, CFM56 engines, PFD and ND. You can start on stand 7,
 > take off from runway 12 and fly.
 >
+> Phase 2 added the real lifting-line solve, section pitching moments, working
+> ground effect, a Newton trim solver, and 37 automated physics checks. The
+> aeroplane now stalls at 147 kt clean at 60 t, cruises at FL350 and M0.78 at
+> 1.6 degrees of incidence, and lands at 130 kt in the landing configuration —
+> all within a few percent of the real thing.
+>
 > Not yet built: the systems networks (electrical, hydraulic, pneumatic), ECAM,
 > the fly-by-wire laws, autoflight and the MCDU. Those are phases 3 to 5.
+> **Terrain streaming did not land in phase 2** — the simulator still flies on
+> the baked 25 km of Cardiff elevation, which is enough for a circuit but runs
+> out on a longer leg.
 >
 > Known rough edges, honestly: there is **no auto-trim** — the aeroplane is in
 > direct law and the engines sit below the centre of gravity, so full thrust
-> pitches the nose up and you have to hold it or trim it (`;` and `'`). The
-> **short final preset is not properly trimmed** and starts descending faster
-> than the glidepath. The terminal building does not render from the stand. The
-> lifting-line solve is deferred (see below).
+> pitches the nose up and you have to hold it or trim it (`;` and `'`). Left
+> completely unattended in a climb it wanders a few degrees off heading. The
+> terminal building does not render from the stand.
 
 ## Installing it into WinClone
 
@@ -144,6 +152,35 @@ brake, `Space` wheel brakes, `V` speedbrake, `R` reverse, `;` and `'` pitch trim
 Query parameters, useful for testing: `?preset=turnaround|lineup|approach`,
 `?wind=`, `?winddir=`, `?turb=`, `?selftest=1`, `?debug=0`.
 
+## Testing the physics
+
+```sh
+node flightsim/tools/aero_test.mjs   # 20 checks on the aerodynamics
+node flightsim/tools/perf_test.mjs   # 17 checks against published A320 numbers
+```
+
+Both load the real simulation modules into Node — no browser, no renderer —
+through `tools/simload.mjs`. That works because every source file is
+`BFS.Name = (function(){ … })()` with no top-level side effects, so giving the
+modules a `BFS` to attach to is enough to get the whole flight model as plain
+objects.
+
+`aero_test` checks the mechanism: that a symmetric wing gets a symmetric
+downwash, that the induced angle matches Prandtl's elliptic result, that roll
+damping opposes roll and sideslip is stable in yaw — none of which is written
+down anywhere in the model, all of which must fall out of it.
+
+`perf_test` checks the result against the aeroplane, using the trim solver to
+put it in the condition each published number is defined at. A strip model has
+dozens of interacting parameters and not one of them maps to a number a pilot
+would recognise; "it feels about right" is how a flight model ends up plausible
+everywhere and correct nowhere.
+
+One of those tests originally asserted a clean stalling speed of 118 kt, a
+figure carried in from the planning notes. It is wrong — 118 kt at 60 tonnes
+needs a lift coefficient over two, which no clean transport wing produces. The
+model said 147. The model was right and the test was wrong.
+
 ## A note on the aerodynamics
 
 Forces are computed per surface element from the airflow local to that element —
@@ -154,16 +191,22 @@ out of one line: the velocity seen by a strip is `v_body + ω × r`, so a rollin
 aeroplane meets the air at a higher angle on the down-going wing and resists the
 roll on its own.
 
-One piece is deliberately deferred. Induced angle currently uses the elliptic
-result, `α_ind = cl / (π·AR)`, per strip. The proper lifting-line solve — which
-couples the strips together and is what makes a wing drop at the stall — is a
-Phase 2 item. A first attempt at it summed each strip's circulation directly;
-that is not lifting-line theory, which integrates the *spanwise derivative* of
-circulation, and the error was worth measuring rather than arguing about: feeding
-the matrix a perfectly symmetric elliptic loading returned a mean induced angle of
-−0.05 on one wing and −2.89 on the other. The aeroplane duly rolled and yawed in
-dead calm air. Better a simple model that is right than a sophisticated one that
-is not.
+The lifting line is now the real thing: each strip sheds a horseshoe's pair of
+trailing vortices from its **edges**, and the downwash is summed over all of
+them. The edges are the whole point — a first attempt put a single vortex at each
+strip's centre, which is not lifting-line theory (the downwash integral is over
+the spanwise *derivative* of circulation, and a horseshoe's trailing pair is
+exactly its discrete form). Fed a perfectly symmetric elliptic loading it
+returned a mean induced angle of −0.05 on one wing and −2.89 on the other, and
+the aeroplane rolled and yawed in dead calm air.
+
+Two further things had to be right before it worked at all. Prandtl's equation is
+implicit and **cannot be iterated naively** — the loop gain here is between two
+and six, so substituting repeatedly runs away from the answer rather than
+towards it; it needs under-relaxation. And the per-strip induced angle has to be
+*initialised*, because left undefined it becomes NaN on the first step, and
+`NaN || 0` is `0` — so every defensive guard of that shape silently discarded the
+entire lifting-line contribution while every test still passed on geometry alone.
 
 ## Data
 

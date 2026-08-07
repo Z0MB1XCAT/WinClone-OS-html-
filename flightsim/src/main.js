@@ -105,17 +105,27 @@ BFS.main = function (host) {
       sim.ctl.gearLever = 1;
       sim.ctl.flapLever = 4;
       sim.surf.flap = 35; sim.surf.slat = 27;
-      /* Established on the glidepath: body pitch a few degrees nose-up with the
-         velocity vector three degrees down, which is the attitude that actually
-         holds the path rather than merely pointing along it. Full flap needs a
-         lot of nose-up stabiliser to trim, and there is no auto-trim until the
-         fly-by-wire arrives, so it is set here. */
-      var vapp = 70, path = -3 * U.DEG, body = 4.5 * U.DEG;
+      /* Established on the glidepath, and genuinely in trim.
+       *
+       * The attitude, the stabiliser setting and the thrust are solved for
+       * rather than guessed. Guessing does not work — the answer depends on
+       * weight, speed, flap setting and centre of gravity simultaneously, and
+       * the hand-picked numbers this replaced put the aeroplane on short final
+       * descending at five thousand feet a minute. */
+      BFS.MassBalance.init(sim, { fuel: 5200, payload: 13500 });
+      var vs = BFS.Trim.stallSpeed({ mass: sim.mass.m, alt: thr.elev,
+                                     flap: 35, slat: 27 });
+      var vapp = vs * 1.23;
+      var tr = BFS.Trim.solve({
+        mass: sim.mass.m, alt: thr.elev + 244, speed: vapp, gamma: -3 * U.DEG,
+        flap: 35, slat: 27, gear: 1, settle: 120
+      });
+      var body = tr.pitch;
       V.qFromEuler(sim.truth.quat, 0, body, crs * U.DEG);
-      V.set3(sim.truth.vBody, vapp * Math.cos(body - path), 0,
-                              vapp * Math.sin(body - path));
-      sim.ctl.thrust[0] = sim.ctl.thrust[1] = 0.52;
-      fctl.thsTrim = -7.5 * U.DEG;
+      V.set3(sim.truth.vBody, vapp * Math.cos(tr.alpha), 0,
+                              vapp * Math.sin(tr.alpha));
+      sim.ctl.thrust[0] = sim.ctl.thrust[1] = U.clamp(tr.thrustFrac, 0, 1);
+      fctl.thsTrim = tr.ths;
     } else {
       var s = E.spawn("7");
       BFS.State.placeAt(sim, s.lat, s.lon, s.elev + 3.05, s.hdg);
