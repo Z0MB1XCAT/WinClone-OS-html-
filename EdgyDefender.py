@@ -30,12 +30,25 @@
 #    Make a text file containing the line  EDGY-DEFENDER-TEST-FILE  and drop it
 #    in Downloads - it gets quarantined within a couple of seconds.
 #
-#  HONEST LIMITS (a browser-contained tool cannot lie about these)
-#    - It CANNOT stop a script that is ALREADY running - deleting its file
-#      doesn't kill the live interpreter. Pre-execution detection is the win.
-#    - It CANNOT rebuild deleted SYSTEM files: WinClone blocks every app from
-#      writing into C:\Windows. Recover those from the Recycle Bin (if they
-#      weren't permanent-deleted) or BIOS > Restore Factory Defaults.
+#  HOW HARD IT SCANS
+#    - Watches the WHOLE user profile, sweeps every second, and reads .py
+#      source to score threats BEFORE they run (del_file on system files,
+#      mass file-spam loops, self-hiding screen hijackers, reboot/identity
+#      tampering, and a points-based catch-all for novel combinations).
+#
+#  HONEST LIMITS - "nothing gets past it" is not achievable, and here's why.
+#  A contained, reactive Python tool cannot lie about these:
+#    - It CANNOT stop a script that is ALREADY running. Deleting its file
+#      doesn't kill the live interpreter. The win is catching the file
+#      BEFORE you double-click it - so keep Edgy running first.
+#    - A virus that runs in the ~1s gap before its first scan still fires.
+#      A virus can also call winclone.reboot(), which CLOSES every window
+#      but its own - including Edgy - and Edgy cannot relaunch itself
+#      (WinClone has no autostart). Edgy now quarantines reboot-using
+#      scripts on sight to blunt this, but only if it scans them first.
+#    - It CANNOT rebuild deleted SYSTEM files: WinClone blocks every app
+#      from writing into C:\Windows. Recover those from the Recycle Bin
+#      (if not permanent-deleted) or BIOS > Restore Factory Defaults.
 #    - PERSONAL-file restore works fully, because those folders are writable.
 # ============================================================================
 
@@ -43,28 +56,24 @@ import winclone
 import time
 
 # ------------------------------- configuration ------------------------------
-INTERVAL        = 2       # seconds between realtime sweeps
-FULL_RESCAN     = 15      # every N ticks, deep-scan everything (not just new)
-HEARTBEAT       = 10      # print an "all clear" status every N ticks
+INTERVAL        = 1       # seconds between realtime sweeps (tighter = safer)
+FULL_RESCAN     = 20      # every N ticks, deep-scan everything (not just new)
+HEARTBEAT       = 15      # print an "all clear" status every N ticks
 AGGRESSIVE      = False   # True = delete threats for good; False = Recycle Bin
 STOP_HIJACKS    = True    # kill screen effects when a hijacker is caught
 HEADLESS        = False   # True = hide our own window and run invisibly
 
 BACKUP          = True    # keep a restore vault of personal files
+BACKUP_EVERY    = 4       # run the (heavier) backup pass every N ticks
 CLEAN_FLOODS    = True    # auto-sweep junk-flood spam
 SPAM_FLOOD      = 15      # this many same-name copies in a folder = a flood
 MAX_FLOOD_TICK  = 150     # cap flood deletions per sweep (stay responsive)
 MAX_VAULT_FILES = 400     # don't hoard the whole disk
 MAX_FILE_CHARS  = 20000   # skip backing up anything bigger (likely media)
-VAULT_SAVE_EVERY = 5      # persist the vault every N ticks if it changed
+SCRIPT_SCORE    = 5       # heuristic points before a .py is treated as malware
 
-WATCH = [
-    "C:\\Users\\User\\Desktop",
-    "C:\\Users\\User\\Documents",
-    "C:\\Users\\User\\Downloads",
-    "C:\\Users\\User\\Pictures",
-    "C:\\Users\\User\\Music",
-]
+# Watch the whole user profile so a script saved ANYWHERE gets scanned.
+WATCH = ["C:\\Users\\User"]
 
 VAULT_FILE = "C:\\Users\\User\\Documents\\EdgyDefender.vault"
 LOG_FILE   = "C:\\Users\\User\\Documents\\EdgyDefender.log"
@@ -300,21 +309,46 @@ def classify(path):
             return (pair[1], "quarantine")
 
     # ---- static source analysis for scripts (pre-execution defense) ----
-    if low.endswith(".py"):
+    # Only .py that actually talk to the OS can do harm; plain scripts are safe.
+    if low.endswith(".py") and ("winclone" in cl or "wcgame" in cl):
         squash = cl.replace(" ", "")
-        deletes = "del_file(" in squash or "del_file (" in cl
+        deletes = "del_file(" in squash
         hits_system = (contains_any(cl, KNOWN_SYS_LOWER) or
                        ("windows" in cl and "system" in cl))
+
+        # 1) the unambiguous one: a script that deletes system files.
         if deletes and hits_system:
-            # a script that deletes system files: the dangerous one
             return ("Trojan.SystemWipe", "hijack")
+        # 2) mass file creation in a loop.
         writes = cl.count("new_file(") + cl.count(".write(")
         if writes >= 20:
             return ("Trojan.Spammer", "quarantine")
-        hides = "show_py_window(false" in squash
-        drives = ".effect(" in cl
-        if hides and drives:
+        # 3) self-hiding screen hijacker.
+        if "show_py_window(false" in squash and ".effect(" in cl:
             return ("Heuristic.ScreenHijack", "hijack")
+
+        # 4) scored catch-all for everything else nasty.
+        score = 0
+        if deletes:
+            score += 2
+        if "permanent=true" in squash:
+            score += 1
+        if "reboot(" in squash:                 # kills the AV / persistence trick
+            score += 3
+        if "show_py_window(false" in squash:    # no Stop button
+            score += 2
+        if "set_user_name(" in cl:              # identity tampering
+            score += 2
+        if ".effect(" in cl:
+            score += 1
+        if "stop_effects(" not in cl and "effect(\"all\"" in cl:
+            score += 1
+        if writes >= 8:
+            score += 2
+        if cl.count("open_app(") >= 5:
+            score += 2
+        if score >= SCRIPT_SCORE:
+            return ("Heuristic.Malware", "hijack")
 
     return None
 
@@ -628,11 +662,11 @@ def main():
         cleaned = sweep_floods(files, tick)
         check_system(tick)
 
-        # Back up whatever survived this sweep.
-        if BACKUP:
-            for p in gather():
+        # Back up whatever survived this sweep (heavier pass, run less often).
+        if BACKUP and (tick % BACKUP_EVERY == 0):
+            for p in files:
                 maybe_backup(p)
-            if S["vault_dirty"] and (tick % VAULT_SAVE_EVERY == 0):
+            if S["vault_dirty"]:
                 save_vault()
 
         S["known"] = files
