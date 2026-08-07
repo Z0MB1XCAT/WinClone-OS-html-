@@ -212,6 +212,14 @@ BFS.V = (function () {
     return o;
   }
 
+  /* Attitude is stored as body(forward-right-down) -> NED, the aerospace
+     convention, because that is the frame Euler angles and the whole flight
+     dynamics literature are defined in. Rendering wants ENU. The two differ by
+     an axis swap and a sign, so converting is cheaper than carrying a second
+     attitude representation and keeping them in step. */
+  function nedToEnu(o, v) { var n = v[0], e = v[1], d = v[2]; o[0] = e; o[1] = n; o[2] = -d; return o; }
+  function enuToNed(o, v) { var e = v[0], n = v[1], u = v[2]; o[0] = n; o[1] = e; o[2] = -u; return o; }
+
   /* The only sanctioned float64 -> float32 crossing. Matrices are built in
      double precision on the CPU with the camera already subtracted out, and are
      downcast once, here, on the way to the GPU. */
@@ -225,6 +233,7 @@ BFS.V = (function () {
     qrot: qrot, qrotInv: qrotInv, qIntegrate: qIntegrate, qSlerp: qSlerp,
     qFromEuler: qFromEuler, qToEuler: qToEuler,
     mat4: mat4, mIdent: mIdent, mMul: mMul, mTranslate: mTranslate, mScale: mScale,
-    mFromQuat: mFromQuat, mPerspective: mPerspective, mLookAt: mLookAt, toF32: toF32
+    mFromQuat: mFromQuat, mPerspective: mPerspective, mLookAt: mLookAt, toF32: toF32,
+    nedToEnu: nedToEnu, enuToNed: enuToNed
   };
 })();

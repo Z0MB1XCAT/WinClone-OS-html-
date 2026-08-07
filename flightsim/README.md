@@ -6,9 +6,20 @@ An Airbus A320 simulator that runs inside WinClone — real terrain elevation, a
 It is **imported into WinClone, not built into it.** Nothing in `index.html`,
 `app.js` or `styles.css` is modified. Everything lives in this directory.
 
-> **Status: phase 0 of 5.** The engine skeleton is up — clock, state tree,
-> geodetic frame, WebGL2 context, build pipeline and test harnesses. There is no
-> aircraft yet. Phase 1 is the first flyable build.
+> **Status: phase 1 of 5 — it flies.** Real Cardiff terrain, EGFF with its
+> markings and lighting, an A320 with a 3D cockpit and exterior, blade-element
+> aerodynamics, oleo gear, CFM56 engines, PFD and ND. You can start on stand 7,
+> take off from runway 12 and fly.
+>
+> Not yet built: the systems networks (electrical, hydraulic, pneumatic), ECAM,
+> the fly-by-wire laws, autoflight and the MCDU. Those are phases 3 to 5.
+>
+> Known rough edges, honestly: there is **no auto-trim** — the aeroplane is in
+> direct law and the engines sit below the centre of gravity, so full thrust
+> pitches the nose up and you have to hold it or trim it (`;` and `'`). The
+> **short final preset is not properly trimmed** and starts descending faster
+> than the glidepath. The terminal building does not render from the stand. The
+> lifting-line solve is deferred (see below).
 
 ## Installing it into WinClone
 
@@ -122,6 +133,37 @@ one-line purpose, and doubles as the architecture document.
    instead of being scripted — and it is the one thing here that would be
    genuinely expensive to retrofit.
 3. The renderer and displays are pure readers.
+
+## Flying it
+
+Arrow keys fly, `,` and `.` are the rudder, `PgUp`/`PgDn` the thrust levers and
+`\` snaps them between idle and TOGA. `G` gear, `[` and `]` flaps, `B` parking
+brake, `Space` wheel brakes, `V` speedbrake, `R` reverse, `;` and `'` pitch trim,
+`1`–`4` autobrake. `F1`–`F7` are snap views, drag to look around, `P` pauses.
+
+Query parameters, useful for testing: `?preset=turnaround|lineup|approach`,
+`?wind=`, `?winddir=`, `?turb=`, `?selftest=1`, `?debug=0`.
+
+## A note on the aerodynamics
+
+Forces are computed per surface element from the airflow local to that element —
+eighty-two strips across the wing, tailplane, fin, fuselage and nacelles — rather
+than from whole-aircraft coefficients. There is no roll damping term anywhere in
+this codebase, and no adverse yaw term, and no dihedral effect term. Each falls
+out of one line: the velocity seen by a strip is `v_body + ω × r`, so a rolling
+aeroplane meets the air at a higher angle on the down-going wing and resists the
+roll on its own.
+
+One piece is deliberately deferred. Induced angle currently uses the elliptic
+result, `α_ind = cl / (π·AR)`, per strip. The proper lifting-line solve — which
+couples the strips together and is what makes a wing drop at the stall — is a
+Phase 2 item. A first attempt at it summed each strip's circulation directly;
+that is not lifting-line theory, which integrates the *spanwise derivative* of
+circulation, and the error was worth measuring rather than arguing about: feeding
+the matrix a perfectly symmetric elliptic loading returned a mean induced angle of
+−0.05 on one wing and −2.89 on the other. The aeroplane duly rolled and yawed in
+dead calm air. Better a simple model that is right than a sophisticated one that
+is not.
 
 ## Data
 

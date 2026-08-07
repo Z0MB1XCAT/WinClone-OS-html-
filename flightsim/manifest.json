@@ -1,6 +1,6 @@
 {
   "name": "Bing Flight Simulator",
-  "phase": 0,
+  "phase": 1,
   "namespace": "BFS",
   "limits": {
     "linesWarn": 700,
@@ -9,12 +9,43 @@
     "seedDemBytesFail": 82000
   },
   "files": [
-    { "p": "core/util.js",    "why": "Scalar math, filters, PRNG, and the single safeStorage shim" },
-    { "p": "core/vecmat.js",  "why": "Float64 vec3/mat4/quat with out-params, no hot-path allocation" },
-    { "p": "core/geo.js",     "why": "WGS84 geodetic/ECEF/ENU, rebasable origin, slippy-tile math" },
-    { "p": "core/clock.js",   "why": "Fixed-step accumulator, dt clamping, visibility pause, watchdog" },
-    { "p": "core/state.js",   "why": "The sim state tree; owns the truth/adr split" },
-    { "p": "ui/selftest.js",  "why": "Boot-time assertions about the sandbox we actually run in" },
-    { "p": "main.js",         "why": "BFS.main entry point: wiring, the loop, and the boot overlay" }
+    { "p": "core/util.js",          "why": "Scalar math, filters, PRNG, and the single safeStorage shim" },
+    { "p": "core/vecmat.js",        "why": "Float64 vec3/mat4/quat with out-params, no hot-path allocation" },
+    { "p": "core/geo.js",           "why": "WGS84 geodetic/ECEF/ENU, rebasable origin, slippy-tile math" },
+    { "p": "core/clock.js",         "why": "Fixed-step accumulator, dt clamping, visibility pause, watchdog" },
+    { "p": "core/state.js",         "why": "The sim state tree; owns the truth/adr split" },
+
+    { "p": "data/dem_egff.js",      "why": "Baked elevation around Cardiff — generated, do not edit" },
+    { "p": "data/egff.js",          "why": "EGFF geometry, generated from two surveyed thresholds" },
+
+    { "p": "sim/a320_config.js",    "why": "A320 constants and the strip layout the flight model runs on" },
+    { "p": "sim/atmos.js",          "why": "ISA, wind with a boundary-layer profile, turbulence" },
+    { "p": "sim/aero_strips.js",    "why": "Blade-element aerodynamics — the file that decides how it flies" },
+    { "p": "sim/massbalance.js",    "why": "Per-tank fuel, centre of gravity, load-dependent inertia" },
+    { "p": "sim/rigidbody.js",      "why": "Six-degree-of-freedom integration in float64" },
+    { "p": "sim/engine_cfm56.js",   "why": "CFM56-5B4 with spool dynamics and a start sequence" },
+    { "p": "sim/gear.js",           "why": "Oleo struts, tyre friction, brakes, steering" },
+
+    { "p": "terrain/heightfield.js","why": "The single authority on ground height, pavement included" },
+
+    { "p": "sys/flightcontrols.js", "why": "The only path from systems into the flight model" },
+    { "p": "av/adirs.js",           "why": "Truth to sensed data — the only module allowed to bridge them" },
+
+    { "p": "gfx/gl.js",             "why": "Thin WebGL2 layer: programs, meshes, canvas textures" },
+    { "p": "gfx/shaders.js",        "why": "GLSL: sky, terrain, mesh, screen, sprite" },
+    { "p": "gfx/meshgen.js",        "why": "Procedural geometry — there is not one shipped mesh" },
+    { "p": "gfx/a320_ext.js",       "why": "A320 exterior, from the same numbers the flight model uses" },
+    { "p": "gfx/a320_cockpit.js",   "why": "Flight deck structure and the display quads" },
+    { "p": "gfx/airport.js",        "why": "EGFF pavement, markings, buildings and lighting" },
+    { "p": "gfx/terrain.js",        "why": "Warped grid that follows the aircraft, rebuilt time-sliced" },
+
+    { "p": "disp/gfx2d.js",         "why": "Airbus palette and the display scheduler's Surface type" },
+    { "p": "disp/pfd.js",           "why": "Primary flight display" },
+    { "p": "disp/nd.js",            "why": "Navigation display, ARC mode" },
+
+    { "p": "gfx/scene.js",          "why": "Assembles and draws the world; owns the two-pass depth split" },
+    { "p": "ui/input.js",           "why": "Keyboard, drag-look and snap views — no pointer lock anywhere" },
+    { "p": "ui/selftest.js",        "why": "Boot-time assertions about the sandbox we actually run in" },
+    { "p": "main.js",               "why": "BFS.main: the fixed tick order and the frame loop" }
   ]
 }

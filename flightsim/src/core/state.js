@@ -105,12 +105,16 @@ BFS.State = (function () {
         }
       },
 
-      /* ---- sensed air data and inertial reference: what the aeroplane believes ---- */
+      /* ---- sensed air data and inertial reference: what the aeroplane believes ----
+         Every field av/adirs.js writes must appear here with a sane initial
+         value. The displays and the head-up figures are drawn on the first frame,
+         which is before the first 30 Hz sensor tick has run — so anything missing
+         is read as undefined by a display rather than defaulting to zero. */
       adr: {
         ias: 0, tas: 0, gs: 0, mach: 0,
         altBaro: 0, altStd: 0, ralt: 0,
-        pitch: 0, roll: 0, hdgTrue: 0, hdgMag: 0, trk: 0,
-        vs: 0, fpa: 0, aoa: 0, slip: 0,
+        pitch: 0, roll: 0, hdgTrue: 0, hdgMag: 0, trk: 0, trkMag: 0,
+        vs: 0, fpa: 0, aoa: 0, slip: 0, load: 1, onGround: true,
         valid: { adr1: false, adr2: false, ir1: false, ir2: false }
       },
 
@@ -172,9 +176,8 @@ BFS.State = (function () {
     V.set3(s.truth.vBody, 0, 0, 0);
     V.set3(s.truth.vEnu, 0, 0, 0);
     V.set3(s.truth.omega, 0, 0, 0);
-    /* Heading is measured clockwise from north; the body-frame yaw angle that
-       produces it is its negation about the down axis. */
-    V.qFromEuler(s.truth.quat, 0, 0, -hdgTrueDeg * BFS.Util.DEG);
+    /* Attitude is body -> NED, so yaw is the true heading directly. */
+    V.qFromEuler(s.truth.quat, 0, 0, hdgTrueDeg * BFS.Util.DEG);
     s.truth.onGround = true;
     s.truth.crashed = false;
     return s;

@@ -163,7 +163,9 @@ function squeeze(src) {
 
 /* -------------------------------------------------------------- header lints */
 
-const HEADER = /^\s*\/\*\s*([^\n]+?)\s*\n\s*READS:\s*([^\n]*)\n\s*WRITES:\s*([^\n]*)\n\s*TICK:\s*([^\n]*)\n\s*DEPS:\s*([^\n]*?)\s*\*\//;
+/* DEPS may wrap onto continuation lines, and a header may be followed by prose
+   before the comment closes, so DEPS runs to the end of the block. */
+const HEADER = /^\s*\/\*\s*([^\n]+?)\s*\n\s*READS:\s*([^\n]*)\n\s*WRITES:\s*([^\n]*)\n\s*TICK:\s*([^\n]*)\n\s*DEPS:\s*([\s\S]*?)\*\//;
 
 /* `sim.aero.{F,M,alpha}` -> ["sim.aero.F","sim.aero.M","sim.aero.alpha"] */
 function expandFields(spec) {
