@@ -1,36 +1,13 @@
-# ============================================================================
-#  Edgy Defender  -  the antivirus with an attitude          # EDGY-DEFENDER-ALLOW
-#  A realtime security suite for WinClone with a full clickable UI.
-#  Pure Python (winclone + wcgame). No app.js edits.
-#
-#  HOW TO USE
-#    1. Save this file as  EdgyDefender.py  in  Documents\Python.
-#    2. Double-click it (or: python EdgyDefender.py). A window opens.
-#    3. Leave it open for realtime protection. Close it to stop.
-#
-#  THE UI
-#    DASHBOARD  - protection status, Quick Scan, realtime on/off toggle.
-#    QUARANTINE - everything caught, with Restore / Delete per item.
-#    HISTORY    - a running log of every detection and action.
-#    SETTINGS   - toggles, restore-my-files, backup, clear history.
-#
-#  HONEST LIMITS (a contained, reactive tool can't fake these)
-#    - It can't stop a script that is ALREADY running, and it can't rebuild
-#      deleted C:\Windows system files (the OS blocks writes there).
-#    - No autostart exists in WinClone, so you launch it each session.
-#    Detection is strongest BEFORE you run something - keep it open first.
-# ============================================================================
 
 import winclone
 import wcgame as g
 import time
 
-# --------------------------------- config -----------------------------------
 W = 720
 H = 540
 FPS = 20
-RT_INTERVAL = 1.5          # seconds between realtime sweeps
-SCAN_BATCH  = 18           # files scanned per frame during a Quick Scan
+RT_INTERVAL = 1.5
+SCAN_BATCH  = 18
 SPAM_FLOOD  = 15
 MAX_FLOOD   = 400
 MAX_HISTORY = 300
@@ -58,7 +35,6 @@ WHITELIST = ["edgydefender.py", "edgydefender.quarantine",
              "edgydefender.vault", "edgyrestore.py"]
 ALLOW_MARK = "EDGY-DEFENDER-ALLOW"
 
-# --- signature database ---
 CONTENT_SIGS = [
     ("edgy-defender-test-file",              "EICAR-Test"),
     ("eicar-standard-antivirus-test-file",   "EICAR-Test"),
@@ -77,7 +53,6 @@ BAD_WORDS = ["virus", "trojan", "malware", "keylog", "spyware", "ransom",
 MEDIA_EXT = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico",
              ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov"]
 
-# --- palette (Norton/McAfee-ish dark) ---
 BG      = "#0d1424"
 PANEL   = "#151f38"
 PANEL2  = "#1c2947"
@@ -90,13 +65,12 @@ RED     = "#ff5c5c"
 ORANGE  = "#ffab3d"
 KNOB    = "#f4f7ff"
 
-# --- shared state ---
 S = {
     "tab": "dash",
     "protect": True,
     "sound": True,
-    "quarantine": [],     # list of dicts: id,time,threat,path,name,content
-    "history": [],        # list of dicts: time,action,threat,name,path
+    "quarantine": [],
+    "history": [],
     "vault": {},
     "qid": 1,
     "scanned": 0,
@@ -114,14 +88,11 @@ S = {
     "toast_t": 0.0,
 }
 
-
-# ------------------------------- small helpers ------------------------------
 def base(path):
     i = path.rfind("\\")
     if i < 0:
         return path
     return path[i + 1:]
-
 
 def parent_of(path):
     i = path.rfind("\\")
@@ -129,10 +100,8 @@ def parent_of(path):
         return ""
     return path[:i]
 
-
 def is_windows_path(path):
     return path.lower().startswith("c:\\windows")
-
 
 def has_media_ext(low):
     for ext in MEDIA_EXT:
@@ -140,13 +109,11 @@ def has_media_ext(low):
             return True
     return False
 
-
 def contains_any(text, needles):
     for n in needles:
         if n in text:
             return True
     return False
-
 
 def clockstr():
     t = int(time.time())
@@ -156,13 +123,11 @@ def clockstr():
     ss = secs % 60
     return two(hh) + ":" + two(mm) + ":" + two(ss)
 
-
 def two(n):
     s = str(n)
     if len(s) < 2:
         return "0" + s
     return s
-
 
 def is_folder(path):
     try:
@@ -170,7 +135,6 @@ def is_folder(path):
         return True
     except Exception:
         return False
-
 
 def gather():
     found = []
@@ -191,15 +155,12 @@ def gather():
                 found.append(p)
     return found
 
-
-# ------------------------------- persistence --------------------------------
 def esc(s):
     s = s.replace("\\", "\\\\")
     s = s.replace("\n", "\\n")
     s = s.replace("\r", "\\r")
     s = s.replace("\t", "\\t")
     return s
-
 
 def unesc(s):
     out = ""
@@ -223,7 +184,6 @@ def unesc(s):
             i += 1
     return out
 
-
 def save_quarantine():
     lines = ["QSTORE1"]
     for r in S["quarantine"]:
@@ -234,7 +194,6 @@ def save_quarantine():
         winclone.write(Q_FILE, "\n".join(lines), overwrite=True)
     except Exception:
         pass
-
 
 def load_quarantine():
     S["quarantine"] = []
@@ -266,7 +225,6 @@ def load_quarantine():
             "content": unesc(bits[5])})
     S["qid"] = top + 1
 
-
 def save_history():
     hist = S["history"]
     if len(hist) > MAX_HISTORY:
@@ -281,7 +239,6 @@ def save_history():
         winclone.write(H_FILE, "\n".join(lines), overwrite=True)
     except Exception:
         pass
-
 
 def load_history():
     S["history"] = []
@@ -308,7 +265,6 @@ def load_history():
             "threat": unesc(bits[2]), "name": unesc(bits[3]),
             "path": unesc(bits[4])})
 
-
 def save_cfg():
     txt = ("protect=" + ("1" if S["protect"] else "0") + "\n" +
            "sound=" + ("1" if S["sound"] else "0"))
@@ -316,7 +272,6 @@ def save_cfg():
         winclone.write(CFG_FILE, txt, overwrite=True)
     except Exception:
         pass
-
 
 def load_cfg():
     try:
@@ -329,7 +284,6 @@ def load_cfg():
                 S["sound"] = line.strip().endswith("1")
     except Exception:
         pass
-
 
 def load_vault():
     S["vault"] = {}
@@ -351,7 +305,6 @@ def load_vault():
         if len(bits) == 2:
             S["vault"][unesc(bits[0])] = unesc(bits[1])
 
-
 def save_vault():
     lines = ["EDGYVAULT2"]
     for p in S["vault"].keys():
@@ -361,8 +314,6 @@ def save_vault():
     except Exception:
         pass
 
-
-# ------------------------------- detection ----------------------------------
 def classify(path):
     name = base(path)
     low = name.lower()
@@ -429,13 +380,10 @@ def classify(path):
             return ("Heuristic.Malware", "quarantine")
     return None
 
-
-# ------------------------------- actions ------------------------------------
 def add_history(action, threat, name, path):
     S["history"].append({"time": clockstr(), "action": action,
                          "threat": threat, "name": name, "path": path})
     save_history()
-
 
 def do_quarantine(path, threat):
     """Copy the threat into the quarantine store, then remove the original."""
@@ -464,7 +412,6 @@ def do_quarantine(path, threat):
             pass
     return True
 
-
 def unquarantine(rec):
     ok = False
     try:
@@ -481,11 +428,9 @@ def unquarantine(rec):
         notify("Restore failed", rec["name"] + " - its folder may be gone")
     return ok
 
-
 def delete_q(rec):
     remove_q(rec["id"])
     add_history("deleted", rec["threat"], rec["name"], rec["path"])
-
 
 def remove_q(rid):
     keep = []
@@ -495,13 +440,11 @@ def remove_q(rid):
     S["quarantine"] = keep
     save_quarantine()
 
-
 def notify(title, body):
     try:
         winclone.notify(title, body)
     except Exception:
         pass
-
 
 def maybe_backup(path):
     low = base(path).lower()
@@ -519,7 +462,6 @@ def maybe_backup(path):
     if old is None and len(S["vault"]) >= MAX_VAULT_FILES:
         return
     S["vault"][path] = content
-
 
 def restore_personal():
     restored = 0
@@ -541,7 +483,6 @@ def restore_personal():
     notify("Edgy Defender", str(restored) + " personal file(s) restored")
     toast(str(restored) + " file(s) restored, " + str(failed) + " failed")
 
-
 def strip_dupe(name):
     dot = name.rfind(".")
     if dot > 0:
@@ -557,7 +498,6 @@ def strip_dupe(name):
             if inner.isdigit():
                 stem = stem[:op]
     return stem + ext
-
 
 def sweep_floods(files):
     groups = {}
@@ -593,7 +533,6 @@ def sweep_floods(files):
             notify("Cleaned junk flood", str(n) + " x '" + fam + "'")
     return removed
 
-
 def check_system():
     missing = []
     for nm in KNOWN_SYS:
@@ -601,8 +540,6 @@ def check_system():
             missing.append(nm)
     return missing
 
-
-# ------------------------------- scanning -----------------------------------
 def start_scan():
     if S["scanning"]:
         return
@@ -611,7 +548,7 @@ def start_scan():
     S["scan_total"] = len(S["scan_queue"])
     S["scan_done"] = 0
     S["scan_hits"] = 0
-
+    S["scanned"] = 0
 
 def step_scan():
     q = S["scan_queue"]
@@ -633,7 +570,6 @@ def step_scan():
     if not q:
         finish_scan()
 
-
 def finish_scan():
     S["scanning"] = False
     sweep_floods(gather())
@@ -641,7 +577,6 @@ def finish_scan():
     S["last_scan"] = clockstr()
     S["known"] = gather()
     toast("Scan complete - " + str(S["scan_hits"]) + " threat(s) caught")
-
 
 def realtime_tick():
     files = gather()
@@ -652,7 +587,6 @@ def realtime_tick():
             newf.append(p)
     for path in newf:
         res = classify(path)
-        S["scanned"] += 1
         if res is None:
             continue
         if res[1] == "victim":
@@ -662,16 +596,12 @@ def realtime_tick():
     sweep_floods(files)
     S["known"] = gather()
 
-
-# --------------------------------- UI ---------------------------------------
 def toast(msg):
     S["toast"] = msg
     S["toast_t"] = g.clock()
 
-
 def point_in(px, py, x, y, w, h):
     return px >= x and px <= x + w and py >= y and py <= y + h
-
 
 def button(mx, my, click, x, y, w, h, label, col):
     hot = point_in(mx, my, x, y, w, h)
@@ -680,7 +610,6 @@ def button(mx, my, click, x, y, w, h, label, col):
         g.rect(x, y, w, h, "#ffffff", fill=False, width=2)
     g.text(label, x + w / 2, y + h / 2 - 7, "#ffffff", size=13, align="center")
     return click and hot
-
 
 def toggle(mx, my, click, x, y, on):
     w = 52
@@ -692,7 +621,6 @@ def toggle(mx, my, click, x, y, on):
     if click and point_in(mx, my, x, y, w, hgt):
         return True
     return False
-
 
 def draw_shield(cx, cy, size, col, ok):
     hw = size / 2
@@ -708,7 +636,6 @@ def draw_shield(cx, cy, size, col, ok):
     else:
         g.rect(cx - 3, cy - size * 0.28, 6, size * 0.34, "#ffffff")
         g.rect(cx - 3, cy + size * 0.16, 6, 6, "#ffffff")
-
 
 def draw_tabs(mx, my, click):
     tabs = [["dash", "Dashboard"], ["quar", "Quarantine"],
@@ -727,10 +654,8 @@ def draw_tabs(mx, my, click):
         x += tw
     g.rect(0, 46, W, 1, LINE)
 
-
 def panel(x, y, w, h):
     g.rect(x, y, w, h, PANEL)
-
 
 def draw_dashboard(mx, my, click):
     missing = check_system()
@@ -759,14 +684,12 @@ def draw_dashboard(mx, my, click):
     g.text(sub, 150, 116, SUB, size=13)
     g.text("Last scan: " + S["last_scan"], 150, 140, SUB, size=12)
 
-    # realtime toggle on the card
     g.text("Realtime", W - 150, 96, SUB, size=12)
     if toggle(mx, my, click, W - 78, 90, S["protect"]):
         S["protect"] = not S["protect"]
         save_cfg()
         toast("Realtime protection " + ("on" if S["protect"] else "off"))
 
-    # stat tiles
     tiles = [["Scanned", str(S["scanned"])],
              ["In quarantine", str(threats)],
              ["Detections", str(len(S["history"]))]]
@@ -777,7 +700,6 @@ def draw_dashboard(mx, my, click):
         g.text(t[0], tx + 16, 270, SUB, size=12)
         tx += 224
 
-    # scan button / progress
     if S["scanning"]:
         pct = 0
         if S["scan_total"] > 0:
@@ -792,7 +714,6 @@ def draw_dashboard(mx, my, click):
         if button(mx, my, click, 20, 330, 220, 54, "Quick Scan", ACCENT):
             start_scan()
         g.text("Scan the whole PC for threats now.", 260, 348, SUB, size=13)
-
 
 def row_list(items, scroll_key, mx, my, click):
     """Render a scrollable list area, return (top, visible, row_h, area_y)."""
@@ -812,7 +733,6 @@ def row_list(items, scroll_key, mx, my, click):
     if scroll > maxscroll:
         scroll = maxscroll
         S[scroll_key] = scroll
-    # scroll buttons
     if total > visible:
         if button(mx, my, click, ax + aw - 84, ay + 8, 36, 28, "^", PANEL2):
             if scroll > 0:
@@ -821,7 +741,6 @@ def row_list(items, scroll_key, mx, my, click):
             if scroll < maxscroll:
                 S[scroll_key] = scroll + 1
     return (ax, ay, aw, ah, header, row_h, visible, scroll)
-
 
 def draw_quarantine(mx, my, click):
     items = S["quarantine"]
@@ -860,7 +779,6 @@ def draw_quarantine(mx, my, click):
         y += row_h
         i += 1
 
-
 def draw_history(mx, my, click):
     items = S["history"]
     box = row_list(items, "scroll_h", mx, my, click)
@@ -882,7 +800,6 @@ def draw_history(mx, my, click):
     if not items:
         g.text("No detections yet.", ax + 16, ay + header + 20, SUB, size=13)
         return
-    # newest first
     order = []
     j = len(items) - 1
     while j >= 0:
@@ -908,7 +825,6 @@ def draw_history(mx, my, click):
         g.rect(ax + 14, y + 32, aw - 28, 1, LINE)
         y += row_h
         i += 1
-
 
 def draw_settings(mx, my, click):
     ax = 20
@@ -956,7 +872,6 @@ def draw_settings(mx, my, click):
     else:
         g.text("System files: all present.", ax + 24, y, GREEN, size=13)
 
-
 def draw_toast():
     if not S["toast"]:
         return
@@ -968,8 +883,6 @@ def draw_toast():
     g.rect(W / 2 - tw / 2, H - 44, tw, 30, ACCENT, fill=False, width=1)
     g.text(S["toast"], W / 2, H - 37, TXT, size=12, align="center")
 
-
-# --------------------------------- main -------------------------------------
 def main():
     g.init(W, H, "Edgy Defender")
     g.fps(FPS)
@@ -1001,7 +914,6 @@ def main():
 
         draw_toast()
 
-        # background work
         if S["scanning"]:
             step_scan()
         elif S["protect"]:
@@ -1010,6 +922,5 @@ def main():
                 S["rt_last"] = g.clock()
 
         g.flip()
-
 
 main()
