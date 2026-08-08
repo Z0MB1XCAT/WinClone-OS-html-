@@ -1,84 +1,51 @@
 # ============================================================================
 #  Edgy Defender  -  the antivirus with an attitude          # EDGY-DEFENDER-ALLOW
-#  A realtime, pure-Python security suite for WinClone. No app.js edits.
-#
-#  WHAT IT DOES
-#    - Realtime scanning of your folders (catches threats as files appear).
-#    - PRE-EXECUTION detection: reads .py source and quarantines droppers
-#      BEFORE you double-click them - the only point it can actually stop a
-#      destructive script from running.
-#    - Backs up your personal files to a vault and can RESTORE them later,
-#      no factory reset needed.
-#    - Junk-flood cleanup: sweeps the spam files viruses leave behind.
-#    - System-file integrity monitor with honest recovery guidance.
+#  A realtime security suite for WinClone with a full clickable UI.
+#  Pure Python (winclone + wcgame). No app.js edits.
 #
 #  HOW TO USE
 #    1. Save this file as  EdgyDefender.py  in  Documents\Python.
-#    2. Double-click it, or run  python EdgyDefender.py  in the Terminal.
-#    3. Leave it running. That's the whole point of realtime protection.
+#    2. Double-click it (or: python EdgyDefender.py). A window opens.
+#    3. Leave it open for realtime protection. Close it to stop.
 #
-#  THE "BUTTONS"  (this is a console app, so buttons are trigger files)
-#    Create a file whose NAME starts with one of these, anywhere in a watched
-#    folder (e.g. on the Desktop), and Edgy acts on the next sweep, then
-#    deletes the trigger:
-#       edgy-restore          -> restore your personal files from the vault
-#       edgy-restore-system   -> attempt a system-file restore (see note below)
-#       edgy-cleanup          -> sweep junk-flood spam right now
-#       edgy-status           -> print / notify a status report
+#  THE UI
+#    DASHBOARD  - protection status, Quick Scan, realtime on/off toggle.
+#    QUARANTINE - everything caught, with Restore / Delete per item.
+#    HISTORY    - a running log of every detection and action.
+#    SETTINGS   - toggles, restore-my-files, backup, clear history.
 #
-#  TRY THE DETECTOR
-#    Make a text file containing the line  EDGY-DEFENDER-TEST-FILE  and drop it
-#    in Downloads - it gets quarantined within a couple of seconds.
-#
-#  HOW HARD IT SCANS
-#    - Watches the WHOLE user profile, sweeps every second, and reads .py
-#      source to score threats BEFORE they run (del_file on system files,
-#      mass file-spam loops, self-hiding screen hijackers, reboot/identity
-#      tampering, and a points-based catch-all for novel combinations).
-#
-#  HONEST LIMITS - "nothing gets past it" is not achievable, and here's why.
-#  A contained, reactive Python tool cannot lie about these:
-#    - It CANNOT stop a script that is ALREADY running. Deleting its file
-#      doesn't kill the live interpreter. The win is catching the file
-#      BEFORE you double-click it - so keep Edgy running first.
-#    - A virus that runs in the ~1s gap before its first scan still fires.
-#      A virus can also call winclone.reboot(), which CLOSES every window
-#      but its own - including Edgy - and Edgy cannot relaunch itself
-#      (WinClone has no autostart). Edgy now quarantines reboot-using
-#      scripts on sight to blunt this, but only if it scans them first.
-#    - It CANNOT rebuild deleted SYSTEM files: WinClone blocks every app
-#      from writing into C:\Windows. Recover those from the Recycle Bin
-#      (if not permanent-deleted) or BIOS > Restore Factory Defaults.
-#    - PERSONAL-file restore works fully, because those folders are writable.
+#  HONEST LIMITS (a contained, reactive tool can't fake these)
+#    - It can't stop a script that is ALREADY running, and it can't rebuild
+#      deleted C:\Windows system files (the OS blocks writes there).
+#    - No autostart exists in WinClone, so you launch it each session.
+#    Detection is strongest BEFORE you run something - keep it open first.
 # ============================================================================
 
 import winclone
+import wcgame as g
 import time
 
-# ------------------------------- configuration ------------------------------
-INTERVAL        = 1       # seconds between realtime sweeps (tighter = safer)
-FULL_RESCAN     = 20      # every N ticks, deep-scan everything (not just new)
-HEARTBEAT       = 15      # print an "all clear" status every N ticks
-AGGRESSIVE      = False   # True = delete threats for good; False = Recycle Bin
-STOP_HIJACKS    = True    # kill screen effects when a hijacker is caught
-HEADLESS        = False   # True = hide our own window and run invisibly
+# --------------------------------- config -----------------------------------
+W = 720
+H = 540
+FPS = 20
+RT_INTERVAL = 1.5          # seconds between realtime sweeps
+SCAN_BATCH  = 18           # files scanned per frame during a Quick Scan
+SPAM_FLOOD  = 15
+MAX_FLOOD   = 400
+MAX_HISTORY = 300
+MAX_VAULT_FILES = 400
+MAX_FILE_CHARS  = 20000
+SCRIPT_SCORE = 5
 
-BACKUP          = True    # keep a restore vault of personal files
-BACKUP_EVERY    = 4       # run the (heavier) backup pass every N ticks
-CLEAN_FLOODS    = True    # auto-sweep junk-flood spam
-SPAM_FLOOD      = 15      # this many same-name copies in a folder = a flood
-MAX_FLOOD_TICK  = 150     # cap flood deletions per sweep (stay responsive)
-MAX_VAULT_FILES = 400     # don't hoard the whole disk
-MAX_FILE_CHARS  = 20000   # skip backing up anything bigger (likely media)
-SCRIPT_SCORE    = 5       # heuristic points before a .py is treated as malware
-
-# Watch the whole user profile so a script saved ANYWHERE gets scanned.
 WATCH = ["C:\\Users\\User"]
 
-VAULT_FILE = "C:\\Users\\User\\Documents\\EdgyDefender.vault"
-LOG_FILE   = "C:\\Users\\User\\Documents\\EdgyDefender.log"
+DOCS = "C:\\Users\\User\\Documents\\"
+Q_FILE     = DOCS + "EdgyDefender.quarantine"
+H_FILE     = DOCS + "EdgyDefender.history"
+CFG_FILE   = DOCS + "EdgyDefender.cfg"
+VAULT_FILE = DOCS + "EdgyDefender.vault"
 
-# Real WinClone system files, and where they live.
 SYS_DIR   = "C:\\Windows\\System"
 KNOWN_SYS = ["systemwinclone.sys", "SysWIW48.dll", "winclone_kernel.dll",
              "wclogon.exe", "bootmgr.wc"]
@@ -86,21 +53,12 @@ KNOWN_SYS_LOWER = []
 for _n in KNOWN_SYS:
     KNOWN_SYS_LOWER.append(_n.lower())
 
-# Files Edgy never touches (itself, its log, its vault).
-WHITELIST  = ["edgydefender.py", "edgydefender.log", "edgydefender.vault",
-              "edgyrestore.py"]
-# Any file containing this marker is trusted and skipped. Drop it in a comment
-# in your own scripts to opt them out of scanning.
+WHITELIST = ["edgydefender.py", "edgydefender.quarantine",
+             "edgydefender.history", "edgydefender.cfg",
+             "edgydefender.vault", "edgyrestore.py"]
 ALLOW_MARK = "EDGY-DEFENDER-ALLOW"
 
-# The trigger-file "buttons".
-TRIGGERS = ["edgy-restore-system", "edgy-restore", "edgy-cleanup", "edgy-status"]
-
-# Media we don't bother backing up (big binary-ish data URLs).
-MEDIA_EXT = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico",
-             ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov"]
-
-# --------------------------- the signature database -------------------------
+# --- signature database ---
 CONTENT_SIGS = [
     ("edgy-defender-test-file",              "EICAR-Test"),
     ("eicar-standard-antivirus-test-file",   "EICAR-Test"),
@@ -116,10 +74,45 @@ BAD_EXT = [".txt.exe", ".jpg.exe", ".png.exe", ".pdf.exe", ".doc.exe",
 RISKY_DL_EXT = [".exe", ".scr", ".bat", ".com", ".cmd"]
 BAD_WORDS = ["virus", "trojan", "malware", "keylog", "spyware", "ransom",
              "backdoor", "coinminer", "payload", "rootkit", "hacktool"]
+MEDIA_EXT = [".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".ico",
+             ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov"]
 
-# Shared, mutable state so helper functions don't need `global`.
-S = {"vault": {}, "vault_dirty": False, "scanned": 0, "quarantined": 0,
-     "cleaned": 0, "known": [], "sys_alerted": [], "victims": []}
+# --- palette (Norton/McAfee-ish dark) ---
+BG      = "#0d1424"
+PANEL   = "#151f38"
+PANEL2  = "#1c2947"
+LINE    = "#26355c"
+TXT     = "#e8edf6"
+SUB     = "#93a4c4"
+ACCENT  = "#2f6bff"
+GREEN   = "#31c46a"
+RED     = "#ff5c5c"
+ORANGE  = "#ffab3d"
+KNOB    = "#f4f7ff"
+
+# --- shared state ---
+S = {
+    "tab": "dash",
+    "protect": True,
+    "sound": True,
+    "quarantine": [],     # list of dicts: id,time,threat,path,name,content
+    "history": [],        # list of dicts: time,action,threat,name,path
+    "vault": {},
+    "qid": 1,
+    "scanned": 0,
+    "last_scan": "never",
+    "scanning": False,
+    "scan_queue": [],
+    "scan_total": 0,
+    "scan_done": 0,
+    "scan_hits": 0,
+    "known": [],
+    "rt_last": 0.0,
+    "scroll_q": 0,
+    "scroll_h": 0,
+    "toast": "",
+    "toast_t": 0.0,
+}
 
 
 # ------------------------------- small helpers ------------------------------
@@ -141,45 +134,9 @@ def is_windows_path(path):
     return path.lower().startswith("c:\\windows")
 
 
-def is_folder(path):
-    try:
-        winclone.ls(path)
-        return True
-    except Exception:
-        return False
-
-
-def gather():
-    """Every file under every watched folder. Never raises."""
-    found = []
-    stack = []
-    for root in WATCH:
-        stack.append(root)
-    while stack:
-        folder = stack.pop()
-        try:
-            names = winclone.ls(folder)
-        except Exception:
-            continue
-        for name in names:
-            path = folder + "\\" + name
-            if is_folder(path):
-                stack.append(path)
-            else:
-                found.append(path)
-    return found
-
-
 def has_media_ext(low):
     for ext in MEDIA_EXT:
         if low.endswith(ext):
-            return True
-    return False
-
-
-def is_trigger(low):
-    for t in TRIGGERS:
-        if low.startswith(t):
             return True
     return False
 
@@ -191,8 +148,51 @@ def contains_any(text, needles):
     return False
 
 
-# ------------------------------- vault codec --------------------------------
-# Newline/tab-safe, length-free escaping so any file content round-trips.
+def clockstr():
+    t = int(time.time())
+    secs = t % 86400
+    hh = secs // 3600
+    mm = (secs % 3600) // 60
+    ss = secs % 60
+    return two(hh) + ":" + two(mm) + ":" + two(ss)
+
+
+def two(n):
+    s = str(n)
+    if len(s) < 2:
+        return "0" + s
+    return s
+
+
+def is_folder(path):
+    try:
+        winclone.ls(path)
+        return True
+    except Exception:
+        return False
+
+
+def gather():
+    found = []
+    stack = []
+    for root in WATCH:
+        stack.append(root)
+    while stack:
+        folder = stack.pop()
+        try:
+            names = winclone.ls(folder)
+        except Exception:
+            continue
+        for name in names:
+            p = folder + "\\" + name
+            if is_folder(p):
+                stack.append(p)
+            else:
+                found.append(p)
+    return found
+
+
+# ------------------------------- persistence --------------------------------
 def esc(s):
     s = s.replace("\\", "\\\\")
     s = s.replace("\n", "\\n")
@@ -208,15 +208,15 @@ def unesc(s):
     while i < n:
         ch = s[i]
         if ch == "\\" and i + 1 < n:
-            nxt = s[i + 1]
-            if nxt == "n":
+            nx = s[i + 1]
+            if nx == "n":
                 out += "\n"
-            elif nxt == "r":
+            elif nx == "r":
                 out += "\r"
-            elif nxt == "t":
+            elif nx == "t":
                 out += "\t"
             else:
-                out += nxt
+                out += nx
             i += 2
         else:
             out += ch
@@ -224,18 +224,123 @@ def unesc(s):
     return out
 
 
-def encode_vault(vault):
-    lines = ["EDGYVAULT2"]
-    for path in vault.keys():
-        lines.append(esc(path) + "\t" + esc(vault[path]))
-    return "\n".join(lines)
+def save_quarantine():
+    lines = ["QSTORE1"]
+    for r in S["quarantine"]:
+        lines.append(str(r["id"]) + "\t" + r["time"] + "\t" + esc(r["threat"]) +
+                     "\t" + esc(r["path"]) + "\t" + esc(r["name"]) +
+                     "\t" + esc(r["content"]))
+    try:
+        winclone.write(Q_FILE, "\n".join(lines), overwrite=True)
+    except Exception:
+        pass
 
 
-def decode_vault(text):
-    vault = {}
+def load_quarantine():
+    S["quarantine"] = []
+    try:
+        if not winclone.exists(Q_FILE):
+            return
+        text = winclone.read(Q_FILE)
+    except Exception:
+        return
     lines = text.split("\n")
+    if len(lines) == 0 or lines[0] != "QSTORE1":
+        return
+    idx = 1
+    top = 0
+    while idx < len(lines):
+        line = lines[idx]
+        idx += 1
+        if line == "":
+            continue
+        bits = line.split("\t", 5)
+        if len(bits) < 6:
+            continue
+        rid = int(bits[0])
+        if rid > top:
+            top = rid
+        S["quarantine"].append({
+            "id": rid, "time": bits[1], "threat": unesc(bits[2]),
+            "path": unesc(bits[3]), "name": unesc(bits[4]),
+            "content": unesc(bits[5])})
+    S["qid"] = top + 1
+
+
+def save_history():
+    hist = S["history"]
+    if len(hist) > MAX_HISTORY:
+        hist = hist[len(hist) - MAX_HISTORY:]
+        S["history"] = hist
+    lines = ["HIST1"]
+    for r in hist:
+        lines.append(r["time"] + "\t" + esc(r["action"]) + "\t" +
+                     esc(r["threat"]) + "\t" + esc(r["name"]) + "\t" +
+                     esc(r["path"]))
+    try:
+        winclone.write(H_FILE, "\n".join(lines), overwrite=True)
+    except Exception:
+        pass
+
+
+def load_history():
+    S["history"] = []
+    try:
+        if not winclone.exists(H_FILE):
+            return
+        text = winclone.read(H_FILE)
+    except Exception:
+        return
+    lines = text.split("\n")
+    if len(lines) == 0 or lines[0] != "HIST1":
+        return
+    idx = 1
+    while idx < len(lines):
+        line = lines[idx]
+        idx += 1
+        if line == "":
+            continue
+        bits = line.split("\t", 4)
+        if len(bits) < 5:
+            continue
+        S["history"].append({
+            "time": bits[0], "action": unesc(bits[1]),
+            "threat": unesc(bits[2]), "name": unesc(bits[3]),
+            "path": unesc(bits[4])})
+
+
+def save_cfg():
+    txt = ("protect=" + ("1" if S["protect"] else "0") + "\n" +
+           "sound=" + ("1" if S["sound"] else "0"))
+    try:
+        winclone.write(CFG_FILE, txt, overwrite=True)
+    except Exception:
+        pass
+
+
+def load_cfg():
+    try:
+        if not winclone.exists(CFG_FILE):
+            return
+        for line in winclone.read(CFG_FILE).split("\n"):
+            if line.startswith("protect="):
+                S["protect"] = line.strip().endswith("1")
+            elif line.startswith("sound="):
+                S["sound"] = line.strip().endswith("1")
+    except Exception:
+        pass
+
+
+def load_vault():
+    S["vault"] = {}
+    try:
+        if not winclone.exists(VAULT_FILE):
+            return
+        lines = winclone.read(VAULT_FILE).split("\n")
+    except Exception:
+        return
     if len(lines) == 0 or lines[0] != "EDGYVAULT2":
-        return vault
+        return
     idx = 1
     while idx < len(lines):
         line = lines[idx]
@@ -244,37 +349,25 @@ def decode_vault(text):
             continue
         bits = line.split("\t", 1)
         if len(bits) == 2:
-            vault[unesc(bits[0])] = unesc(bits[1])
-    return vault
-
-
-def load_vault():
-    try:
-        if winclone.exists(VAULT_FILE):
-            S["vault"] = decode_vault(winclone.read(VAULT_FILE))
-    except Exception:
-        S["vault"] = {}
+            S["vault"][unesc(bits[0])] = unesc(bits[1])
 
 
 def save_vault():
+    lines = ["EDGYVAULT2"]
+    for p in S["vault"].keys():
+        lines.append(esc(p) + "\t" + esc(S["vault"][p]))
     try:
-        winclone.write(VAULT_FILE, encode_vault(S["vault"]), overwrite=True)
-        S["vault_dirty"] = False
+        winclone.write(VAULT_FILE, "\n".join(lines), overwrite=True)
     except Exception:
         pass
 
 
 # ------------------------------- detection ----------------------------------
 def classify(path):
-    """Return (threat_name, action) or None.
-       actions: 'quarantine', 'hijack' (quarantine + stop effects),
-                'victim' (encrypted file - alert, never delete)."""
     name = base(path)
     low = name.lower()
-
-    if low in WHITELIST or is_trigger(low):
+    if low in WHITELIST:
         return None
-
     try:
         content = winclone.read(path)
     except Exception as e:
@@ -282,13 +375,10 @@ def classify(path):
         if "encrypt" in msg or "ransom" in msg:
             return ("Ransom.Locked", "victim")
         return None
-
     if ALLOW_MARK in content:
         return None
-
     cl = content.lower()
 
-    # ---- filename rules ----
     if low.startswith("wcworm_"):
         return ("Worm.Replika", "quarantine")
     if contains_any(low, RANSOM_NAMES):
@@ -302,78 +392,157 @@ def classify(path):
         for ext in RISKY_DL_EXT:
             if low.endswith(ext):
                 return ("Suspicious.Download", "quarantine")
-
-    # ---- content signatures ----
     for pair in CONTENT_SIGS:
         if pair[0] in cl:
             return (pair[1], "quarantine")
 
-    # ---- static source analysis for scripts (pre-execution defense) ----
-    # Only .py that actually talk to the OS can do harm; plain scripts are safe.
     if low.endswith(".py") and ("winclone" in cl or "wcgame" in cl):
         squash = cl.replace(" ", "")
         deletes = "del_file(" in squash
         hits_system = (contains_any(cl, KNOWN_SYS_LOWER) or
                        ("windows" in cl and "system" in cl))
-
-        # 1) the unambiguous one: a script that deletes system files.
         if deletes and hits_system:
-            return ("Trojan.SystemWipe", "hijack")
-        # 2) mass file creation in a loop.
+            return ("Trojan.SystemWipe", "quarantine")
         writes = cl.count("new_file(") + cl.count(".write(")
         if writes >= 20:
             return ("Trojan.Spammer", "quarantine")
-        # 3) self-hiding screen hijacker.
         if "show_py_window(false" in squash and ".effect(" in cl:
-            return ("Heuristic.ScreenHijack", "hijack")
-
-        # 4) scored catch-all for everything else nasty.
+            return ("Heuristic.ScreenHijack", "quarantine")
         score = 0
         if deletes:
             score += 2
         if "permanent=true" in squash:
             score += 1
-        if "reboot(" in squash:                 # kills the AV / persistence trick
+        if "reboot(" in squash:
             score += 3
-        if "show_py_window(false" in squash:    # no Stop button
+        if "show_py_window(false" in squash:
             score += 2
-        if "set_user_name(" in cl:              # identity tampering
+        if "set_user_name(" in cl:
             score += 2
         if ".effect(" in cl:
-            score += 1
-        if "stop_effects(" not in cl and "effect(\"all\"" in cl:
             score += 1
         if writes >= 8:
             score += 2
         if cl.count("open_app(") >= 5:
             score += 2
         if score >= SCRIPT_SCORE:
-            return ("Heuristic.Malware", "hijack")
-
+            return ("Heuristic.Malware", "quarantine")
     return None
 
 
 # ------------------------------- actions ------------------------------------
-def log(line):
+def add_history(action, threat, name, path):
+    S["history"].append({"time": clockstr(), "action": action,
+                         "threat": threat, "name": name, "path": path})
+    save_history()
+
+
+def do_quarantine(path, threat):
+    """Copy the threat into the quarantine store, then remove the original."""
+    if is_windows_path(path):
+        return False
+    name = base(path)
     try:
-        winclone.append(LOG_FILE, line + "\n")
+        content = winclone.read(path)
+    except Exception:
+        content = ""
+    try:
+        winclone.del_file(path, permanent=True, missing_ok=True)
+    except Exception:
+        return False
+    S["quarantine"].append({"id": S["qid"], "time": clockstr(),
+                            "threat": threat, "path": path, "name": name,
+                            "content": content})
+    S["qid"] += 1
+    save_quarantine()
+    add_history("quarantined", threat, name, path)
+    notify("Threat quarantined", threat + ": " + name)
+    if S["sound"]:
+        try:
+            g.tone(180, 0.12)
+        except Exception:
+            pass
+    return True
+
+
+def unquarantine(rec):
+    ok = False
+    try:
+        winclone.write(rec["path"], rec["content"], overwrite=True)
+        ok = True
+    except Exception:
+        ok = False
+    remove_q(rec["id"])
+    add_history("restored" if ok else "restore-failed",
+                rec["threat"], rec["name"], rec["path"])
+    if ok:
+        notify("Restored from quarantine", rec["name"])
+    else:
+        notify("Restore failed", rec["name"] + " - its folder may be gone")
+    return ok
+
+
+def delete_q(rec):
+    remove_q(rec["id"])
+    add_history("deleted", rec["threat"], rec["name"], rec["path"])
+
+
+def remove_q(rid):
+    keep = []
+    for r in S["quarantine"]:
+        if r["id"] != rid:
+            keep.append(r)
+    S["quarantine"] = keep
+    save_quarantine()
+
+
+def notify(title, body):
+    try:
+        winclone.notify(title, body)
     except Exception:
         pass
 
 
-def quarantine(path):
-    # Never delete system files, whatever a rule says.
-    if is_windows_path(path):
-        return False
+def maybe_backup(path):
+    low = base(path).lower()
+    if low in WHITELIST or is_windows_path(path) or has_media_ext(low):
+        return
     try:
-        winclone.del_file(path, permanent=AGGRESSIVE, missing_ok=True)
-        return True
+        content = winclone.read(path)
     except Exception:
-        return False
+        return
+    if len(content) > MAX_FILE_CHARS:
+        return
+    old = S["vault"].get(path, None)
+    if old == content:
+        return
+    if old is None and len(S["vault"]) >= MAX_VAULT_FILES:
+        return
+    S["vault"][path] = content
+
+
+def restore_personal():
+    restored = 0
+    failed = 0
+    for path in S["vault"].keys():
+        if is_windows_path(path):
+            continue
+        want = S["vault"][path]
+        try:
+            if winclone.exists(path) and winclone.read(path) == want:
+                continue
+        except Exception:
+            pass
+        try:
+            winclone.write(path, want, overwrite=True)
+            restored += 1
+        except Exception:
+            failed += 1
+    notify("Edgy Defender", str(restored) + " personal file(s) restored")
+    toast(str(restored) + " file(s) restored, " + str(failed) + " failed")
 
 
 def strip_dupe(name):
-    """'notes (3).txt' -> 'notes.txt', 'HACKED (2)' -> 'HACKED'."""
     dot = name.rfind(".")
     if dot > 0:
         stem = name[:dot]
@@ -390,18 +559,12 @@ def strip_dupe(name):
     return stem + ext
 
 
-def sweep_floods(files, tick):
-    """Group by folder + de-duplicated name; big identical-name families are
-       spam floods. Returns number removed this sweep."""
-    if not CLEAN_FLOODS:
-        return 0
+def sweep_floods(files):
     groups = {}
     for path in files:
         name = base(path)
         low = name.lower()
-        if low in WHITELIST or is_trigger(low) or has_media_ext(low):
-            continue
-        if is_windows_path(path):
+        if low in WHITELIST or has_media_ext(low) or is_windows_path(path):
             continue
         key = parent_of(path) + "||" + strip_dupe(name)
         arr = groups.get(key, None)
@@ -409,279 +572,444 @@ def sweep_floods(files, tick):
             arr = []
             groups[key] = arr
         arr.append(path)
-
     removed = 0
     for key in groups.keys():
         members = groups[key]
         if len(members) < SPAM_FLOOD:
             continue
+        fam = strip_dupe(base(members[0]))
+        n = 0
         for path in members:
-            if removed >= MAX_FLOOD_TICK:
+            if removed >= MAX_FLOOD:
                 break
-            if quarantine(path):
+            try:
+                winclone.del_file(path, permanent=False, missing_ok=True)
                 removed += 1
-        if removed:
-            fam = strip_dupe(base(members[0]))
-            print("  [" + str(tick) + "] SPAM FLOOD  " + str(len(members)) +
-                  " x '" + fam + "'  ->  cleaning up")
-            log("[tick " + str(tick) + "] Spam.Flood x" + str(len(members)) +
-                " '" + fam + "'")
-            winclone.notify("Edgy Defender cleaned up",
-                            str(len(members)) + " junk files ('" + fam + "')")
-    S["cleaned"] += removed
+                n += 1
+            except Exception:
+                pass
+        if n:
+            add_history("cleaned", "Spam.Flood", str(n) + " x " + fam, "")
+            notify("Cleaned junk flood", str(n) + " x '" + fam + "'")
     return removed
 
 
-# ------------------------------- backup -------------------------------------
-def maybe_backup(path):
-    if not BACKUP:
-        return
-    low = base(path).lower()
-    if low in WHITELIST or is_trigger(low) or is_windows_path(path):
-        return
-    if has_media_ext(low):
-        return
-    try:
-        content = winclone.read(path)
-    except Exception:
-        return
-    if len(content) > MAX_FILE_CHARS:
-        return
-    old = S["vault"].get(path, None)
-    if old == content:
-        return
-    if old is None and len(S["vault"]) >= MAX_VAULT_FILES:
-        return
-    S["vault"][path] = content
-    S["vault_dirty"] = True
-
-
-# ------------------------------- restore ------------------------------------
-def restore_personal(tick):
-    restored = 0
-    failed = 0
-    intact = 0
-    for path in S["vault"].keys():
-        if is_windows_path(path):
-            continue
-        want = S["vault"][path]
-        try:
-            if winclone.exists(path) and winclone.read(path) == want:
-                intact += 1
-                continue
-        except Exception:
-            pass
-        try:
-            winclone.write(path, want, overwrite=True)
-            restored += 1
-        except Exception:
-            failed += 1
-    line = ("RESTORE: " + str(restored) + " file(s) restored, " +
-            str(intact) + " already intact, " + str(failed) + " failed")
-    print("  [" + str(tick) + "] " + line)
-    log("[tick " + str(tick) + "] " + line)
-    note = str(restored) + " personal file(s) restored"
-    if failed:
-        note += " (" + str(failed) + " failed - their folder may be gone)"
-    winclone.notify("Edgy Defender", note)
-
-
-def restore_system(tick):
+def check_system():
     missing = []
-    for n in KNOWN_SYS:
-        if not winclone.exists(SYS_DIR + "\\" + n):
-            missing.append(n)
-    if not missing:
-        print("  [" + str(tick) + "] SYSTEM: all system files present.")
-        winclone.notify("Edgy Defender", "System files are all present.")
+    for nm in KNOWN_SYS:
+        if not winclone.exists(SYS_DIR + "\\" + nm):
+            missing.append(nm)
+    return missing
+
+
+# ------------------------------- scanning -----------------------------------
+def start_scan():
+    if S["scanning"]:
         return
-    # Try - and report honestly when the OS refuses (it will).
-    blocked = []
-    for n in missing:
-        try:
-            winclone.new_file(SYS_DIR + "\\" + n, "")
-        except Exception:
-            blocked.append(n)
-    if blocked:
-        print("  [" + str(tick) + "] SYSTEM: cannot rebuild " +
-              str(len(blocked)) + " file(s) - WinClone blocks writes to "
-              "C:\\Windows.")
-        print("           Recover via the Recycle Bin, or "
-              "BIOS > Restore Factory Defaults.")
-        log("[tick " + str(tick) + "] system restore blocked: " +
-            ", ".join(blocked))
-        winclone.notify("Edgy Defender",
-                        "Can't rebuild system files (OS blocks C:\\Windows). "
-                        "Use BIOS > Restore Factory Defaults.")
-    else:
-        print("  [" + str(tick) + "] SYSTEM: rebuilt " + str(len(missing)) +
-              " file(s).")
-        winclone.notify("Edgy Defender", "System files rebuilt.")
+    S["scanning"] = True
+    S["scan_queue"] = gather()
+    S["scan_total"] = len(S["scan_queue"])
+    S["scan_done"] = 0
+    S["scan_hits"] = 0
 
 
-def report_status(tick):
-    missing = []
-    for n in KNOWN_SYS:
-        if not winclone.exists(SYS_DIR + "\\" + n):
-            missing.append(n)
-    print("  [" + str(tick) + "] STATUS  scanned=" + str(S["scanned"]) +
-          " quarantined=" + str(S["quarantined"]) +
-          " cleaned=" + str(S["cleaned"]) +
-          " vault=" + str(len(S["vault"])) +
-          " sys_missing=" + str(len(missing)))
-    body = ("Vault: " + str(len(S["vault"])) + " file(s). Quarantined: " +
-            str(S["quarantined"]) + ".")
-    if missing:
-        body += " Missing system files: " + str(len(missing)) + "."
-    winclone.notify("Edgy Defender status", body)
-
-
-def handle_triggers(files, tick):
-    for path in files:
-        low = base(path).lower()
-        if not is_trigger(low):
-            continue
-        if low.startswith("edgy-restore-system"):
-            restore_system(tick)
-        elif low.startswith("edgy-restore"):
-            restore_personal(tick)
-        elif low.startswith("edgy-cleanup"):
-            sweep_floods(gather(), tick)
-        elif low.startswith("edgy-status"):
-            report_status(tick)
-        try:
-            winclone.del_file(path, permanent=True, missing_ok=True)
-        except Exception:
-            pass
-
-
-def check_system(tick):
-    for n in KNOWN_SYS:
-        p = SYS_DIR + "\\" + n
-        if winclone.exists(p):
-            if n in S["sys_alerted"]:
-                S["sys_alerted"].remove(n)
-            continue
-        if n in S["sys_alerted"]:
-            continue
-        S["sys_alerted"].append(n)
-        crit = " (CRITICAL - the OS is on borrowed time)" if \
-            n == "systemwinclone.sys" else ""
-        print("  [" + str(tick) + "] SYSTEM FILE MISSING: " + n + crit)
-        print("           Edgy can't rebuild C:\\Windows. Recover from the "
-              "Recycle Bin or BIOS > Restore Factory Defaults.")
-        log("[tick " + str(tick) + "] system file missing: " + n)
-        winclone.notify("Edgy Defender - system file missing", n)
-        winclone.beep("error")
-
-
-# ------------------------------- the engine ---------------------------------
-def banner():
-    print("=" * 54)
-    print("   E D G Y   D E F E N D E R")
-    print("   the antivirus with an attitude")
-    print("=" * 54)
-    mode = "AGGRESSIVE (delete)" if AGGRESSIVE else "safe (Recycle Bin)"
-    print("   realtime sweep : every " + str(INTERVAL) + "s")
-    print("   quarantine     : " + mode)
-    print("   backup vault   : " + ("on" if BACKUP else "off") +
-          "  (" + str(len(S["vault"])) + " files loaded)")
-    print("   buttons        : drop a file named edgy-restore / "
-          "edgy-cleanup / edgy-status")
-    print("-" * 54)
-
-
-def scan_and_act(targets, tick):
-    hits = 0
-    for path in targets:
+def step_scan():
+    q = S["scan_queue"]
+    n = 0
+    while q and n < SCAN_BATCH:
+        path = q.pop()
+        n += 1
+        S["scan_done"] += 1
         S["scanned"] += 1
-        result = classify(path)
-        if result is None:
+        res = classify(path)
+        if res is None:
+            maybe_backup(path)
             continue
-        threat = result[0]
-        action = result[1]
-
-        if action == "victim":
-            if path not in S["victims"]:
-                S["victims"].append(path)
-                print("  [" + str(tick) + "] RANSOM VICTIM  " + threat + ": " +
-                      base(path) + "  (left alone - run Cork Defender)")
-                log("[tick " + str(tick) + "] VICTIM " + threat + ": " + path)
-                winclone.notify("Edgy Defender",
-                                base(path) + " is encrypted by ransomware")
-                winclone.beep("error")
+        if res[1] == "victim":
+            add_history("alert", res[0], base(path), path)
             continue
-
-        hits += 1
-        ok = quarantine(path)
-        where = "deleted" if AGGRESSIVE else "Recycle Bin"
-        state = "quarantined (" + where + ")" if ok else "COULD NOT REMOVE"
-        print("  [" + str(tick) + "] THREAT  " + threat + ": " + base(path) +
-              "  ->  " + state)
-        log("[tick " + str(tick) + "] " + threat + ": " + path +
-            " -> " + state)
-        winclone.notify("Edgy Defender blocked a threat",
-                        threat + ": " + base(path))
-        winclone.beep("error")
-        if action == "hijack" and STOP_HIJACKS:
-            winclone.stop_effects()
-            print("           -> screen hijack neutralised, effects stopped.")
-        if ok:
-            S["quarantined"] += 1
-    return hits
+        if do_quarantine(path, res[0]):
+            S["scan_hits"] += 1
+    if not q:
+        finish_scan()
 
 
-def main():
-    load_vault()
-    banner()
-    if HEADLESS:
-        winclone.notify("Edgy Defender", "Realtime protection on. Going dark.")
-        winclone.show_py_window(False)
+def finish_scan():
+    S["scanning"] = False
+    sweep_floods(gather())
+    save_vault()
+    S["last_scan"] = clockstr()
+    S["known"] = gather()
+    toast("Scan complete - " + str(S["scan_hits"]) + " threat(s) caught")
+
+
+def realtime_tick():
+    files = gather()
+    newf = []
+    known = S["known"]
+    for p in files:
+        if p not in known:
+            newf.append(p)
+    for path in newf:
+        res = classify(path)
+        S["scanned"] += 1
+        if res is None:
+            continue
+        if res[1] == "victim":
+            add_history("alert", res[0], base(path), path)
+            continue
+        do_quarantine(path, res[0])
+    sweep_floods(files)
+    S["known"] = gather()
+
+
+# --------------------------------- UI ---------------------------------------
+def toast(msg):
+    S["toast"] = msg
+    S["toast_t"] = g.clock()
+
+
+def point_in(px, py, x, y, w, h):
+    return px >= x and px <= x + w and py >= y and py <= y + h
+
+
+def button(mx, my, click, x, y, w, h, label, col):
+    hot = point_in(mx, my, x, y, w, h)
+    g.rect(x, y, w, h, col)
+    if hot:
+        g.rect(x, y, w, h, "#ffffff", fill=False, width=2)
+    g.text(label, x + w / 2, y + h / 2 - 7, "#ffffff", size=13, align="center")
+    return click and hot
+
+
+def toggle(mx, my, click, x, y, on):
+    w = 52
+    hgt = 26
+    col = GREEN if on else "#4a5675"
+    g.rect(x, y, w, hgt, col)
+    kx = x + w - 22 if on else x + 2
+    g.rect(kx, y + 2, 20, hgt - 4, KNOB)
+    if click and point_in(mx, my, x, y, w, hgt):
+        return True
+    return False
+
+
+def draw_shield(cx, cy, size, col, ok):
+    hw = size / 2
+    hh = size / 2
+    pts = [[cx - hw, cy - hh], [cx + hw, cy - hh], [cx + hw, cy],
+           [cx, cy + hh], [cx - hw, cy]]
+    g.poly(pts, col, fill=True)
+    if ok:
+        g.line(cx - size * 0.22, cy, cx - size * 0.04, cy + size * 0.2,
+               "#ffffff", width=5)
+        g.line(cx - size * 0.04, cy + size * 0.2, cx + size * 0.28,
+               cy - size * 0.22, "#ffffff", width=5)
     else:
-        winclone.notify("Edgy Defender", "Realtime protection is on.")
-    log("--- Edgy Defender started ---")
+        g.rect(cx - 3, cy - size * 0.28, 6, size * 0.34, "#ffffff")
+        g.rect(cx - 3, cy + size * 0.16, 6, 6, "#ffffff")
 
-    first = True
-    tick = 0
-    while True:
-        tick += 1
-        files = gather()
 
-        # Buttons first, so a requested restore/cleanup happens promptly.
-        handle_triggers(files, tick)
+def draw_tabs(mx, my, click):
+    tabs = [["dash", "Dashboard"], ["quar", "Quarantine"],
+            ["hist", "History"], ["set", "Settings"]]
+    x = 0
+    tw = 150
+    for t in tabs:
+        active = S["tab"] == t[0]
+        g.rect(x, 0, tw, 46, PANEL2 if active else PANEL)
+        if active:
+            g.rect(x, 43, tw, 3, ACCENT)
+        g.text(t[1], x + tw / 2, 16, TXT if active else SUB, size=13,
+               align="center")
+        if click and point_in(mx, my, x, 0, tw, 46):
+            S["tab"] = t[0]
+        x += tw
+    g.rect(0, 46, W, 1, LINE)
 
-        if first or (tick % FULL_RESCAN == 0):
-            targets = files
+
+def panel(x, y, w, h):
+    g.rect(x, y, w, h, PANEL)
+
+
+def draw_dashboard(mx, my, click):
+    missing = check_system()
+    threats = len(S["quarantine"])
+    if not S["protect"]:
+        col = ORANGE
+        head = "Protection is OFF"
+        sub = "Realtime protection is disabled. Turn it back on."
+        ok = False
+    elif threats > 0 or len(missing) > 0:
+        col = RED
+        head = "Attention needed"
+        sub = str(threats) + " item(s) in quarantine"
+        if missing:
+            sub += ", " + str(len(missing)) + " system file(s) missing"
+        ok = False
+    else:
+        col = GREEN
+        head = "You're protected"
+        sub = "Realtime protection is on. No active threats."
+        ok = True
+
+    panel(20, 62, W - 40, 150)
+    draw_shield(90, 137, 78, col, ok)
+    g.text(head, 150, 84, TXT, size=22)
+    g.text(sub, 150, 116, SUB, size=13)
+    g.text("Last scan: " + S["last_scan"], 150, 140, SUB, size=12)
+
+    # realtime toggle on the card
+    g.text("Realtime", W - 150, 96, SUB, size=12)
+    if toggle(mx, my, click, W - 78, 90, S["protect"]):
+        S["protect"] = not S["protect"]
+        save_cfg()
+        toast("Realtime protection " + ("on" if S["protect"] else "off"))
+
+    # stat tiles
+    tiles = [["Scanned", str(S["scanned"])],
+             ["In quarantine", str(threats)],
+             ["Detections", str(len(S["history"]))]]
+    tx = 20
+    for t in tiles:
+        panel(tx, 224, 212, 74)
+        g.text(t[1], tx + 16, 236, TXT, size=24)
+        g.text(t[0], tx + 16, 270, SUB, size=12)
+        tx += 224
+
+    # scan button / progress
+    if S["scanning"]:
+        pct = 0
+        if S["scan_total"] > 0:
+            pct = S["scan_done"] * 100 // S["scan_total"]
+        panel(20, 320, W - 40, 70)
+        g.text("Scanning... " + str(pct) + "%", 40, 336, TXT, size=15)
+        g.rect(40, 364, W - 120, 12, PANEL2)
+        g.rect(40, 364, (W - 120) * pct // 100, 12, ACCENT)
+        g.text(str(S["scan_done"]) + " / " + str(S["scan_total"]), W - 70, 336,
+               SUB, size=12, align="right")
+    else:
+        if button(mx, my, click, 20, 330, 220, 54, "Quick Scan", ACCENT):
+            start_scan()
+        g.text("Scan the whole PC for threats now.", 260, 348, SUB, size=13)
+
+
+def row_list(items, scroll_key, mx, my, click):
+    """Render a scrollable list area, return (top, visible, row_h, area_y)."""
+    ax = 20
+    ay = 62
+    aw = W - 40
+    ah = H - ay - 20
+    panel(ax, ay, aw, ah)
+    row_h = 64
+    header = 44
+    visible = int((ah - header - 44) // row_h)
+    total = len(items)
+    scroll = S[scroll_key]
+    maxscroll = total - visible
+    if maxscroll < 0:
+        maxscroll = 0
+    if scroll > maxscroll:
+        scroll = maxscroll
+        S[scroll_key] = scroll
+    # scroll buttons
+    if total > visible:
+        if button(mx, my, click, ax + aw - 84, ay + 8, 36, 28, "^", PANEL2):
+            if scroll > 0:
+                S[scroll_key] = scroll - 1
+        if button(mx, my, click, ax + aw - 44, ay + 8, 36, 28, "v", PANEL2):
+            if scroll < maxscroll:
+                S[scroll_key] = scroll + 1
+    return (ax, ay, aw, ah, header, row_h, visible, scroll)
+
+
+def draw_quarantine(mx, my, click):
+    items = S["quarantine"]
+    box = row_list(items, "scroll_q", mx, my, click)
+    ax = box[0]
+    ay = box[1]
+    aw = box[2]
+    header = box[4]
+    row_h = box[5]
+    visible = box[6]
+    scroll = box[7]
+    g.text("Quarantine  (" + str(len(items)) + ")", ax + 16, ay + 14, TXT,
+           size=15)
+    if not items:
+        g.text("Nothing in quarantine. Nice and clean.", ax + 16,
+               ay + header + 20, SUB, size=13)
+        return
+    y = ay + header
+    end = scroll + visible
+    if end > len(items):
+        end = len(items)
+    i = scroll
+    while i < end:
+        r = items[i]
+        g.rect(ax + 10, y + 4, aw - 20, row_h - 8, PANEL2)
+        g.text(r["name"], ax + 24, y + 12, TXT, size=14)
+        g.text(r["threat"] + "   -   " + r["time"], ax + 24, y + 34, SUB,
+               size=12)
+        if button(mx, my, click, ax + aw - 210, y + 15, 92, 32, "Restore",
+                  GREEN):
+            unquarantine(r)
+            return
+        if button(mx, my, click, ax + aw - 110, y + 15, 92, 32, "Delete", RED):
+            delete_q(r)
+            return
+        y += row_h
+        i += 1
+
+
+def draw_history(mx, my, click):
+    items = S["history"]
+    box = row_list(items, "scroll_h", mx, my, click)
+    ax = box[0]
+    ay = box[1]
+    aw = box[2]
+    header = box[4]
+    visible = box[6]
+    scroll = box[7]
+    row_h = 40
+    visible = int((box[3] - header - 44) // row_h)
+    g.text("Detection history  (" + str(len(items)) + ")", ax + 16, ay + 14,
+           TXT, size=15)
+    if button(mx, my, click, ax + aw - 150, ay + 10, 120, 30, "Clear history",
+              PANEL2):
+        S["history"] = []
+        save_history()
+        return
+    if not items:
+        g.text("No detections yet.", ax + 16, ay + header + 20, SUB, size=13)
+        return
+    # newest first
+    order = []
+    j = len(items) - 1
+    while j >= 0:
+        order.append(items[j])
+        j -= 1
+    y = ay + header
+    end = scroll + visible
+    if end > len(order):
+        end = len(order)
+    i = scroll
+    while i < end:
+        r = order[i]
+        acol = RED
+        if r["action"] == "restored":
+            acol = GREEN
+        elif r["action"] == "cleaned":
+            acol = ORANGE
+        elif r["action"] == "alert":
+            acol = ORANGE
+        g.text(r["time"], ax + 20, y + 8, SUB, size=12)
+        g.text(r["action"], ax + 110, y + 8, acol, size=12)
+        g.text(r["threat"] + "  " + r["name"], ax + 220, y + 8, TXT, size=12)
+        g.rect(ax + 14, y + 32, aw - 28, 1, LINE)
+        y += row_h
+        i += 1
+
+
+def draw_settings(mx, my, click):
+    ax = 20
+    ay = 62
+    panel(ax, ay, W - 40, H - ay - 20)
+    g.text("Settings", ax + 16, ay + 14, TXT, size=16)
+    y = ay + 60
+
+    g.text("Realtime protection", ax + 24, y + 2, TXT, size=14)
+    g.text("Scan files as they appear.", ax + 24, y + 22, SUB, size=11)
+    if toggle(mx, my, click, ax + 320, y, S["protect"]):
+        S["protect"] = not S["protect"]
+        save_cfg()
+    y += 60
+
+    g.text("Sound alerts", ax + 24, y + 2, TXT, size=14)
+    g.text("Play a tone when a threat is caught.", ax + 24, y + 22, SUB,
+           size=11)
+    if toggle(mx, my, click, ax + 320, y, S["sound"]):
+        S["sound"] = not S["sound"]
+        save_cfg()
+    y += 70
+
+    if button(mx, my, click, ax + 24, y, 220, 40, "Restore my files", ACCENT):
+        restore_personal()
+    g.text("Rebuild personal files from the backup vault.", ax + 260, y + 12,
+           SUB, size=12)
+    y += 54
+    if button(mx, my, click, ax + 24, y, 220, 40, "Back up files now",
+              PANEL2):
+        for p in gather():
+            maybe_backup(p)
+        save_vault()
+        toast("Backup updated (" + str(len(S["vault"])) + " files)")
+    g.text("Snapshot writable files for restore.", ax + 260, y + 12, SUB,
+           size=12)
+    y += 70
+
+    ms = check_system()
+    if ms:
+        g.text("System files missing: " + str(len(ms)), ax + 24, y, RED,
+               size=13)
+        g.text("Edgy can't rebuild C:\\Windows. Use BIOS > Restore Factory "
+               "Defaults.", ax + 24, y + 22, SUB, size=11)
+    else:
+        g.text("System files: all present.", ax + 24, y, GREEN, size=13)
+
+
+def draw_toast():
+    if not S["toast"]:
+        return
+    if g.clock() - S["toast_t"] > 3.0:
+        S["toast"] = ""
+        return
+    tw = 8 * len(S["toast"]) + 40
+    g.rect(W / 2 - tw / 2, H - 44, tw, 30, "#0a1020")
+    g.rect(W / 2 - tw / 2, H - 44, tw, 30, ACCENT, fill=False, width=1)
+    g.text(S["toast"], W / 2, H - 37, TXT, size=12, align="center")
+
+
+# --------------------------------- main -------------------------------------
+def main():
+    g.init(W, H, "Edgy Defender")
+    g.fps(FPS)
+    load_cfg()
+    load_quarantine()
+    load_history()
+    load_vault()
+    S["known"] = gather()
+    notify("Edgy Defender", "Security center is open. Realtime protection " +
+           ("on." if S["protect"] else "off."))
+
+    while g.running():
+        m = g.mouse()
+        mx = m[0]
+        my = m[1]
+        click = g.click()
+
+        g.fill(BG)
+        draw_tabs(mx, my, click)
+
+        if S["tab"] == "dash":
+            draw_dashboard(mx, my, click)
+        elif S["tab"] == "quar":
+            draw_quarantine(mx, my, click)
+        elif S["tab"] == "hist":
+            draw_history(mx, my, click)
         else:
-            targets = []
-            for p in files:
-                if p not in S["known"]:
-                    targets.append(p)
+            draw_settings(mx, my, click)
 
-        hits = scan_and_act(targets, tick)
-        cleaned = sweep_floods(files, tick)
-        check_system(tick)
+        draw_toast()
 
-        # Back up whatever survived this sweep (heavier pass, run less often).
-        if BACKUP and (tick % BACKUP_EVERY == 0):
-            for p in files:
-                maybe_backup(p)
-            if S["vault_dirty"]:
-                save_vault()
+        # background work
+        if S["scanning"]:
+            step_scan()
+        elif S["protect"]:
+            if g.clock() - S["rt_last"] >= RT_INTERVAL:
+                realtime_tick()
+                S["rt_last"] = g.clock()
 
-        S["known"] = files
-        first = False
-
-        if hits == 0 and cleaned == 0 and (tick % HEARTBEAT == 0):
-            waiting = len(S["victims"])
-            extra = (", " + str(waiting) + " encrypted file(s) need Cork "
-                     "Defender") if waiting else ""
-            print("  [" + str(tick) + "] all clear - scanned " +
-                  str(S["scanned"]) + ", quarantined " +
-                  str(S["quarantined"]) + ", vault " + str(len(S["vault"])) +
-                  extra)
-
-        time.sleep(INTERVAL)
+        g.flip()
 
 
 main()
