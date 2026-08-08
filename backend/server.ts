@@ -93,21 +93,79 @@ function envModelList(key: string, fallback: string[]): string[] {
 // These hardcoded defaults are just the *first* candidates tried, and are
 // still worth keeping current by hand via the env vars - discovery is a
 // safety net under them, not a replacement for picking good ones.
+//
+// All three tiers previously collapsed onto the single slug
+// openai/gpt-oss-20b:free, which meant (a) no tier was actually better at
+// its own job than any other, and (b) "the fallback list" was a list of one,
+// so the first failure was also the last. Each tier is now a real ladder,
+// ordered best-for-that-tier first, with genuinely different models at each
+// rung so a rung failing is independent of the rung below it - a shared slug
+// in every position is not a fallback chain, it's the same coin flipped
+// repeatedly.
+//
+// Tier intent (matches the labels the WinClone UI shows):
+//   Pulsar - quick chat. Latency matters more than depth; effort is locked
+//            to 1 everywhere, so these want to be small/fast, not clever.
+//   Star   - writing and moderately hard tasks. General-purpose strength.
+//   Belt   - the flagship: coding, data, and the Orbit Code agent loop.
+//            Coding-tuned instruct models lead, because the agent needs
+//            reliable structured tool output every turn, and a heavy
+//            chain-of-thought reasoner is both slower and more likely to
+//            burn its token budget thinking instead of emitting the action.
+//            A deep reasoner sits further down for the hardest cases.
+//
+// IMPORTANT, and the reason this file keeps needing this warning: OpenRouter's
+// free catalog churns constantly, and these slugs could not be verified live
+// when they were written. They are *starting points*, not guarantees. What
+// makes that safe now is that a wrong slug is no longer fatal: unknown or
+// delisted models fail their attempt, the next rung is tried, and
+// loadModelCatalog() below discovers what is genuinely free right now as a
+// last resort. Check https://openrouter.ai/models?max_price=0 and retune via
+// the env vars (comma-separated, no redeploy needed) when convenient.
 const MODEL_TIERS: Record<string, string[]> = {
-  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", ["openai/gpt-oss-20b:free"]),
-  star: envModelList("OPENROUTER_MODEL_STAR", ["openai/gpt-oss-20b:free"]),
-  // Belt is meant to be the strongest tier for coding/data/complex work -
-  // right now it shares Star's only confirmed-live free candidate, so set
-  // OPENROUTER_MODEL_BELT once you've checked
-  // https://openrouter.ai/models?max_price=0 for something bigger that's
-  // actually still free.
-  belt: envModelList("OPENROUTER_MODEL_BELT", ["openai/gpt-oss-20b:free"]),
+  pulsar: envModelList("OPENROUTER_MODEL_PULSAR", [
+    "google/gemini-2.0-flash-exp:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "mistralai/mistral-small-3.1-24b-instruct:free",
+    "openai/gpt-oss-20b:free",
+  ]),
+  star: envModelList("OPENROUTER_MODEL_STAR", [
+    "deepseek/deepseek-chat-v3-0324:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen-2.5-72b-instruct:free",
+    "openai/gpt-oss-20b:free",
+  ]),
+  belt: envModelList("OPENROUTER_MODEL_BELT", [
+    "qwen/qwen3-coder:free",
+    "deepseek/deepseek-chat-v3-0324:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+    "deepseek/deepseek-r1:free",
+    "openai/gpt-oss-20b:free",
+  ]),
 };
 // Orbit Code's agent loop sends its own tool-use system prompt instead of
 // the default assistant persona below; capped the same way pageUrl's
 // extracted text is, so a request can't ask this server to forward an
 // unbounded prompt to OpenRouter.
-const MAX_SYSTEM_CHARS = 4000;
+//
+// This was 4000, and that silently broke the flagship feature. Orbit Code's
+// real system prompt - the tool protocol, plus the tier blurb, plus
+// WINCLONE_ENV_DOC describing the OS - assembles to roughly 4.6k characters,
+// so slice() was cutting the last ~600 off every single agent request. What
+// lives at the end of that string is the part that matters most: the tail of
+// the `winclone` module API and the instruction to write code against
+// wcgame/winclone rather than real-world libraries that don't exist in
+// WinClone's mini-Python. The model was being asked to write WinClone apps
+// with the definition of a WinClone app removed from its instructions, which
+// produces plausible-looking code that imports pygame or os and cannot run.
+// Silent truncation makes that invisible from both ends: the client sends a
+// correct prompt and the model never sees it.
+//
+// Raised to a ceiling that fits the real prompt with generous room to grow,
+// while still bounding what an arbitrary caller can push through this public
+// endpoint. Keep an eye on it if WINCLONE_ENV_DOC grows a lot - the failure
+// mode is quiet, so the margin is the safeguard.
+const MAX_SYSTEM_CHARS = 12000;
 
 // Orbit's "effort" control (1-5, tiered callers only - the default
 // untiered path below is untouched by any of this). Two independent knobs
@@ -145,17 +203,24 @@ const MAX_SYSTEM_CHARS = 4000;
 // documented to silently ignore reasoning-effort controls entirely), which
 // is exactly why the fallback candidates and the empty-reply retry below
 // still exist as backstops.
+// Token budgets raised across the board: these are shared with the Orbit Code
+// agent, where a single turn has to fit a whole source file *plus* the JSON
+// envelope around it, and on reasoning-capable models the hidden reasoning
+// tokens come out of this same ceiling before a single visible character is
+// produced. A budget that's merely adequate for the answer is not adequate
+// once reasoning is also drawing on it, which is the mechanism behind every
+// "empty reply (spent its budget on reasoning)" this file has chased.
 const EFFORT_LEVELS: { maxTokens: number; reasoning: "minimal" | "low" | "medium" | "high"; note: string }[] = [
-  { maxTokens: 1500, reasoning: "minimal", note: "Answer quickly - be brief and direct, skip extra explanation." },
-  { maxTokens: 2200, reasoning: "minimal", note: "Keep it fairly brief; light reasoning only." },
-  { maxTokens: 3400, reasoning: "low", note: "Think it through at a normal, moderate depth before answering." },
+  { maxTokens: 2000, reasoning: "minimal", note: "Answer quickly - be brief and direct, skip extra explanation." },
+  { maxTokens: 3000, reasoning: "minimal", note: "Keep it fairly brief; light reasoning only." },
+  { maxTokens: 5000, reasoning: "low", note: "Think it through at a normal, moderate depth before answering." },
   {
-    maxTokens: 5200,
+    maxTokens: 7000,
     reasoning: "medium",
     note: "Reason carefully; consider edge cases and alternatives before finalizing.",
   },
   {
-    maxTokens: 7500,
+    maxTokens: 10000,
     reasoning: "high",
     note:
       "Take your time: reason deeply, double-check your own answer or code for mistakes, then give a thorough, well-considered final response.",
@@ -174,40 +239,77 @@ function clampEffort(n: unknown): number {
 // now* - the one source of truth that can't go stale the way a slug
 // hardcoded in this file can. Cached for an hour: it's a large, slow-moving
 // list, and there's no reason to refetch it on every single chat request.
+// This same catalog fetch does double duty. Besides naming what's free right
+// now, OpenRouter reports a `supported_parameters` array per model, and that
+// closes a real failure mode this server had no answer for: it was sending
+// `reasoning` and a strict `response_format` json_schema to *every* candidate
+// regardless of whether that model accepts them. A model that doesn't support
+// structured output doesn't politely ignore the field - depending on the
+// provider it 400s, or silently returns prose the agent loop then fails to
+// parse. Either way the failure looked like "the model is broken" rather than
+// "we asked for something this model can't do", and swapping in a different
+// model didn't help because the *request* was the problem, not the model.
+// Knowing capabilities up front means each candidate gets a request it can
+// actually answer.
 const FREE_MODEL_CACHE_MS = 60 * 60 * 1000;
 const FREE_MODEL_DISCOVERY_TIMEOUT_MS = 8000;
 const FREE_MODEL_DISCOVERY_MAX = 3;
-let freeModelCache: { list: string[]; at: number } | null = null;
-async function discoverFreeModels(): Promise<string[]> {
-  if (freeModelCache && Date.now() - freeModelCache.at < FREE_MODEL_CACHE_MS) {
-    return freeModelCache.list;
+type ModelCatalog = { free: string[]; params: Record<string, string[]> };
+let modelCatalogCache: { catalog: ModelCatalog; at: number } | null = null;
+async function loadModelCatalog(): Promise<ModelCatalog> {
+  if (modelCatalogCache && Date.now() - modelCatalogCache.at < FREE_MODEL_CACHE_MS) {
+    return modelCatalogCache.catalog;
   }
+  const empty: ModelCatalog = { free: [], params: {} };
   try {
     const res = await fetch("https://openrouter.ai/api/v1/models", {
       signal: AbortSignal.timeout(FREE_MODEL_DISCOVERY_TIMEOUT_MS),
     });
-    if (!res.ok) return freeModelCache?.list ?? [];
+    if (!res.ok) return modelCatalogCache?.catalog ?? empty;
     const data = await res.json();
-    const list: string[] = Array.isArray(data?.data)
-      ? data.data
-          .filter((m: { id?: unknown; pricing?: { prompt?: unknown; completion?: unknown } }) =>
-            typeof m?.id === "string" && m.id.endsWith(":free") &&
-            Number(m?.pricing?.prompt) === 0 && Number(m?.pricing?.completion) === 0)
-          .map((m: { id: string }) => m.id)
-      : [];
-    freeModelCache = { list, at: Date.now() };
-    return list;
+    const rows: {
+      id?: unknown;
+      pricing?: { prompt?: unknown; completion?: unknown };
+      supported_parameters?: unknown;
+    }[] = Array.isArray(data?.data) ? data.data : [];
+    const catalog: ModelCatalog = { free: [], params: {} };
+    for (const m of rows) {
+      if (typeof m?.id !== "string") continue;
+      if (Array.isArray(m.supported_parameters)) {
+        catalog.params[m.id] = m.supported_parameters.filter((p: unknown): p is string =>
+          typeof p === "string"
+        );
+      }
+      if (
+        m.id.endsWith(":free") && Number(m?.pricing?.prompt) === 0 &&
+        Number(m?.pricing?.completion) === 0
+      ) {
+        catalog.free.push(m.id);
+      }
+    }
+    modelCatalogCache = { catalog, at: Date.now() };
+    return catalog;
   } catch {
-    // stale cache beats nothing; an empty list beats a thrown exception,
-    // since this is already the last-resort path and the caller just
-    // treats "no discovered candidates" as "nothing more to try"
-    return freeModelCache?.list ?? [];
+    // stale cache beats nothing; an empty catalog beats a thrown exception,
+    // since callers treat "nothing known" as "assume it supports everything
+    // and let the attempt ladder sort it out" - i.e. exactly the behavior
+    // this server had before capabilities were consulted at all.
+    return modelCatalogCache?.catalog ?? empty;
   }
+}
+// Fail open: a model we have no catalog entry for is assumed to support the
+// parameter. That keeps an unreachable/stale catalog from silently stripping
+// capabilities off models that do support them - the attempt ladder in
+// runChatAttempts() already handles the case where that assumption is wrong.
+function modelSupports(catalog: ModelCatalog, model: string, param: string): boolean {
+  const params = catalog.params[model];
+  if (!params) return true;
+  return params.includes(param);
 }
 // Flat top-up added to every effort level's max_tokens when the caller
 // says mode: "agent" (Orbit Code's terminal loop) instead of the chat
 // app's default. See where it's used in handleChat for why.
-const AGENT_TOKEN_BONUS = 3000;
+const AGENT_TOKEN_BONUS = 4000;
 // Orbit Code (mode: "agent") used to be told "reply with ONLY a JSON
 // object, no prose, no markdown fences" as a plain English instruction and
 // left to comply on its own - which is exactly what was fragile about it.
@@ -274,14 +376,90 @@ const EMPTY_REPLY_RETRY_BONUS = 3000;
 // hang, and this handler should always send back a real response instead
 // of leaving the client waiting forever - just sized generously now
 // instead of defensively against a limit that isn't actually there.
-const CHAT_DEADLINE_MS = 170_000;
-const CANDIDATE_MAX_MS = 90_000;
+//
+// These were raised to 170s/90s on the theory that Deno Deploy has no
+// wall-clock request cap, so a longer budget was free. That reasoning had the
+// mechanism backwards, and it is the direct cause of the "failed to fetch"
+// errors that kept coming back at high effort. Deploy's documented shutdown
+// condition is no new requests *and no response bytes sent* for a while - so
+// a request that sits for 170 seconds without writing a single byte is not
+// safely under the limit, it is precisely the thing the limit describes.
+// Intermediaries in front of the app (and browsers themselves) apply their
+// own first-byte timeouts on the same principle. When any of them gives up it
+// drops the connection instead of delivering a response, and a dropped
+// connection surfaces in JS as a bare TypeError "Failed to fetch" - no status,
+// no body, indistinguishable from the server never having been reached. Every
+// previous fix aimed at what the *model* returned, which is why none of them
+// could touch this: the response was fine, it just never arrived.
+//
+// Two changes address it together. First, budgets come back down so a single
+// request is a bounded, reasonable wait rather than an open-ended one.
+// Second, and the actual fix, streaming callers (see STREAM_HEARTBEAT_MS and
+// the NDJSON path in handleChat) get a byte on the wire immediately and every
+// few seconds after, so the connection is provably alive the entire time and
+// no first-byte or idle timer anywhere in the chain has grounds to fire.
+const CHAT_DEADLINE_MS = 210_000;
+// Per-candidate timeout, scaled to the effort actually requested. A flat cap
+// is wrong in both directions: short enough to churn quickly through delisted
+// models at effort 1 is too short for a genuinely deep effort-5 answer (and
+// killing a model that was about to succeed is the worst possible outcome),
+// while a cap generous enough for effort 5 wastes most of the budget waiting
+// on dead slugs at effort 1. Someone who picked effort 5 has explicitly asked
+// for depth and accepted that it takes longer; someone on effort 1 has asked
+// for the opposite. Index is effort - 1; untiered legacy callers use the
+// middle value.
+const CANDIDATE_MS_BY_EFFORT = [30_000, 40_000, 55_000, 65_000, 75_000];
+const CANDIDATE_MAX_MS_DEFAULT = 55_000;
+// How often a streaming response emits a heartbeat line while work is still
+// in flight. Comfortably under the shortest idle timeout likely to sit in
+// front of this app, and cheap: one short JSON line per beat.
+const STREAM_HEARTBEAT_MS = 5_000;
 // -----------------------------------------------------------------------
 
 const SYSTEM_PROMPT =
   `You are ${ASSISTANT_NAME}, a helpful, friendly assistant. Keep answers concise unless asked for detail.`;
 
 const MAX_HISTORY_MESSAGES = 20;
+// Orbit Code's agent loop accumulates two messages per step (the action it
+// chose, then the tool result fed back), on top of the original task. At the
+// step caps the client uses - 6/8/10/13/16 for effort 1-5 - that reaches
+// 25 messages at effort 4 and 31 at effort 5, both past the 20 above.
+//
+// That was the single worst bug in this feature, and it explains the exact
+// symptom that kept getting reported: fine at effort 1-2, broken above.
+// slice(-20) discards from the *front*, and the front of an agent
+// conversation is the task itself. From step 11 onward the model was being
+// asked to continue work whose description had been silently deleted - it
+// could see a pile of tool results and no goal. What comes back from that is
+// a confused non-answer or a loop, which then looked like a model-quality or
+// reasoning-budget problem and got "fixed" as one, repeatedly, upstream of
+// the actual cause. Effort 3 landed at 19 of 20 and so appeared to work while
+// sitting one message from the same cliff.
+//
+// Two independent guards now, because either alone is insufficient: a much
+// higher cap for agent runs so trimming is rare, and - regardless of mode -
+// trimming that always preserves the opening user message, so the goal
+// survives even when the middle of the conversation has to be dropped.
+const MAX_AGENT_HISTORY_MESSAGES = 60;
+// Keeps the first user message (the task) plus the most recent `max - 1`
+// messages when the history is longer than `max`. The dropped span is the
+// middle, which is where stale, already-superseded tool output lives - the
+// least costly thing to lose, and the only part that was safe to drop all
+// along.
+function trimHistory(
+  messages: { role: string; content: string }[],
+  max: number,
+): { role: string; content: string }[] {
+  if (messages.length <= max) return messages;
+  const firstUser = messages.findIndex((m) => m.role === "user");
+  // No user message to anchor on (shouldn't happen, but don't guess): fall
+  // back to the original plain tail-slice rather than inventing structure.
+  if (firstUser === -1) return messages.slice(-max);
+  const tail = messages.slice(-(max - 1));
+  // Already inside the tail, so the plain slice loses nothing.
+  if (messages.length - (max - 1) <= firstUser) return messages.slice(-max);
+  return [messages[firstUser], ...tail];
+}
 
 // None of these routes need auth (they can't, since Edgy just points an
 // iframe/fetch at them directly), and the URL itself is public - it's right
@@ -298,15 +476,19 @@ const MAX_HISTORY_MESSAGES = 20;
 // which is a real limitation, but it's a real floor with zero extra
 // infrastructure, which matches the scale of this project.
 //
-// Orbit Code's agent loop calls /api/chat once per tool-use step (a few
-// round trips per task), so a chatty task can burn through this budget
-// faster than a normal back-and-forth conversation would. Left as-is here —
-// raising it is a one-line change (RATE_LIMIT_MAX below) if that turns out
-// to bite in practice, but it also weakens the abuse floor for this public
-// endpoint, so that's a call to make deliberately, not as a side effect of
-// adding Orbit Code.
+// Orbit Code's agent loop calls /api/chat once per tool-use step, and this
+// was left at 30/min on the reasoning that raising it deliberately was better
+// than raising it as a side effect. In practice 30 is below what a single
+// legitimate high-effort run needs: effort 5 allows 16 steps, and any step
+// that has to fall down the attempt ladder issues more than one upstream call
+// while still counting as one request here. A user running two tasks in a
+// minute, or one task plus a few chat messages, could hit the limit mid-run
+// and get a 429 that reads like yet another Orbit failure. Raised to a
+// ceiling that comfortably clears one full effort-5 run plus normal chatting,
+// while still being a real floor against someone hammering a public,
+// unauthenticated endpoint.
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX = 30;
+const RATE_LIMIT_MAX = 90;
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
 const RATE_LIMITED_PATHS = new Set(["/api/chat", "/search", "/proxy", "/frame-check"]);
 
@@ -917,11 +1099,32 @@ async function callOpenRouter(
   }
 
   if (!upstream.ok) {
-    const text = await upstream.text();
+    const text = await upstream.text().catch(() => "");
     return { ok: false, error: `HTTP ${upstream.status} ${text.slice(0, 200)}` };
   }
 
-  const data = await upstream.json();
+  // A 200 whose body isn't JSON used to throw straight out of this function,
+  // past the fallback loop, and land in Deno.serve's catch-all as a 500 -
+  // ending the whole request over one malformed upstream response even though
+  // there were untried candidates left. Collapsed into the same {ok:false}
+  // shape as every other failure so it just advances the ladder.
+  let data: {
+    choices?: { message?: { content?: unknown; reasoning?: unknown } }[];
+    error?: { message?: unknown };
+  };
+  try {
+    data = await upstream.json();
+  } catch {
+    return { ok: false, error: "OpenRouter returned a non-JSON response" };
+  }
+
+  // OpenRouter can report an error inside a 200 body rather than as a status
+  // code; without this it reads as an empty reply and triggers the wrong
+  // recovery (retry with less reasoning) for what may be a hard error.
+  if (data?.error) {
+    return { ok: false, error: `upstream error: ${String(data.error.message ?? "unknown")}`.slice(0, 240) };
+  }
+
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content === "string" && content.trim()) return { ok: true, content };
   const hadReasoning = !!data?.choices?.[0]?.message?.reasoning;
@@ -945,6 +1148,7 @@ async function handleChat(req: Request): Promise<Response> {
     system?: string;
     effort?: number;
     mode?: string;
+    stream?: boolean;
   };
   try {
     body = await req.json();
@@ -952,9 +1156,12 @@ async function handleChat(req: Request): Promise<Response> {
     return json({ error: "Malformed request body." }, 400);
   }
 
-  const messages = Array.isArray(body.messages)
-    ? body.messages.slice(-MAX_HISTORY_MESSAGES)
-    : [];
+  const isAgent = body.mode === "agent";
+  const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+  // See trimHistory() and MAX_AGENT_HISTORY_MESSAGES: agent runs get a much
+  // higher cap, and either way the opening task message is never the thing
+  // that gets dropped.
+  const messages = trimHistory(rawMessages, isAgent ? MAX_AGENT_HISTORY_MESSAGES : MAX_HISTORY_MESSAGES);
   if (messages.length === 0) {
     return json({ error: "No messages provided." }, 400);
   }
@@ -975,10 +1182,20 @@ async function handleChat(req: Request): Promise<Response> {
   const effort = tierKey ? (tierKey === "pulsar" ? 1 : clampEffort(body.effort)) : null;
   const level = effort ? EFFORT_LEVELS[effort - 1] : null;
 
-  let systemPrompt =
-    typeof body.system === "string" && body.system.trim()
-      ? body.system.slice(0, MAX_SYSTEM_CHARS)
-      : SYSTEM_PROMPT;
+  // Truncation here used to be entirely silent, which is how a system prompt
+  // that had outgrown the cap went unnoticed while quietly degrading every
+  // agent request (see MAX_SYSTEM_CHARS). If it ever happens again it should
+  // at least be visible in the Deno Deploy logs.
+  let systemPrompt = SYSTEM_PROMPT;
+  if (typeof body.system === "string" && body.system.trim()) {
+    if (body.system.length > MAX_SYSTEM_CHARS) {
+      console.warn(
+        `System prompt truncated: ${body.system.length} chars > MAX_SYSTEM_CHARS ${MAX_SYSTEM_CHARS}. ` +
+          `The tail of the prompt is being dropped before it reaches the model.`,
+      );
+    }
+    systemPrompt = body.system.slice(0, MAX_SYSTEM_CHARS);
+  }
   if (level) systemPrompt += "\n\n" + level.note;
 
   const systemMessages = [{ role: "system", content: systemPrompt }];
@@ -995,143 +1212,221 @@ async function handleChat(req: Request): Promise<Response> {
     }
   }
 
-  const requestBody: Record<string, unknown> = { messages: [...systemMessages, ...messages] };
-  if (level) {
-    // Orbit Code (mode: "agent") writes whole files out as part of a single
-    // completion - a file's content has to fit inside max_tokens along with
-    // the rest of that turn's JSON, unlike an ordinary chat reply. Giving
-    // agent-mode calls a flat bonus on top of the normal per-effort budget
-    // means the chat app and Orbit Code can share one effort table instead
-    // of needing two, while Orbit Code still gets the extra room it
-    // actually needs.
-    const agentBonus = body.mode === "agent" ? AGENT_TOKEN_BONUS : 0;
-    requestBody.max_tokens = level.maxTokens + agentBonus;
-    if (level.reasoning) requestBody.reasoning = { effort: level.reasoning };
-  }
-  // Structured output is scoped to agent mode only - Orbit Code expects an
-  // action object on *every* turn, but the chat app's replies are mostly
-  // ordinary conversation with an occasional tool call, and forcing every
-  // chat reply into this schema would break plain conversation outright.
-  if (body.mode === "agent") {
-    requestBody.response_format = {
-      type: "json_schema",
-      json_schema: { name: "orbit_action", strict: true, schema: ORBIT_ACTION_SCHEMA },
-    };
+  const baseBody: Record<string, unknown> = { messages: [...systemMessages, ...messages] };
+  // Orbit Code (mode: "agent") writes whole files out as part of a single
+  // completion - a file's content has to fit inside max_tokens along with the
+  // rest of that turn's JSON, unlike an ordinary chat reply. Giving agent-mode
+  // calls a flat bonus on top of the normal per-effort budget means the chat
+  // app and Orbit Code can share one effort table instead of needing two.
+  const maxTokens = level ? level.maxTokens + (isAgent ? AGENT_TOKEN_BONUS : 0) : null;
+
+  const run = (onAttempt?: (note: string) => void) =>
+    runChatAttempts({ apiKey, models, baseBody, level, effort, maxTokens, isAgent, onAttempt });
+
+  // Streaming is opt-in (`stream: true`), so every pre-existing caller -
+  // Nova's own page, Edgy's sidebar - keeps getting exactly the plain JSON
+  // object it already parses, byte for byte. Only Orbit asks for the NDJSON
+  // form, and only Orbit knows how to read it. Note this must branch *before*
+  // awaiting the work: the point of the stream is that the first byte leaves
+  // immediately, which is impossible if the result is resolved first.
+  if (body.stream) {
+    return streamingChatResponse((onAttempt) => run(onAttempt) as Promise<Record<string, unknown>>);
   }
 
-  // Try each candidate model in order - a delisted/unavailable one (the
-  // single biggest cause of Orbit chat failures given how often OpenRouter's
-  // free catalog churns) just falls through to the next instead of failing
-  // the whole request. Errors from every attempt are kept so the final
-  // failure message says what was actually tried, instead of a bare
-  // "something went wrong".
-  //
-  // High effort (reasoning.effort: "high", a big max_tokens) can make a
-  // free, possibly-queued OpenRouter model genuinely slow to answer -
-  // slow enough to run into Deno Deploy's own request wall-clock limit.
-  // When the platform kills a request like that, it drops the connection
-  // outright instead of letting this handler send back a real response,
-  // which is what shows up client-side as a bare "failed to fetch" instead
-  // of a readable error. CHAT_DEADLINE_MS keeps the whole handler (every
-  // candidate combined) safely under that ceiling, so it always gets to
-  // return *something* - a reply, or a clean JSON error - before the
-  // platform would step in. Each candidate is also capped individually
-  // (CANDIDATE_MAX_MS) so one slow model can't burn the entire budget and
-  // starve the fallback candidates after it.
+  const result = await run();
+  return "reply" in result
+    ? json({ reply: result.reply, model: result.model, discovered: result.discovered })
+    : json({ error: result.error }, 502);
+}
+
+// The attempt ladder, factored out of handleChat so the same logic can be
+// served either as one plain JSON response or as a heartbeat stream.
+//
+// Two dimensions are varied now, not one. Previously only the *model*
+// changed between attempts while the request shape stayed fixed, so a request
+// that no model could satisfy - structured output on models that don't
+// implement it, or a reasoning depth that starves the answer of tokens -
+// failed identically all the way down the list and then failed again on the
+// discovered candidates. Each candidate now gets progressively simpler
+// requests: full (reasoning + structured output, capability-filtered), then
+// minimal reasoning with more headroom, then a bare request with neither.
+// The bare rung matters most: it is the shape essentially every chat model
+// accepts, so reaching it means the ladder has genuinely exhausted the
+// possibilities rather than repeating one unsupported request N times.
+async function runChatAttempts(cfg: {
+  apiKey: string;
+  models: string[];
+  baseBody: Record<string, unknown>;
+  level: typeof EFFORT_LEVELS[number] | null;
+  effort: number | null;
+  maxTokens: number | null;
+  isAgent: boolean;
+  onAttempt?: (note: string) => void;
+}): Promise<
+  { reply: string; model: string; discovered?: boolean } | { error: string }
+> {
+  const { apiKey, models, baseBody, level, maxTokens, isAgent } = cfg;
   const attempts: string[] = [];
   const startedAt = Date.now();
-  for (const model of models) {
-    const remaining = CHAT_DEADLINE_MS - (Date.now() - startedAt);
-    if (remaining < 3000) {
-      attempts.push(`${model}: skipped - out of time budget`);
-      break;
-    }
-    const timeoutMs = Math.min(remaining, CANDIDATE_MAX_MS);
+  const catalog = await loadModelCatalog();
+  // Capability filtering can collapse two different shapes into the same wire
+  // request for a given model; this remembers what has actually been sent so
+  // a collapsed duplicate is skipped instead of spending budget on a repeat.
+  const triedSignatures = new Set<string>();
+  const candidateMs = cfg.effort
+    ? (CANDIDATE_MS_BY_EFFORT[cfg.effort - 1] ?? CANDIDATE_MAX_MS_DEFAULT)
+    : CANDIDATE_MAX_MS_DEFAULT;
 
-    const r1 = await callOpenRouter(apiKey, { model, ...requestBody }, timeoutMs);
-    if (r1.ok) return json({ reply: r1.content, model });
-    attempts.push(`${model}: ${r1.error}`);
+  const note = (s: string) => {
+    attempts.push(s);
+    cfg.onAttempt?.(s);
+  };
 
-    // This used to retry-at-minimal-reasoning only on r1.emptyReply - "ok but
-    // empty" (the model spent its whole max_tokens budget on hidden reasoning
-    // tokens and never got to a final answer). That covered one failure mode
-    // of asking for real reasoning ("low"/"medium"/"high", effort level 3+)
-    // on a free, possibly-queued model, but not the others: the same
-    // reasoning depth can just as easily make the model too *slow* to answer
-    // inside timeoutMs (a plain timeout, not an empty reply) or trip a
-    // provider-side rejection (a non-2xx). Both of those left effort 3+
-    // completely unable to self-heal - with only one configured candidate per
-    // tier, a timed-out first attempt had nowhere to go but cold, unvetted
-    // "discovery" candidates that inherit the exact same untested reasoning
-    // setting. Retrying at minimal reasoning on *any* failure - not just an
-    // empty one - whenever the level asked for more than minimal gives every
-    // effort-3+ request the same real shot at the one reasoning setting
-    // that's confirmed to work (effort 1-2, which already use "minimal").
-    // Forcing the lowest *allowed* suppression OpenRouter's API offers
-    // ("minimal", not just "low" - see the EFFORT_LEVELS comment for why
-    // "low" alone proved not to be enough) plus a real token bonus targets
-    // the actual mechanism - constrain how much it reasons, and leave
-    // headroom for the answer even if it reasons anyway. Not "none": that's
-    // rejected outright (HTTP 400 "cannot be disabled") on at least one model
-    // this table uses, so it's not a safe thing to force blindly on a retry -
-    // a hard error is worse than this retry just not helping.
-    if (level && level.reasoning !== "minimal") {
-      const remaining2 = CHAT_DEADLINE_MS - (Date.now() - startedAt);
-      if (remaining2 >= 3000) {
-        const retryBody = {
-          ...requestBody,
-          reasoning: { effort: "minimal" },
-          max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
-        };
-        const r2 = await callOpenRouter(apiKey, { model, ...retryBody }, Math.min(remaining2, CANDIDATE_MAX_MS));
-        if (r2.ok) return json({ reply: r2.content, model });
-        attempts.push(`${model} (retried at minimum reasoning + more headroom): ${r2.error}`);
-      }
+  // Shapes are ordered most-capable first. `structured` and `reasoning` are
+  // requests, not guarantees - modelSupports() strips either one for a model
+  // whose catalog entry says it isn't accepted, which is what stops an
+  // unsupported parameter from burning an otherwise good candidate.
+  type Shape = { label: string; reasoning: string | null; structured: boolean; tokens: number | null };
+  const shapes: Shape[] = [];
+  if (level) {
+    shapes.push({ label: "full", reasoning: level.reasoning, structured: true, tokens: maxTokens });
+    if (level.reasoning !== "minimal") {
+      shapes.push({
+        label: "minimal reasoning + headroom",
+        reasoning: "minimal",
+        structured: true,
+        tokens: (maxTokens ?? 1500) + EMPTY_REPLY_RETRY_BONUS,
+      });
     }
+    shapes.push({
+      label: "no reasoning, no structured output",
+      reasoning: null,
+      structured: false,
+      tokens: (maxTokens ?? 1500) + EMPTY_REPLY_RETRY_BONUS,
+    });
+  } else {
+    // Untiered legacy callers: one plain attempt, no max_tokens/reasoning/
+    // response_format added at all - identical to this server's original
+    // behavior.
+    shapes.push({ label: "default", reasoning: null, structured: false, tokens: null });
   }
 
-  // Every configured candidate failed. Before giving up, ask OpenRouter
-  // what's actually free right now and try a few of those - see
-  // discoverFreeModels() for why this exists. One attempt each, no
-  // second retry here: these are unvetted last-resort candidates, and the
-  // goal is bounded latency (still inside CHAT_DEADLINE_MS), not
-  // exhaustively debugging a model this server has no prior data on.
-  //
-  // If the request asked for real reasoning (effort 3+), that one attempt is
-  // still made at forced-minimal reasoning, same as the configured-candidate
-  // retry above - a discovered model is, by definition, one this server has
-  // no track record with, so asking an unknown model to reason "high" on its
-  // very first (and only) try here is exactly the untested combination that
-  // was leaving effort 3+ with nothing that could actually succeed once the
-  // configured candidate(s) were exhausted.
+  function buildBody(model: string, shape: Shape): Record<string, unknown> {
+    const out: Record<string, unknown> = { model, ...baseBody };
+    if (shape.tokens != null) out.max_tokens = shape.tokens;
+    if (shape.reasoning && modelSupports(catalog, model, "reasoning")) {
+      out.reasoning = { effort: shape.reasoning };
+    }
+    if (shape.structured && isAgent && modelSupports(catalog, model, "structured_outputs")) {
+      out.response_format = {
+        type: "json_schema",
+        json_schema: { name: "orbit_action", strict: true, schema: ORBIT_ACTION_SCHEMA },
+      };
+    }
+    return out;
+  }
+
+  async function tryModel(model: string, tag: string, shapeList: Shape[]) {
+    for (const shape of shapeList) {
+      const remaining = CHAT_DEADLINE_MS - (Date.now() - startedAt);
+      if (remaining < 3000) {
+        note(`${model}${tag}: skipped - out of time budget`);
+        return null;
+      }
+      const built = buildBody(model, shape);
+      // If capability filtering stripped this shape down to something
+      // identical to a shape already tried for this model, retrying it would
+      // just burn budget re-running the same request. Skip to the next rung.
+      const sig = JSON.stringify([built.max_tokens, built.reasoning, !!built.response_format]);
+      if (triedSignatures.has(model + sig)) continue;
+      triedSignatures.add(model + sig);
+
+      const r = await callOpenRouter(apiKey, built, Math.min(remaining, candidateMs));
+      if (r.ok) return { reply: r.content, model };
+      note(`${model}${tag} [${shape.label}]: ${r.error}`);
+    }
+    return null;
+  }
+
+  for (const model of models) {
+    const hit = await tryModel(model, "", shapes);
+    if (hit) return hit;
+  }
+
+  // Every configured candidate failed. Ask OpenRouter what's actually free
+  // right now and try a few of those - see loadModelCatalog() for why. These
+  // are unvetted, so they get the simplest shape only: an unknown model's one
+  // attempt should be the request most likely to be accepted, not the most
+  // ambitious one.
   const remainingForDiscovery = CHAT_DEADLINE_MS - (Date.now() - startedAt);
   if (remainingForDiscovery >= 3000) {
-    const discoveryBody = level && level.reasoning !== "minimal"
-      ? {
-        ...requestBody,
-        reasoning: { effort: "minimal" },
-        max_tokens: (Number(requestBody.max_tokens) || 1500) + EMPTY_REPLY_RETRY_BONUS,
-      }
-      : requestBody;
-    const discovered = (await discoverFreeModels())
+    const simplest = [shapes[shapes.length - 1]];
+    const discovered = catalog.free
       .filter((m) => !models.includes(m))
       .slice(0, FREE_MODEL_DISCOVERY_MAX);
     for (const model of discovered) {
-      const remaining = CHAT_DEADLINE_MS - (Date.now() - startedAt);
-      if (remaining < 3000) {
-        attempts.push(`${model} (discovered): skipped - out of time budget`);
-        break;
-      }
-      const r = await callOpenRouter(apiKey, { model, ...discoveryBody }, Math.min(remaining, CANDIDATE_MAX_MS));
-      if (r.ok) return json({ reply: r.content, model, discovered: true });
-      attempts.push(`${model} (discovered): ${r.error}`);
+      const hit = await tryModel(model, " (discovered)", simplest);
+      if (hit) return { ...hit, discovered: true };
     }
   }
 
-  return json(
-    { error: `Every model for this request failed:\n` + attempts.join("\n") },
-    502,
-  );
+  return { error: `Every model for this request failed:\n` + attempts.join("\n") };
+}
+
+// The streaming form of /api/chat. The payload is newline-delimited JSON:
+// zero or more {"type":"ping"} heartbeats while work is in flight, then
+// exactly one terminal {"type":"result"} or {"type":"error"} line.
+//
+// The first heartbeat is enqueued *before* any awaiting starts, which is the
+// whole point: it puts a byte on the wire in the first few milliseconds, so
+// from that moment on the connection is visibly active to Deno Deploy, to any
+// proxy in between, and to the browser. None of them have grounds to reap a
+// connection that is still delivering data, which is what turns the old bare
+// "Failed to fetch" into either a real answer or a readable error. It also
+// means the client can show honest progress instead of a frozen spinner.
+function streamingChatResponse(
+  run: (onAttempt: (note: string) => void) => Promise<Record<string, unknown>>,
+): Response {
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      let closed = false;
+      const send = (obj: Record<string, unknown>) => {
+        if (closed) return;
+        try {
+          controller.enqueue(enc.encode(JSON.stringify(obj) + "\n"));
+        } catch {
+          closed = true;
+        }
+      };
+      send({ type: "ping", at: 0 });
+      const startedAt = Date.now();
+      const beat = setInterval(() => send({ type: "ping", at: Date.now() - startedAt }), STREAM_HEARTBEAT_MS);
+      try {
+        const result = await run((n) => send({ type: "attempt", note: n }));
+        send(result.error ? { type: "error", ...result } : { type: "result", ...result });
+      } catch (err) {
+        console.error("Streaming chat error:", err);
+        send({ type: "error", error: `Server error: ${String(err)}` });
+      } finally {
+        clearInterval(beat);
+        closed = true;
+        try {
+          controller.close();
+        } catch { /* already closed */ }
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      ...CORS_HEADERS,
+      "content-type": "application/x-ndjson; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      // Tells any nginx-style buffering proxy not to hold the heartbeats
+      // back, which would defeat the entire purpose of sending them.
+      "x-accel-buffering": "no",
+    },
+  });
 }
 
 function json(obj: unknown, status = 200): Response {

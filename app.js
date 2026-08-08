@@ -9754,11 +9754,30 @@ function orbitTierBlurb(tier){
   return `You are Orbit's ${ORBIT_TIERS[tier].label} tier (${ORBIT_TIERS[tier].desc}) - one of three tiers built into WinClone. The other two are ${others}. Users pick between tiers themselves; don't suggest they switch unless asked.`;
 }
 
-/* The backend bounds its own OpenRouter fallback loop (see CHAT_DEADLINE_MS
-   server-side) so it can always send back a real response even if
-   OpenRouter itself hangs - this client-side timeout is set comfortably
-   above that, so a genuinely stuck request still fails with a clear
-   message instead of hanging the terminal/app indefinitely. */
+/* Asks the backend for the streaming (NDJSON) form of /api/chat and reads it
+   incrementally.
+
+   This is the client half of the "failed to fetch" fix. A high-effort request
+   can legitimately take a couple of minutes upstream, and the old code sent
+   one request and then waited in silence for all of it. Nothing on the wire
+   for that long is exactly what an idle/first-byte timeout - in the platform,
+   in a proxy, or in the browser - exists to kill, and when one does, the
+   connection is dropped rather than answered. fetch() surfaces a dropped
+   connection as a bare TypeError "Failed to fetch": no status, no body,
+   identical to the server being unreachable. That's why the error was so
+   persistent and so uninformative, and why fixes aimed at the model never
+   moved it.
+
+   The backend now emits a heartbeat line immediately and every few seconds
+   after, so bytes are always flowing and there is nothing for a timeout to
+   act on. Each heartbeat also drives onProgress, so the caller can show real
+   elapsed time instead of a spinner that looks identical whether work is
+   happening or the request died ten seconds in.
+
+   Falls back to plain JSON when the response isn't NDJSON, so a WinClone
+   build that's newer than its deployed backend keeps working instead of
+   breaking on the transition. */
+const ORBIT_REQUEST_TIMEOUT_MS = 240000;
 async function orbitChat(messages, opts){
   opts = opts||{};
   let res;
@@ -9766,17 +9785,54 @@ async function orbitChat(messages, opts){
     res = await fetch(ORBIT_CHAT_URL, {
       method:"POST",
       headers:{"content-type":"application/json"},
-      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort, mode:opts.mode}),
-      signal: AbortSignal.timeout(180000),
+      body:JSON.stringify({messages, tier:opts.tier, system:opts.system, effort:opts.effort, mode:opts.mode, stream:true}),
+      signal: AbortSignal.timeout(ORBIT_REQUEST_TIMEOUT_MS),
     });
   }catch(e){
-    if(e && e.name==="TimeoutError") throw new Error("Orbit's server took too long to answer (3 minutes) - try a lower effort level.");
-    throw new Error("Couldn't reach Orbit's server: "+e);
+    if(e && e.name==="TimeoutError") throw new Error("Orbit's server took too long to answer ("+Math.round(ORBIT_REQUEST_TIMEOUT_MS/60000)+" minutes) - try a lower effort level.");
+    throw new Error("Couldn't reach Orbit's server. It may be asleep or redeploying - wait a moment and try again. ("+(e&&e.message||e)+")");
   }
-  let data;
-  try{ data = await res.json(); }catch(e){ throw new Error("Orbit's server sent back something unreadable."); }
-  if(data.error) throw new Error(data.error);
-  return data.reply;
+
+  const ctype = (res.headers.get("content-type")||"").toLowerCase();
+  if(!res.body || ctype.indexOf("ndjson")<0){
+    /* Older backend (or an error response): plain JSON, same as before. */
+    let data;
+    try{ data = await res.json(); }catch(e){ throw new Error("Orbit's server sent back something unreadable (HTTP "+res.status+")."); }
+    if(data.error) throw new Error(data.error);
+    if(!data.reply) throw new Error("Orbit's server sent back an empty reply.");
+    return data.reply;
+  }
+
+  const reader=res.body.getReader(), dec=new TextDecoder();
+  let buf="", final=null;
+  try{
+    for(;;){
+      const {done, value}=await reader.read();
+      if(done) break;
+      buf += dec.decode(value, {stream:true});
+      let nl;
+      while((nl=buf.indexOf("\n"))>=0){
+        const line=buf.slice(0,nl).trim();
+        buf=buf.slice(nl+1);
+        if(!line) continue;
+        let obj; try{ obj=JSON.parse(line); }catch(e){ continue; }
+        if(obj.type==="ping"){ if(opts.onProgress) opts.onProgress({elapsedMs:obj.at||0}); continue; }
+        /* Per-attempt notes are progress, not the answer - surfaced so a slow
+           request can say *why* it's slow (a model being retried) rather than
+           looking stalled. */
+        if(obj.type==="attempt"){ if(opts.onProgress) opts.onProgress({note:obj.note}); continue; }
+        final=obj;
+      }
+    }
+  }catch(e){
+    if(e && e.name==="TimeoutError") throw new Error("Orbit's server took too long to answer - try a lower effort level.");
+    throw new Error("Lost the connection to Orbit's server partway through: "+(e&&e.message||e));
+  }
+  if(!final) throw new Error("Orbit's server closed the connection before answering.");
+  if(final.type==="error"||final.error) throw new Error(final.error||"Unknown server error.");
+  if(!final.reply) throw new Error("Orbit's server sent back an empty reply.");
+  if(opts.onModel && final.model) opts.onModel(final.model, !!final.discovered);
+  return final.reply;
 }
 
 function clampOrbitEffort(n){ n=parseInt(n,10); return (n>=1&&n<=5)?n:3; }
@@ -9871,7 +9927,14 @@ function buildOrbit(body){
     sendBtn.disabled=true;
     try{
       const sys=ORBIT_SYSTEM_PROMPT+"\n\n"+orbitTierBlurb(tier)+"\n\n"+ORBIT_APP_TOOL_PROMPT+"\n\n"+WINCLONE_ENV_DOC;
-      const reply = await orbitChat(history, {tier, effort, system:sys});
+      /* Same heartbeat-driven progress the Terminal uses: at effort 4-5 a
+         reply can take a while, and a bubble that just says "thinking" for
+         two minutes is indistinguishable from a dead request. */
+      const reply = await orbitChat(history, {tier, effort, system:sys, onProgress:(p)=>{
+        if(p.note){ typing.textContent="Orbit is retrying… "+String(p.note).slice(0,60); return; }
+        const secs=Math.round((p.elapsedMs||0)/1000);
+        typing.textContent="Orbit is thinking…"+(secs>=3?" "+secs+"s":"");
+      }});
       typing.remove();
       /* Only trusts a reply as a tool call if it's *entirely* valid JSON
          (no regex-extraction leniency like Orbit Code uses) - the app
@@ -9976,15 +10039,25 @@ function orbitParseAction(text){
   if(m){ try{ return JSON.parse(m[0]); }catch(e){} }
   return null;
 }
-/* The backend enforces the actual JSON shape via response_format
-   (structured output) whenever mode: "agent" is set - see ORBIT_ACTION_SCHEMA
-   server-side - so this only needs to teach the *semantics* of each action,
-   not police formatting the model would otherwise have to reason about
-   getting right on its own. */
+/* The backend enforces the JSON shape via response_format (structured output)
+   whenever mode: "agent" is set - see ORBIT_ACTION_SCHEMA server-side - so
+   this mainly teaches the *semantics* of each action.
+
+   It still spells the format out explicitly, though, and that is deliberate
+   rather than redundant: not every model supports structured output, and the
+   backend's attempt ladder now drops the response_format field for models
+   whose capabilities say they'd reject it, plus on its final bare retry rung.
+   On those attempts the schema is enforcing nothing and this prompt is the
+   only thing telling the model what to emit. Describing the shape here means
+   the fallback rungs degrade to "asked nicely for JSON" - which the client's
+   lenient parser can work with - instead of to no instruction at all. */
 function orbitCodeSystemPrompt(cwdStr, maxSteps){
   return `You are Orbit Code, an autonomous coding assistant working inside a virtual Windows-style `+
     `file system rooted at C:\\. The current directory is ${cwdStr}. `+
     `Each turn, choose exactly one action: read_file, write_file, list_dir, mkdir, delete_file, or done. `+
+    `\n\nReply with ONLY a single JSON object and nothing else - no prose before or after it, no markdown `+
+    `code fences. It must have exactly these five keys, using null for any that don't apply to the action `+
+    `you chose: {"action": "...", "note": "...", "path": "...", "content": "...", "message": "..."}. `+
     `Set "note" to one short present-tense sentence saying what this step is doing and why - it's shown to `+
     `the user as a running log, so make it genuinely informative, not just a restatement of the action name. `+
     `Set "path" to the target for every action except done - relative to the current directory, or absolute `+
@@ -10010,13 +10083,17 @@ function orbitCodeSystemPrompt(cwdStr, maxSteps){
    return their element instead of just appending it. */
 function orbitSpinner(print, label){
   const frames=["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-  let i=0;
-  const d=print(frames[0]+" "+label, "orbit-spin");
+  let i=0, cur=label;
+  const d=print(frames[0]+" "+cur, "orbit-spin");
   const iv=setInterval(()=>{
     if(!d || !d.isConnected){ clearInterval(iv); return; }
-    i=(i+1)%frames.length; d.textContent=frames[i]+" "+label;
+    i=(i+1)%frames.length; d.textContent=frames[i]+" "+cur;
   }, 90);
   return {
+    /* Lets the caller fold live progress (elapsed seconds, a retry note) into
+       the spinner line, so a long high-effort step reads as "still working"
+       rather than being indistinguishable from a hung request. */
+    label(text){ cur=text; if(d && d.isConnected) d.textContent=frames[i]+" "+cur; },
     ok(text){ clearInterval(iv); if(d){ d.className="orbit-step-ok"; d.textContent=text; } },
     fail(text){ clearInterval(iv); if(d){ d.className="orbit-step-fail"; d.textContent=text; } },
     stop(){ clearInterval(iv); if(d) d.remove(); },
@@ -10098,7 +10175,16 @@ async function runOrbitAgentIn({cwd, print, printHtml, pathStr, tier, effort, ta
     for(let step=1; step<=maxSteps; step++){
       const spin=orbitSpinner(print, `Thinking… (step ${step}/${maxSteps})`);
       let reply;
-      try{ reply = await orbitChat(messages, {tier, effort, system:sys, mode:"agent"}); }
+      /* The heartbeats the backend streams while it works drive this, so the
+         line keeps ticking with real elapsed time and names any model the
+         server had to fall back to. A step that takes 90s now looks like
+         progress instead of a hang. */
+      const onProgress=(p)=>{
+        if(p.note){ spin.label(`Retrying… (step ${step}/${maxSteps}) - ${String(p.note).slice(0,60)}`); return; }
+        const secs=Math.round((p.elapsedMs||0)/1000);
+        spin.label(`Thinking… (step ${step}/${maxSteps})`+(secs>=3?` ${secs}s`:""));
+      };
+      try{ reply = await orbitChat(messages, {tier, effort, system:sys, mode:"agent", onProgress}); }
       catch(e){ spin.fail("✗ Orbit error: "+String(e.message||e)); summary=String(e.message||e); failed=true; return; }
       const action=orbitParseAction(reply);
       if(!action||!action.action){ spin.stop(); print(reply); summary=reply; return; }
